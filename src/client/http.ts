@@ -69,7 +69,7 @@ const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeou
 
 function bodyHasUnmarshalQuirk(body: unknown): boolean {
   if (body && typeof body === 'object' && 'message' in body) {
-    const msg = (body as { message: unknown }).message;
+    const msg = (body as { message: unknown }).message; // reason: narrowed by the 'message' in body guard above
     return typeof msg === 'string' && UNMARSHAL_RE.test(msg);
   }
   return false;
