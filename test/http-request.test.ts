@@ -51,4 +51,32 @@ describe('httpRequest', () => {
     expect(res.status).toBe(401);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  it('honours Retry-After header on 429', async () => {
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(mkResponse(429, { message: 'slow down' }, { 'retry-after': '2' }))
+      .mockResolvedValueOnce(mkResponse(200, { ok: true }));
+    const res = await httpRequest('https://c/x', { method: 'GET', token: 't' }, {
+      ...baseOpts(fetchImpl as unknown as typeof fetch),
+      sleep,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true });
+    expect(sleep).toHaveBeenCalledWith(2000);
+  });
+
+  it('throws immediately when circuit is open', async () => {
+    const breaker = new CircuitBreaker({ failureThreshold: 1, resetTimeoutMs: 1000, now: () => 0 });
+    breaker.recordFailure(); // Open the circuit
+    const fetchImpl = vi.fn();
+    await expect(
+      httpRequest('https://c/x', { method: 'GET', token: 't' }, {
+        ...baseOpts(fetchImpl as unknown as typeof fetch),
+        breaker,
+      }),
+    ).rejects.toThrow(/Circuit open/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
