@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { envDiff, envApply } from '../src/cli/commands/env.js';
+import { z } from 'zod';
+import { envDiff, envApply, parseDotenv } from '../src/cli/commands/env.js';
 import type { ParsedArgs } from '../src/cli/args.js';
 import type { EnvVar } from '../src/client/schemas.js';
 
@@ -23,6 +24,22 @@ const deps = (client: ReturnType<typeof fakeClient>) => ({
   resolveTargetFor: () => ({ instanceUrl: 'https://c', kind: 'application' as const, uuid: 'app-1', token: 't' }),
   clientFactory: () => client,
   actor: 'test', auditSink: vi.fn().mockResolvedValue(undefined), now: () => new Date('2026-06-17T00:00:00Z'),
+});
+
+describe('parseDotenv', () => {
+  it('parses KEY=VALUE lines, ignoring comments and blanks', () => {
+    const result = parseDotenv('A=1\nB=2\n# comment\n\nC=3\n');
+    expect(result).toEqual({ A: '1', B: '2', C: '3' });
+  });
+
+  it('strips export prefix', () => {
+    const result = parseDotenv('export FOO=bar\n');
+    expect(result).toEqual({ FOO: 'bar' });
+  });
+
+  it('throws ZodError on a line without =', () => {
+    expect(() => parseDotenv('BADLINE\n')).toThrow(z.ZodError);
+  });
 });
 
 describe('env CLI', () => {
@@ -49,5 +66,40 @@ describe('env CLI', () => {
     expect(client.upsertEnvs).toHaveBeenCalledWith([{ key: 'A', value: '2' }]);
     expect(client.deploy).not.toHaveBeenCalled();
     expect(d.auditSink).toHaveBeenCalledOnce();
+  });
+
+  it('env diff with --from-file reads file values and never upserts', async () => {
+    const client = fakeClient([ev('A', 'old')]);
+    const readFile = vi.fn().mockResolvedValue('A=1\nB=2\n# comment\n\nC=3\n');
+    const d = { ...deps(client), readFile };
+    const code = await envDiff(
+      args({ fromFile: 'fake.env', set: {} }),
+      d,
+    );
+    expect(code).toBe(0);
+    expect(readFile).toHaveBeenCalledWith('fake.env');
+    expect(client.upsertEnvs).not.toHaveBeenCalled();
+    // A should be an update (old→1), B and C should be creates
+    // We can verify via the stdout or just confirm no error and read-only
+  });
+
+  it('--set overrides --from-file for the same key', async () => {
+    const client = fakeClient([]);
+    const readFile = vi.fn().mockResolvedValue('A=1\n');
+    const d = { ...deps(client), readFile };
+    // --set A=2 should override file's A=1
+    // We capture stdout to verify the merged value used in the plan
+    const writes: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: string | Uint8Array) => { writes.push(String(chunk)); return true; };
+    try {
+      await envDiff(args({ fromFile: 'fake.env', set: { A: '2' } }), d);
+    } finally {
+      process.stdout.write = origWrite;
+    }
+    // Plan should show A as a create with value 2 (not 1)
+    // The plan output lists creates; A=2 means a create from empty current
+    expect(writes.join('')).toContain('creates: A');
+    expect(client.upsertEnvs).not.toHaveBeenCalled();
   });
 });

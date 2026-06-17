@@ -1,3 +1,5 @@
+import { readFile as nodeReadFile } from 'fs/promises';
+import { z } from 'zod';
 import type { ParsedArgs } from '../args.js';
 import type { CoolifyClient } from '../../client/coolify.js';
 import type { ResolvedTarget } from '../../config/schema.js';
@@ -13,6 +15,41 @@ export interface EnvCmdDeps {
   actor: string;
   auditSink: (record: AuditRecord) => Promise<void>;
   now?: () => Date;
+  readFile?: (path: string) => Promise<string>;
+}
+
+const defaultReadFile = (path: string): Promise<string> =>
+  nodeReadFile(path, 'utf8');
+
+/** Parse dotenv-style KEY=VALUE text into a record. Ignores blank lines and comments (#). */
+export function parseDotenv(text: string): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.replace(/\r$/, ''); // trim trailing CR
+    const trimmed = line.trimStart();
+    if (trimmed === '' || trimmed.startsWith('#')) continue; // blank or comment
+    // Strip optional `export ` prefix
+    const withoutExport = trimmed.startsWith('export ') ? trimmed.slice(7) : trimmed;
+    const eqIdx = withoutExport.indexOf('=');
+    if (eqIdx < 0) {
+      throw new z.ZodError([{
+        code: 'custom', path: [],
+        message: `Invalid dotenv line (missing '='): ${JSON.stringify(line)}`,
+      }]);
+    }
+    const key = withoutExport.slice(0, eqIdx).trim();
+    const value = withoutExport.slice(eqIdx + 1); // preserve internal content; no trim
+    result[key] = value;
+  }
+  return result;
+}
+
+async function resolveValues(args: ParsedArgs, deps: EnvCmdDeps): Promise<Record<string, string>> {
+  if (!args.fromFile) return args.set;
+  const fileText = await (deps.readFile ?? defaultReadFile)(args.fromFile);
+  const fileValues = parseDotenv(fileText);
+  // --set overrides file values for the same key
+  return { ...fileValues, ...args.set };
 }
 
 function printPlan(plan: ReturnType<typeof planEnvWrite>, json: boolean): void {
@@ -34,7 +71,8 @@ export async function envDiff(args: ParsedArgs, deps: EnvCmdDeps): Promise<numbe
   const target = deps.resolveTargetFor(args);
   const client = deps.clientFactory(target);
   const current = await client.listEnvs();
-  const plan = planEnvWrite(current, { values: args.set });
+  const merged = await resolveValues(args, deps);
+  const plan = planEnvWrite(current, { values: merged });
   printPlan(plan, args.json);
   if (args.failOnDrift && plan.duplicateKeyDrift.length > 0) {
     throw new DuplicateKeyDriftError('Duplicate-key drift detected', {
@@ -48,7 +86,8 @@ export async function envApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<numb
   const target = deps.resolveTargetFor(args);
   const client = deps.clientFactory(target);
   const current = await client.listEnvs();
-  const plan = planEnvWrite(current, { values: args.set });
+  const merged = await resolveValues(args, deps);
+  const plan = planEnvWrite(current, { values: merged });
   printPlan(plan, args.json);
   if (args.failOnDrift && plan.duplicateKeyDrift.length > 0) {
     throw new DuplicateKeyDriftError('Duplicate-key drift detected', {
