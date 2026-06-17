@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { loadRegistry, resolveTarget, defineConfig } from '../src/config/load.js';
+import { resolve } from 'node:path';
+import { loadRegistry, resolveTarget, defineConfig, loadConfig, loadConfigModule } from '../src/config/load.js';
 import { ConfigError, MissingTokenError } from '../src/errors/index.js';
 
 const registry = defineConfig({
@@ -27,5 +28,26 @@ describe('config', () => {
 
   it('throws MissingTokenError when the tokenEnv is unset', () => {
     expect(() => resolveTarget(registry, 'pfi-api', {})).toThrow(MissingTokenError);
+  });
+
+  it('throws ConfigError on unknown target instance', () => {
+    const r = defineConfig({
+      instances: {},
+      targets: { 'pfi-api': { instance: 'missing', kind: 'application', uuid: 'x' } },
+    });
+    expect(() => resolveTarget(r, 'pfi-api', {})).toThrow(ConfigError);
+  });
+
+  it('loadConfig resolves a project registry from a file', async () => {
+    const path = resolve(import.meta.dirname, 'fixtures/config/basic.config.ts');
+    const r = await loadConfig(path);
+    expect(r.targets['pfi-api']?.kind).toBe('application');
+  });
+
+  it('loadConfigModule resolves registry + catalog from a file', async () => {
+    const path = resolve(import.meta.dirname, 'fixtures/config/basic.config.ts');
+    const mod = await loadConfigModule(path);
+    expect(mod.registry.targets['pfi-api']?.uuid).toBe('abc-uuid');
+    expect(mod.catalog).toBeDefined();
   });
 });
