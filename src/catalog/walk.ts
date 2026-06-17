@@ -145,3 +145,32 @@ export function walkEnvSchema(schema: z.ZodTypeAny, opts: { service: string }): 
   }
   return entries;
 }
+
+export function mergeCatalogs(perService: CatalogEntry[][]): CatalogModel {
+  const byKey = new Map<string, CatalogEntry>();
+  for (const entries of perService) {
+    for (const entry of entries) {
+      const existing = byKey.get(entry.key);
+      if (!existing) {
+        byKey.set(entry.key, { ...entry, services: [...entry.services] });
+        continue;
+      }
+      for (const svc of entry.services) {
+        if (!existing.services.includes(svc)) existing.services.push(svc);
+      }
+      const notes: string[] = [];
+      if (existing.type !== entry.type) {
+        notes.push(`${entry.key}: type differs across services (${existing.type} vs ${entry.type})`);
+      }
+      if (existing.default !== entry.default) {
+        notes.push(
+          `${entry.key}: default differs across services (${existing.default ?? '∅'} vs ${entry.default ?? '∅'})`,
+        );
+      }
+      if (notes.length > 0) {
+        existing.conflict = existing.conflict ? `${existing.conflict}; ${notes.join('; ')}` : notes.join('; ');
+      }
+    }
+  }
+  return [...byKey.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
