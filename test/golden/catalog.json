@@ -1,0 +1,122 @@
+[
+  {
+    "key": "CORS_ORIGINS",
+    "services": [
+      "api"
+    ],
+    "type": "string",
+    "required": true,
+    "coerced": false,
+    "transformed": true,
+    "multiline": false,
+    "description": "Comma-separated allowlist"
+  },
+  {
+    "key": "FEATURE_X_ENABLED",
+    "services": [
+      "api"
+    ],
+    "type": "boolean",
+    "required": false,
+    "coerced": true,
+    "transformed": false,
+    "multiline": false,
+    "default": "false",
+    "description": "Toggle feature X"
+  },
+  {
+    "key": "JWT_PRIVATE_KEY",
+    "services": [
+      "api"
+    ],
+    "type": "string",
+    "required": false,
+    "coerced": false,
+    "transformed": false,
+    "multiline": true,
+    "description": "Ed25519 PEM"
+  },
+  {
+    "key": "LOG_LEVEL",
+    "services": [
+      "api",
+      "web"
+    ],
+    "type": "string",
+    "required": false,
+    "coerced": false,
+    "transformed": false,
+    "multiline": false,
+    "default": "info",
+    "description": "Pino log level",
+    "conflict": "LOG_LEVEL: default differs across services (info vs debug)"
+  },
+  {
+    "key": "NEXT_PUBLIC_API_BASE_URL",
+    "services": [
+      "web"
+    ],
+    "type": "string",
+    "required": false,
+    "coerced": false,
+    "transformed": false,
+    "multiline": false,
+    "default": "http://localhost:3001",
+    "description": "API base URL"
+  },
+  {
+    "key": "NO_DESCRIPTION_KEY",
+    "services": [
+      "api"
+    ],
+    "type": "string",
+    "required": false,
+    "coerced": false,
+    "transformed": false,
+    "multiline": true,
+    "default": "x"
+  },
+  {
+    "key": "NODE_ENV",
+    "services": [
+      "api"
+    ],
+    "type": "enum",
+    "required": false,
+    "coerced": false,
+    "transformed": false,
+    "multiline": false,
+    "enumValues": [
+      "development",
+      "production",
+      "test"
+    ],
+    "default": "development",
+    "description": "Runtime mode"
+  },
+  {
+    "key": "OPTIONAL_FLAG",
+    "services": [
+      "api"
+    ],
+    "type": "string",
+    "required": false,
+    "coerced": false,
+    "transformed": false,
+    "multiline": false,
+    "description": "Set if present"
+  },
+  {
+    "key": "PORT",
+    "services": [
+      "api"
+    ],
+    "type": "number",
+    "required": false,
+    "coerced": true,
+    "transformed": false,
+    "multiline": false,
+    "default": "3001",
+    "description": "HTTP listen port"
+  }
+]
