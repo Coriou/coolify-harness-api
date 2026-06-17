@@ -2,6 +2,7 @@ import type { ParsedArgs } from '../args.js';
 import type { EnvCmdDeps } from './env.js';
 import { buildAuditRecord, type EnvWritePlan } from '../../client/safe-write.js';
 import { EXIT } from '../main.js';
+import { withScope } from '../scope.js';
 
 const EMPTY_PLAN: EnvWritePlan = { creates: [], updates: [], unchanged: [], duplicateKeyDrift: [], lockedSkips: [], warnings: [] };
 
@@ -10,7 +11,7 @@ export async function deployCmd(args: ParsedArgs, deps: EnvCmdDeps): Promise<num
   const client = deps.clientFactory(target);
   const now = (deps.now ?? ((): Date => new Date()))();
   const action = args.restart ? 'restart' : 'deploy';
-  const ack = args.restart ? await client.restart() : await client.deploy();
+  const ack = await withScope('deploy', () => args.restart ? client.restart() : client.deploy());
   await deps.auditSink(
     buildAuditRecord({
       now, actor: deps.actor,

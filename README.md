@@ -59,7 +59,7 @@ export default defineConfig({
 // Named export — catalog schema configuration
 export const catalog = {
   schemas: [
-    { name: 'MyApp', schema: MyAppEnvSchema },
+    { service: 'MyApp', schema: MyAppEnvSchema },
   ] satisfies SchemaInput[],
   out: {
     markdown: 'docs/env-catalog.md',
@@ -125,6 +125,7 @@ coolify-harness env apply --app my-app --from-file .env --apply [--yes]
 - `--apply` performs the actual bulk upsert. Coolify variables are upserted by key — existing keys are updated, missing keys are inserted. Keys that exist in Coolify but are absent from your desired set are left untouched (no deletes).
 - `--yes` skips the confirmation prompt (useful for CI).
 - Every mutation is audit-logged to `.coolify-harness/audit.jsonl` — keys only, never values.
+- After `--apply`, the tool re-reads to confirm the write landed. A confirmation mismatch is reported on stdout but still exits 0 (the write itself succeeded) — CI should check the audit log or output if strict confirmation is required.
 
 ### Safe-write discipline
 
@@ -153,7 +154,7 @@ coolify-harness deploy --app my-app [--restart] [--json]
 ## Coolify hazards encoded
 
 - **No auto-redeploy on env change** — env changes are inert until you explicitly run `deploy`.
-- **Compose-locked vars** — variables locked by Docker Compose are upsert-by-key only; the library never deletes and recreates them. Attempting to change a locked var returns exit code 6.
+- **Compose-locked vars** — variables locked by Docker Compose are upserted in place; the library never deletes and recreates them. Exit code 6 is reserved for a future explicit delete verb that would refuse to delete a compose-locked var — no delete operation exists in v1.
 - **Duplicate-key drift** — if Coolify has multiple entries with the same key (can occur with some bulk operations), the library detects this, surfaces the duplicates, and repairs them by setting all copies to the single desired value.
 - **Bulk merge** — `env apply` uses Coolify's bulk upsert endpoint. On a Coolify upgrade, re-record fixtures and re-run live-smoke to confirm the bulk endpoint contract has not changed.
 
@@ -183,7 +184,7 @@ coolify-harness deploy --app my-app [--restart] [--json]
 | 3 | Catalog stale (re-run `catalog gen`) |
 | 4 | Drift detected (with `--fail-on-drift`) |
 | 5 | Auth / scope error (token missing or insufficient) |
-| 6 | Locked-var refusal (Coolify rejected write to a compose-locked variable) |
+| 6 | Reserved: refusal to delete a compose-locked var (no delete verb in v1) |
 
 ---
 

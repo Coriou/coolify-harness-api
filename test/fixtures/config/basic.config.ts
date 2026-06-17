@@ -6,6 +6,6 @@ export default defineConfig({
 });
 
 export const catalog = {
-  schemas: [] as { name: string; schema: unknown }[],
+  schemas: [] as { service: string; schema: unknown }[],
   out: { markdown: 'docs/cat.md' },
 };

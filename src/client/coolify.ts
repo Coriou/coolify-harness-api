@@ -58,7 +58,7 @@ export class CoolifyClient {
 
   private assertOk(res: HttpResult, ctx: string): void {
     if (res.status === 401 || res.status === 403) {
-      throw new CoolifyAuthError(`Coolify auth failed (${res.status}) on ${ctx}`);
+      throw new CoolifyAuthError(`Coolify auth failed (${res.status}) on ${ctx}`, { status: res.status });
     }
     if (res.status === 404) {
       throw new CoolifyNotFoundError(`Coolify resource not found (404) on ${ctx}`);
