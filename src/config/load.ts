@@ -39,6 +39,6 @@ export function resolveTarget(
 
 export async function loadConfig(configPath: string): Promise<ProjectRegistry> {
   const mod: unknown = await import(configPath);
-  const def = (mod as { default?: unknown }).default;
+  const def = (mod as { default?: unknown }).default; // reason: dynamic import() returns unknown; we read the documented default export
   return loadRegistry(def);
 }
