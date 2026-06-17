@@ -1,0 +1,37 @@
+{
+  "name": "coolify-harness",
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "pnpm@10.0.0",
+  "engines": { "node": ">=24" },
+  "exports": {
+    ".": "./dist/index.js",
+    "./client": "./dist/client/coolify.js",
+    "./catalog": "./dist/catalog/generate.js",
+    "./config": "./dist/config/load.js",
+    "./cli": "./dist/cli/main.js"
+  },
+  "bin": { "coolify-harness": "./dist/cli/main.js" },
+  "files": ["dist"],
+  "scripts": {
+    "dev": "tsc --watch",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist node_modules/.cache"
+  },
+  "dependencies": { "zod": "^3.24.0" },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^3.0.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
