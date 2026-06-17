@@ -172,5 +172,5 @@ export function mergeCatalogs(perService: CatalogEntry[][]): CatalogModel {
       }
     }
   }
-  return [...byKey.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return [...byKey.values()].sort((a, b) => a.key.localeCompare(b.key));
 }

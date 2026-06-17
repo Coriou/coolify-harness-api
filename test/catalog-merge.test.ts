@@ -15,6 +15,6 @@ describe('mergeCatalogs', () => {
   it('produces key-sorted deterministic output', () => {
     const merged = mergeCatalogs([walkEnvSchema(RepresentativeSchema, { service: 'api' })]);
     const keys = merged.map((e) => e.key);
-    expect(keys).toEqual([...keys].sort());
+    expect(keys).toEqual([...keys].sort((a, b) => a.localeCompare(b)));
   });
 });

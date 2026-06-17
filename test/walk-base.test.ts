@@ -48,4 +48,10 @@ describe('walkEnvSchema base traversal', () => {
   it('attaches the owning service', () => {
     expect(byKey.get('NODE_ENV')!.services).toEqual(['api']);
   });
+
+  it('captures CORS_ORIGINS ZodEffects description and required state', () => {
+    const e = byKey.get('CORS_ORIGINS')!;
+    expect(e.description).toBe('Comma-separated allowlist');
+    expect(e.required).toBe(true);
+  });
 });
