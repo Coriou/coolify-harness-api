@@ -1,0 +1,12 @@
+[
+  {
+    "uuid": "env-1",
+    "key": "NODE_ENV",
+    "value": "production",
+    "is_preview": false,
+    "is_build_time": false,
+    "is_literal": false,
+    "is_multiline": false,
+    "is_shown_once": false
+  }
+]
