@@ -1,5 +1,11 @@
 import { ProjectRegistrySchema, type ProjectRegistry, type ResolvedTarget } from './schema.js';
 import { ConfigError, MissingTokenError } from '../errors/index.js';
+import type { SchemaInput } from '../catalog/generate.js';
+
+export interface ConfigModule {
+  registry: ProjectRegistry;
+  catalog?: { schemas: SchemaInput[]; out: { markdown?: string; json?: string; dotenvExample?: string } };
+}
 
 export function defineConfig(c: ProjectRegistry): ProjectRegistry {
   return c;
@@ -41,4 +47,12 @@ export async function loadConfig(configPath: string): Promise<ProjectRegistry> {
   const mod: unknown = await import(configPath);
   const def = (mod as { default?: unknown }).default; // reason: dynamic import() returns unknown; we read the documented default export
   return loadRegistry(def);
+}
+
+export async function loadConfigModule(configPath: string): Promise<ConfigModule> {
+  const mod: unknown = await import(configPath);
+  const def = (mod as { default?: unknown }).default; // reason: dynamic import() returns unknown; we read the documented default export
+  const registry = loadRegistry(def);
+  const catalog = (mod as { catalog?: ConfigModule['catalog'] }).catalog; // reason: dynamic import() returns unknown; we read the optional named catalog export
+  return catalog === undefined ? { registry } : { registry, catalog };
 }
