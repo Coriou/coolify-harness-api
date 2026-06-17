@@ -8,6 +8,7 @@ import { planEnvWrite, applyEnvWrite } from '../../client/safe-write.js';
 import { createLogger } from '../../logging/index.js';
 import { DuplicateKeyDriftError } from '../../errors/index.js';
 import { EXIT } from '../main.js';
+import { withScope } from '../scope.js';
 
 export interface EnvCmdDeps {
   resolveTargetFor: (args: ParsedArgs) => ResolvedTarget;
@@ -70,7 +71,7 @@ function printPlan(plan: ReturnType<typeof planEnvWrite>, json: boolean): void {
 export async function envDiff(args: ParsedArgs, deps: EnvCmdDeps): Promise<number> {
   const target = deps.resolveTargetFor(args);
   const client = deps.clientFactory(target);
-  const current = await client.listEnvs();
+  const current = await withScope('read:sensitive', () => client.listEnvs());
   const merged = await resolveValues(args, deps);
   const plan = planEnvWrite(current, { values: merged });
   printPlan(plan, args.json);
@@ -85,7 +86,7 @@ export async function envDiff(args: ParsedArgs, deps: EnvCmdDeps): Promise<numbe
 export async function envApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<number> {
   const target = deps.resolveTargetFor(args);
   const client = deps.clientFactory(target);
-  const current = await client.listEnvs();
+  const current = await withScope('read:sensitive', () => client.listEnvs());
   const merged = await resolveValues(args, deps);
   const plan = planEnvWrite(current, { values: merged });
   printPlan(plan, args.json);
@@ -98,11 +99,11 @@ export async function envApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<numb
     process.stdout.write('Dry-run. Re-run with --apply to write.\n');
     return EXIT.ok;
   }
-  const result = await applyEnvWrite(plan, {
+  const result = await withScope('write', () => applyEnvWrite(plan, {
     client, logger: createLogger({ sink: () => {} }),
     target: { instanceUrl: target.instanceUrl, kind: target.kind, uuid: target.uuid },
     actor: deps.actor, writeAudit: deps.auditSink, ...(deps.now ? { now: deps.now } : {}),
-  });
+  }));
   process.stdout.write(result.confirmed ? 'Applied and confirmed.\n' : 'Applied (confirmation mismatch — re-check).\n');
   return EXIT.ok;
 }

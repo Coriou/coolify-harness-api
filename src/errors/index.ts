@@ -8,7 +8,13 @@ export class CoolifyHarnessError extends Error {
 }
 
 export class CoolifyAuthError extends CoolifyHarnessError {
-  constructor(message: string) { super(message, 'COOLIFY_AUTH'); }
+  readonly status?: number;
+  constructor(message: string, opts?: { status?: number }) {
+    super(message, 'COOLIFY_AUTH');
+    if (opts?.status !== undefined) {
+      this.status = opts.status;
+    }
+  }
 }
 
 export class CoolifyAuthScopeError extends CoolifyHarnessError {
