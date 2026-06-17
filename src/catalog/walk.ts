@@ -20,7 +20,8 @@ const PEM_KEY_RE = /_KEY$|_PEM$|PRIVATE_KEY/i;
 
 // reason: Zod's internal `_def` is loosely typed; we read documented fields and narrow by typeName.
 type AnyDef = { typeName?: string; innerType?: unknown; schema?: unknown; effect?: { type?: string };
-  defaultValue?: () => unknown; coerce?: boolean; values?: readonly string[]; shape?: () => Record<string, unknown> };
+  defaultValue?: () => unknown; coerce?: boolean; values?: readonly string[]; shape?: () => Record<string, unknown>;
+  left?: unknown; right?: unknown };
 
 function def(schema: unknown): AnyDef {
   // reason: accessing the documented Zod runtime `_def` shape requires an unknown cast.
@@ -110,6 +111,13 @@ function unwrapToObject(schema: unknown): Record<string, unknown> {
     if (tn === 'ZodDefault' || tn === 'ZodOptional' || tn === 'ZodCatch') {
       current = def(current).innerType;
       continue;
+    }
+    if (tn === 'ZodIntersection') {
+      // Merge the shapes from both sides of the intersection. Right-side keys win on collision.
+      const d = def(current);
+      const left = unwrapToObject(d.left);
+      const right = unwrapToObject(d.right);
+      return { ...left, ...right };
     }
     throw new Error(`walkEnvSchema: top-level schema is not a ZodObject (got ${tn ?? 'unknown'})`);
   }

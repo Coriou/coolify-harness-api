@@ -23,3 +23,12 @@ export const WebLikeSchema = z.object({
   NEXT_PUBLIC_API_BASE_URL: z.string().url().default('http://localhost:3001').describe('API base URL'),
   LOG_LEVEL: z.string().default('debug').describe('Web log level'), // shared key, divergent default
 });
+
+// Mirrors pfi-sniper's apps/api construct: BaseEnvSchema.extend(...).superRefine(...).and(JwtKeySchema),
+// which produces a top-level ZodIntersection wrapping [ZodEffects(superRefine), ZodObject].
+const JwtKeySchema = z.object({
+  JWT_SIGNING_KEY: z.string().describe('Ed25519 signing key (PEM)'),
+  JWT_KEY_ID: z.string().default('default').describe('Signing key identifier'),
+});
+
+export const IntersectionSchema = RepresentativeSchema.and(JwtKeySchema);
