@@ -1,0 +1,20 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test:coverage
+      - run: pnpm build
+      - name: Smoke - subpath exports import cleanly
+        run: |
+          node --input-type=module -e "import('./dist/config/load.js').then(m => { if (typeof m.defineConfig !== 'function' || typeof m.loadConfigModule !== 'function') { throw new Error('config export surface missing'); } console.log('config imports OK'); })"
+          node --input-type=module -e "import('./dist/index.js').then(m => { if (typeof m.CoolifyClient !== 'function' || typeof m.walkEnvSchema !== 'function' || typeof m.planEnvWrite !== 'function') { throw new Error('public surface missing'); } console.log('index imports OK'); })"
