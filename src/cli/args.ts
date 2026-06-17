@@ -37,10 +37,10 @@ function resolveCommand(tokens: string[]): { command: ParsedArgs['command']; res
   const two = tokens.slice(0, 2).join(' ');
   const one = tokens[0] ?? '';
   if (two in COMMANDS) {
-    return { command: COMMANDS[two as keyof typeof COMMANDS], rest: tokens.slice(2) };
+    return { command: COMMANDS[two as keyof typeof COMMANDS], rest: tokens.slice(2) }; // reason: key membership checked by `in COMMANDS` guard above
   }
   if (one in COMMANDS) {
-    return { command: COMMANDS[one as keyof typeof COMMANDS], rest: tokens.slice(1) };
+    return { command: COMMANDS[one as keyof typeof COMMANDS], rest: tokens.slice(1) }; // reason: key membership checked by `in COMMANDS` guard above
   }
   throw new z.ZodError([{ code: 'custom', path: [], message: `Unknown command: ${tokens.join(' ')}` }]);
 }
