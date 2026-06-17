@@ -79,4 +79,35 @@ describe('httpRequest', () => {
     ).rejects.toThrow(/Circuit open/);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it('throws when fetch rejects (network error) after exhausting retries', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new Error('network failure'));
+    await expect(
+      httpRequest('https://c/x', { method: 'GET', token: 't' }, {
+        ...baseOpts(fetchImpl as unknown as typeof fetch),
+        maxRetries: 1,
+      }),
+    ).rejects.toThrow('network failure');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('wraps non-Error fetch rejection as Error', async () => {
+    const fetchImpl = vi.fn().mockRejectedValue('string error');
+    await expect(
+      httpRequest('https://c/x', { method: 'GET', token: 't' }, {
+        ...baseOpts(fetchImpl as unknown as typeof fetch),
+        maxRetries: 0,
+      }),
+    ).rejects.toThrow('string error');
+  });
+
+  it('returns 5xx status after exhausting retries without unmarshal quirk', async () => {
+    const fetchImpl = vi.fn().mockImplementation(() => mkResponse(503, { message: 'service unavailable' }));
+    const res = await httpRequest('https://c/x', { method: 'GET', token: 't' }, {
+      ...baseOpts(fetchImpl as unknown as typeof fetch),
+      maxRetries: 1,
+    });
+    expect(res.status).toBe(503);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });
