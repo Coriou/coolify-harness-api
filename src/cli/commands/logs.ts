@@ -15,10 +15,6 @@ export async function logsCmd(args: ParsedArgs, deps: EnvCmdDeps): Promise<numbe
   const wantBuild = args.build || !!args.deployment;
   const wantRuntime = args.runtime || (!args.build && !args.deployment);
 
-  if (wantBuild && wantRuntime && !args.json) {
-    // allow both? but default behavior: if deployment or --build prefer build logs
-  }
-
   try {
     if (wantBuild) {
       let depUuid = args.deployment;

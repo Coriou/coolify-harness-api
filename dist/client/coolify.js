@@ -2,6 +2,8 @@ import { CircuitBreaker, httpRequest } from './http.js';
 import { BulkResponseSchema, DeployAckApplicationSchema, DeployAckServiceSchema, EnvVarSchema, ApplicationSchema, DeploymentSchema, RuntimeLogsResponseSchema, parseOrContractError, } from './schemas.js';
 import { CoolifyAuthError, CoolifyNotFoundError, CoolifyFeatureNotSupportedError } from '../errors/index.js';
 import { waitForDeployment } from './wait.js';
+/** Default page size used for fetching recent deployments when determining "latest". */
+export const DEFAULT_LATEST_TAKE = 20;
 export class CoolifyClient {
     target;
     deps;
@@ -93,8 +95,9 @@ export class CoolifyClient {
     /**
      * List recent deployments for the target.
      * For applications: uses the dedicated /deployments/applications/{uuid} endpoint (supports skip/take).
-     * For services: falls back to the general /deployments list (may be broader).
+     * For services: falls back to the general /deployments list (may be broader, unfiltered by service).
      * Results are returned in the order received from API; callers can sort client-side.
+     * (getLatestDeployment always does client-side sort regardless of kind.)
      */
     async listDeployments(opts = {}) {
         const baseUrl = this.target.instanceUrl;
@@ -139,7 +142,7 @@ export class CoolifyClient {
      * Sort key: updated_at desc, then created_at desc, then deployment_uuid desc.
      */
     async getLatestDeployment() {
-        const list = await this.listDeployments({ take: 20 });
+        const list = await this.listDeployments({ take: DEFAULT_LATEST_TAKE });
         if (list.length === 0)
             return undefined;
         const sorted = [...list].sort((a, b) => {

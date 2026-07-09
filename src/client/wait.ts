@@ -1,4 +1,5 @@
 import type { Deployment } from './schemas.js';
+import { CoolifyWaitTimeoutError } from '../errors/index.js';
 
 export interface WaitOptions {
   /** Polling interval in milliseconds. Default: 2000. */
@@ -33,9 +34,7 @@ export async function waitForDeployment(
       return d;
     }
     if (Date.now() - start > timeoutMs) {
-      throw new Error(
-        `waitForDeployment(${deploymentUuid}) timed out after ${timeoutMs}ms; last status was ${status}`,
-      );
+      throw new CoolifyWaitTimeoutError(deploymentUuid, timeoutMs, status);
     }
     await sleep(intervalMs);
   }

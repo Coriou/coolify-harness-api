@@ -3,6 +3,8 @@ import { CircuitBreaker, type FetchLike } from './http.js';
 import type { Logger } from '../logging/index.js';
 import { type DeployAck, type EnvVar, type EnvWriteItem, type Application, type Deployment } from './schemas.js';
 import { type WaitOptions } from './wait.js';
+/** Default page size used for fetching recent deployments when determining "latest". */
+export declare const DEFAULT_LATEST_TAKE = 20;
 export interface CoolifyClientDeps {
     fetchImpl: FetchLike;
     logger: Logger;
@@ -42,8 +44,9 @@ export declare class CoolifyClient {
     /**
      * List recent deployments for the target.
      * For applications: uses the dedicated /deployments/applications/{uuid} endpoint (supports skip/take).
-     * For services: falls back to the general /deployments list (may be broader).
+     * For services: falls back to the general /deployments list (may be broader, unfiltered by service).
      * Results are returned in the order received from API; callers can sort client-side.
+     * (getLatestDeployment always does client-side sort regardless of kind.)
      */
     listDeployments(opts?: {
         skip?: number;

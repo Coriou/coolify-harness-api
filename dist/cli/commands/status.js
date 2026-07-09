@@ -10,10 +10,10 @@ export async function statusCmd(args, deps) {
     const app = await withScope('read', () => client.get());
     let latest;
     try {
-        latest = await withScope('read', () => client.getLatestDeployment());
+        latest = await withScope('read:sensitive', () => client.getLatestDeployment());
     }
     catch {
-        // non-fatal for status summary
+        // non-fatal for status summary (latestDeployment is bonus info and requires read:sensitive like other deployment paths)
     }
     if (args.json) {
         process.stdout.write(JSON.stringify({

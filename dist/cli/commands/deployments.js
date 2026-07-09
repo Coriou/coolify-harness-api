@@ -2,7 +2,8 @@ import { withScope } from '../scope.js';
 import { EXIT } from '../main.js';
 export async function deploymentsCmd(args, deps) {
     if (!args.app) {
-        process.stderr.write('deployments: --app <name> is required\n');
+        const label = args.command === 'deployment' ? 'deployment <uuid>' : 'deployments';
+        process.stderr.write(`${label} --app <name> is required\n`);
         return EXIT.usage;
     }
     const target = deps.resolveTargetFor(args);
