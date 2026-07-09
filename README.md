@@ -1,37 +1,71 @@
 # coolify-harness
 
-Pinned Coolify API contract version: v4.1.2
+[![CI](https://github.com/Coriou/coolify-harness-api/actions/workflows/ci.yml/badge.svg)](https://github.com/Coriou/coolify-harness-api/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/Coriou/coolify-harness-api/blob/main/LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D24-339933?logo=node.js)](https://nodejs.org/)
 
-> **Important:** Coolify API contract is pinned to v4.1.2. If you upgrade Coolify, re-record the HTTP fixtures (`test/fixtures/`) and re-run the live-smoke against your new instance before releasing a new version.
+**Coolify harness for AI agents.** A lightweight CLI + fully-typed TypeScript library that gives agents (Claude Code, Cursor, Windsurf, Aider, etc.) working *inside your project directory* a super clean, safe, and auditable way to interact with Coolify: manage env vars, trigger deploys/restarts, inspect status + logs, and generate living env catalogs directly from your Zod schemas.
 
-A standalone ESM TypeScript library and thin CLI for:
+- **Safe by default**: `env apply` is a dry-run unless you pass `--apply`. Every mutation is audit-logged (keys only, never values). Redeploy is always an explicit separate step.
+- **Env catalogs from code**: Walk live Zod schemas → committed Markdown + JSON + `.env.example`. CI gate ensures they never go stale.
+- **Agent-first primitives**: `--json` everywhere, `wait`, latest-deployment SHA comparison to avoid redundant deploys, typed `CoolifyClient`, rich error taxonomy.
+- **Works with real Coolify hazards**: no auto-redeploy on env change, compose-locked vars, duplicate-key drift detection + repair, bulk upsert quirks — all encoded.
 
-- **Env-flag catalog generation** — walk live Zod schemas, emit Markdown + JSON + `.env.example` artifacts, gate CI on freshness.
-- **Safe Coolify env var management** — read, diff, and bulk-upsert env vars on Coolify v4 applications and services via the Coolify API, with dry-run-by-default discipline, audit logging (keys only, never values), and optional redeploy trigger.
-- **Live status, logs & deployment observability** — `status`, runtime & build `logs`, `deployments` history, single `deployment` details, and `wait` polling. All read-only, agent-first via `--json`, fully typed on the library `CoolifyClient`.
+Not a full MCP server (see comparison below). Complements the excellent community Coolify MCP tools (e.g. [StuMason/coolify-mcp](https://github.com/StuMason/coolify-mcp)) and Coolify's built-in read-only MCP.
 
 ---
 
-## Requirements
+> **Pinned contract:** Coolify API v4.1.2. If you upgrade Coolify, re-record `test/fixtures/` and re-verify before cutting a release.
 
-- **Node.js** >= 24
-- **pnpm** >= 10
-- **ESM only** (`"type": "module"`)
-- **Zod** 3.24+ / 3.25 (peer dependency)
+---
+
+## Quick start for agents (and humans)
+
+```bash
+# In your project
+pnpm add -D coolify-harness
+
+# Create coolify-harness.config.ts (see full example below)
+# Set COOLIFY_PROD_TOKEN in your shell / agent env / CI secrets
+
+# Read what would change (always safe)
+coolify-harness env diff --app my-app --from-file .env
+
+# Actually write (with audit + confirmation)
+coolify-harness env apply --app my-app --from-file .env --apply
+
+# Redeploy (explicit!)
+coolify-harness deploy --app my-app --wait --json
+
+# Inspect (read-only, great for agents)
+coolify-harness status --app my-app --json
+coolify-harness logs --app my-app --json
+```
+
+Generate + gate your env catalog:
+
+```bash
+coolify-harness catalog gen
+coolify-harness catalog check   # exits 3 if stale (perfect CI gate)
+```
+
+See the full config + command reference below.
 
 ---
 
 ## Install
 
 ```bash
-pnpm add -D coolify-harness@0.2.0
+pnpm add -D coolify-harness
 ```
 
-For git dependency pin a release tag (recommended for reproducibility):
+For reproducible git dependency (recommended):
 
 ```bash
-pnpm add -D coolify-harness@github:<org>/coolify-harness-api#v0.2.0
+pnpm add -D coolify-harness@github:Coriou/coolify-harness-api#v0.2.0
 ```
+
+Requires **Node.js >= 24**, **pnpm**, ESM, Zod 3.24+.
 
 See `CHANGELOG.md` for release notes.
 
@@ -251,7 +285,25 @@ See CHANGELOG.md for detailed release notes and history.
 
 ---
 
-## MCP adapter seam
+## Positioning vs Coolify MCP servers
+
+coolify-harness is **not an MCP server** and is **not redundant** with Coolify's ecosystem tools:
+
+- **Official Coolify MCP** (v4.1+): built-in read-only instance visibility tools (~10 tools) exposed at the Coolify server's `/mcp` endpoint.
+- **Community MCP servers** (StuMason/coolify-mcp and forks): full-featured, long-running stdio/SSE servers with dozens of tools for natural-language management of your whole Coolify instance from Claude Desktop, Cursor, Windsurf, Claude Code, etc.
+
+**coolify-harness** is the *in-repo harness* for agents that are already editing code in your directory. It is deliberately lightweight (no daemon), project-specific, and obsessively safe for the operations agents do most often on a single app/service:
+
+- Dry-run-by-default env writes + keys-only audit logs
+- Explicit separate deploy step (Coolify does not auto-redeploy)
+- Zod schema → committed, CI-gated env catalog (Markdown/JSON/.env.example)
+- Agent-ergonomic observability (`--json`, `wait`, SHA diffing to skip redundant deploys)
+
+Use MCP servers for broad chat-driven overview and cross-resource actions. Use coolify-harness (shell or library) when the agent needs *precise, safe, auditable* control of *this project's* deployment surface with strong guardrails and documentation that lives in code.
+
+The core was designed with an "MCP adapter seam" — any MCP server can import the same functions (`CoolifyClient`, catalog generators, `planEnvWrite`/`applyEnvWrite`, etc.) instead of reimplementing.
+
+## MCP adapter seam (library surface)
 
 All capabilities are implemented as pure-ish typed library functions importable without touching `cli/`:
 
@@ -263,9 +315,9 @@ import { planEnvWrite, applyEnvWrite, buildAuditRecord, waitForDeployment } from
 import type { Application, Deployment } from 'coolify-harness';
 ```
 
-The CLI (`coolify-harness/cli`) is a thin orchestration layer over these functions. An MCP adapter can import the same functions directly without going through the CLI.
+The CLI (`coolify-harness/cli`) is a thin orchestration layer. An MCP adapter (or custom script) can import directly from the subpath exports.
 
-**New in v0.2.0 (agent-friendly observability + review fixes):** `CoolifyClient.get()`, `getRuntimeLogs()`, `listDeployments()`, `getDeployment()`, `getLatest*()`, `waitForDeployment()`. All read paths exercised with Zod passthrough, circuit breaker, injected deps. Includes `CoolifyWaitTimeoutError`, clean `--json` for `deploy --wait`, consistent scopes, etc. See CHANGELOG.md.
+**v0.2.0 agent improvements:** full `--json` read paths, `CoolifyClient.get()` + logs + deployments + `waitForDeployment()`, `CoolifyWaitTimeoutError`, etc. See CHANGELOG.md.
 
 ---
 

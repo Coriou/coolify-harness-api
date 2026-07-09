@@ -2,3 +2,10 @@ node_modules
 *.log
 .coolify-harness/
 coverage
+.env
+.env.*
+.env*.local
+.claude/
+**/.DS_Store
+*.tsbuildinfo
+.DS_Store

@@ -34,4 +34,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - All changes additive; strict Zod passthrough, injected deps, thin CLI preserved
 - Git tag: `v0.2.0`
 
-[0.2.0]: https://github.com/.../compare/v0.1.0...v0.2.0
+[0.2.0]: https://github.com/Coriou/coolify-harness-api/compare/v0.1.0...v0.2.0
