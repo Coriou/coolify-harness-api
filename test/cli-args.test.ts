@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { parseArgs } from '../src/cli/args.js';
 import { errorToExitCode } from '../src/cli/main.js';
-import { CatalogStaleError, CoolifyAuthError, LockedVarError } from '../src/errors/index.js';
+import { CatalogStaleError, CoolifyAuthError, LockedVarError, CoolifyWaitTimeoutError } from '../src/errors/index.js';
 
 describe('CLI args', () => {
   it('parses catalog gen with default config', () => {
@@ -56,6 +56,7 @@ describe('errorToExitCode', () => {
     expect(errorToExitCode(new CatalogStaleError('x', { staleFiles: [] }))).toBe(3);
     expect(errorToExitCode(new CoolifyAuthError('x'))).toBe(5);
     expect(errorToExitCode(new LockedVarError('x', { key: 'K' }))).toBe(6);
+    expect(errorToExitCode(new CoolifyWaitTimeoutError('d-1', 5000, 'queued'))).toBe(1);
     expect(errorToExitCode(new Error('boom'))).toBe(1);
   });
 });

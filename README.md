@@ -24,8 +24,16 @@ A standalone ESM TypeScript library and thin CLI for:
 ## Install
 
 ```bash
-pnpm add -D coolify-harness
+pnpm add -D coolify-harness@0.2.0
 ```
+
+For git dependency pin a release tag (recommended for reproducibility):
+
+```bash
+pnpm add -D coolify-harness@github:<org>/coolify-harness-api#v0.2.0
+```
+
+See `CHANGELOG.md` for release notes.
 
 ---
 
@@ -216,14 +224,16 @@ const final = await client.waitForDeployment(deployUuid, { timeoutMs: 300_000 })
 | `env diff` (with values) | `read` + `read:sensitive` |
 | `env apply` | `read` + `read:sensitive` + `write` |
 | `deploy` / restart | `read` + `write` + `deploy` |
-| `status` | `read` (sufficient for metadata) |
+| `status` | `read` (app metadata); `read:sensitive` for `latestDeployment` (bonus info) |
 | `logs` (runtime or build) / `deployments` / `deployment <uuid>` | `read` + `read:sensitive` (logs are sensitive) |
 | `catalog gen` / `catalog check` | No token required (local only) |
 | `config doctor` | `read` (validates connectivity) |
 
-`read:sensitive` is required for **environment variable values** and **logs** (both runtime container logs and build/deployment logs).
+`read:sensitive` is required for **environment variable values** and **logs** (both runtime container logs and build/deployment logs). Deployment history access also uses it.
 
 `tokenEnv` in the config holds the **name** of the env var, never the token value itself. Set the actual token in your shell or CI secrets.
+
+See CHANGELOG.md for detailed release notes and history.
 
 ---
 
@@ -255,7 +265,7 @@ import type { Application, Deployment } from 'coolify-harness';
 
 The CLI (`coolify-harness/cli`) is a thin orchestration layer over these functions. An MCP adapter can import the same functions directly without going through the CLI.
 
-**New in this release (agent-friendly observability):** `CoolifyClient.get()`, `getRuntimeLogs()`, `listDeployments()`, `getDeployment()`, `getLatest*()`, `waitForDeployment()`. All read paths are exercised with Zod contracts, circuit breaker, and injected transport for testing.
+**New in v0.2.0 (agent-friendly observability + review fixes):** `CoolifyClient.get()`, `getRuntimeLogs()`, `listDeployments()`, `getDeployment()`, `getLatest*()`, `waitForDeployment()`. All read paths exercised with Zod passthrough, circuit breaker, injected deps. Includes `CoolifyWaitTimeoutError`, clean `--json` for `deploy --wait`, consistent scopes, etc. See CHANGELOG.md.
 
 ---
 

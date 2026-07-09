@@ -56,3 +56,9 @@ export declare class CatalogStaleError extends CoolifyHarnessError {
 export declare class CoolifyFeatureNotSupportedError extends CoolifyHarnessError {
     constructor(message: string);
 }
+export declare class CoolifyWaitTimeoutError extends CoolifyHarnessError {
+    readonly deploymentUuid: string;
+    readonly timeoutMs: number;
+    readonly lastStatus: string | undefined;
+    constructor(deploymentUuid: string, timeoutMs: number, lastStatus?: string);
+}

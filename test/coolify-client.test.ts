@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { CoolifyClient } from '../src/client/coolify.js';
 import { noopLogger } from '../src/logging/index.js';
-import { CoolifyAuthError, CoolifyNotFoundError, CoolifyFeatureNotSupportedError } from '../src/errors/index.js';
+import { CoolifyAuthError, CoolifyNotFoundError, CoolifyFeatureNotSupportedError, CoolifyWaitTimeoutError } from '../src/errors/index.js';
 import type { ResolvedTarget } from '../src/config/schema.js';
 import { waitForDeployment } from '../src/client/wait.js';
 
@@ -160,6 +160,9 @@ describe('waitForDeployment (pure + client wrapper)', () => {
     await expect(
       waitForDeployment(getter, 'd3', { intervalMs: 1, timeoutMs: 10, sleep: async () => {} }),
     ).rejects.toThrow(/waitForDeployment\(d3\) timed out/);
+    await expect(
+      waitForDeployment(getter, 'd3', { intervalMs: 1, timeoutMs: 10, sleep: async () => {} }),
+    ).rejects.toBeInstanceOf(CoolifyWaitTimeoutError);
   });
 
   it('client.waitForDeployment uses injected sleep and getDeployment', async () => {

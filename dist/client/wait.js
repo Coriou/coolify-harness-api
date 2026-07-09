@@ -1,3 +1,4 @@
+import { CoolifyWaitTimeoutError } from '../errors/index.js';
 /**
  * Pure-ish polling helper. Repeatedly calls getDeployment until a terminal status
  * (finished | failed | cancelled-by-user) or timeout.
@@ -17,7 +18,7 @@ export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}
             return d;
         }
         if (Date.now() - start > timeoutMs) {
-            throw new Error(`waitForDeployment(${deploymentUuid}) timed out after ${timeoutMs}ms; last status was ${status}`);
+            throw new CoolifyWaitTimeoutError(deploymentUuid, timeoutMs, status);
         }
         await sleep(intervalMs);
     }

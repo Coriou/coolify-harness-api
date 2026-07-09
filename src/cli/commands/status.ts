@@ -14,9 +14,9 @@ export async function statusCmd(args: ParsedArgs, deps: EnvCmdDeps): Promise<num
   const app = await withScope('read', () => client.get());
   let latest: Awaited<ReturnType<typeof client.getLatestDeployment>> | undefined;
   try {
-    latest = await withScope('read', () => client.getLatestDeployment());
+    latest = await withScope('read:sensitive', () => client.getLatestDeployment());
   } catch {
-    // non-fatal for status summary
+    // non-fatal for status summary (latestDeployment is bonus info and requires read:sensitive like other deployment paths)
   }
 
   if (args.json) {

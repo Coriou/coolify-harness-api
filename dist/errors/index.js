@@ -71,3 +71,15 @@ export class CoolifyFeatureNotSupportedError extends CoolifyHarnessError {
         super(message, 'COOLIFY_FEATURE_NOT_SUPPORTED');
     }
 }
+export class CoolifyWaitTimeoutError extends CoolifyHarnessError {
+    deploymentUuid;
+    timeoutMs;
+    lastStatus;
+    constructor(deploymentUuid, timeoutMs, lastStatus) {
+        const last = lastStatus ?? 'unknown';
+        super(`waitForDeployment(${deploymentUuid}) timed out after ${timeoutMs}ms; last status was ${last}`, 'COOLIFY_WAIT_TIMEOUT');
+        this.deploymentUuid = deploymentUuid;
+        this.timeoutMs = timeoutMs;
+        this.lastStatus = lastStatus;
+    }
+}

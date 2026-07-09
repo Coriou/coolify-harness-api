@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { parseArgs } from './args.js';
 import {
   CatalogStaleError, DuplicateKeyDriftError, CoolifyAuthError, CoolifyAuthScopeError, LockedVarError,
-  CoolifyFeatureNotSupportedError,
+  CoolifyFeatureNotSupportedError, CoolifyWaitTimeoutError,
 } from '../errors/index.js';
 
 export const EXIT = {
@@ -15,6 +15,7 @@ export function errorToExitCode(err: unknown): number {
   if (err instanceof CoolifyAuthScopeError || err instanceof CoolifyAuthError) return EXIT.authScope;
   if (err instanceof LockedVarError) return EXIT.lockedVar;
   if (err instanceof CoolifyFeatureNotSupportedError) return EXIT.usage;
+  if (err instanceof CoolifyWaitTimeoutError) return EXIT.internal;
   if (err instanceof z.ZodError) return EXIT.usage;
   return EXIT.internal;
 }

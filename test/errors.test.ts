@@ -4,6 +4,7 @@ import {
   CoolifyAuthScopeError,
   MissingTokenError,
   CatalogStaleError,
+  CoolifyWaitTimeoutError,
 } from '../src/errors/index.js';
 
 describe('error taxonomy', () => {
@@ -21,5 +22,11 @@ describe('error taxonomy', () => {
       'COOLIFY_PROD_TOKEN',
     );
     expect(new CatalogStaleError('stale', { staleFiles: ['a.md'] }).staleFiles).toEqual(['a.md']);
+    const w = new CoolifyWaitTimeoutError('dep-xyz', 1234, 'in_progress');
+    expect(w.code).toBe('COOLIFY_WAIT_TIMEOUT');
+    expect(w.deploymentUuid).toBe('dep-xyz');
+    expect(w.timeoutMs).toBe(1234);
+    expect(w.lastStatus).toBe('in_progress');
+    expect(w).toBeInstanceOf(CoolifyHarnessError);
   });
 });
