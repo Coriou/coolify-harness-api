@@ -6,3 +6,4 @@ export { planEnvWrite, applyEnvWrite, buildAuditRecord } from './client/safe-wri
 export { generateCatalog, buildArtifacts } from './catalog/generate.js';
 export { checkCatalogFresh } from './catalog/stale-check.js';
 export { walkEnvSchema, mergeCatalogs } from './catalog/walk.js';
+export { waitForDeployment } from './client/wait.js';

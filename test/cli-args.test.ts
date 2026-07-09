@@ -21,6 +21,34 @@ describe('CLI args', () => {
   it('throws on an unknown command (usage error)', () => {
     expect(() => parseArgs(['frobnicate'])).toThrow();
   });
+
+  it('parses status --app foo --json', () => {
+    const a = parseArgs(['status', '--app', 'foo', '--json']);
+    expect(a.command).toBe('status');
+    expect(a.app).toBe('foo');
+    expect(a.json).toBe(true);
+  });
+
+  it('parses logs --app bar --build --lines 200 --json', () => {
+    const a = parseArgs(['logs', '--app', 'bar', '--build', '--lines', '200', '--json']);
+    expect(a.command).toBe('logs');
+    expect(a.build).toBe(true);
+    expect(a.lines).toBe(200);
+    expect(a.json).toBe(true);
+  });
+
+  it('parses deployment <uuid> --app x --json (positional uuid)', () => {
+    const a = parseArgs(['deployment', 'deploy-abc-123', '--app', 'x', '--json']);
+    expect(a.command).toBe('deployment');
+    expect(a.deployment).toBe('deploy-abc-123');
+    expect(a.json).toBe(true);
+  });
+
+  it('parses deploy --wait --app svc', () => {
+    const a = parseArgs(['deploy', '--app', 'svc', '--wait']);
+    expect(a.command).toBe('deploy');
+    expect(a.wait).toBe(true);
+  });
 });
 
 describe('errorToExitCode', () => {

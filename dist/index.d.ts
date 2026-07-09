@@ -8,3 +8,6 @@ export type { EnvWritePlan, AuditRecord, DesiredEnv } from './client/safe-write.
 export { generateCatalog, buildArtifacts, type SchemaInput } from './catalog/generate.js';
 export { checkCatalogFresh } from './catalog/stale-check.js';
 export { walkEnvSchema, mergeCatalogs, type CatalogModel, type CatalogEntry } from './catalog/walk.js';
+export type { Application, Deployment, RuntimeLogsResponse } from './client/schemas.js';
+export type { WaitOptions } from './client/wait.js';
+export { waitForDeployment } from './client/wait.js';

@@ -1,0 +1,48 @@
+[
+  {
+    "deployment_uuid": "deploy-recent-1",
+    "status": "finished",
+    "logs": "build logs for recent success",
+    "commit": "deadbeef1111",
+    "commit_message": "chore: bump",
+    "application_name": "pfi-api",
+    "server_name": "srv-01",
+    "created_at": "2026-07-09T10:00:00.000Z",
+    "updated_at": "2026-07-09T10:02:10.000Z",
+    "finished_at": "2026-07-09T10:02:10.000Z",
+    "force_rebuild": false,
+    "is_webhook": true,
+    "is_api": false
+  },
+  {
+    "deployment_uuid": "deploy-inprog-2",
+    "status": "in_progress",
+    "logs": "currently building...",
+    "commit": "cafebabe2222",
+    "commit_message": "feat: new feature",
+    "application_name": "pfi-api",
+    "server_name": "srv-01",
+    "created_at": "2026-07-09T12:00:00.000Z",
+    "updated_at": "2026-07-09T12:01:05.000Z",
+    "finished_at": null,
+    "force_rebuild": false,
+    "is_webhook": false,
+    "is_api": true
+  },
+  {
+    "deployment_uuid": "deploy-failed-3",
+    "status": "failed",
+    "logs": null,
+    "commit": "badcafe3333",
+    "commit_message": "fix: something",
+    "application_name": "pfi-api",
+    "server_name": "srv-01",
+    "created_at": "2026-07-08T09:00:00.000Z",
+    "updated_at": "2026-07-08T09:01:30.000Z",
+    "finished_at": "2026-07-08T09:01:30.000Z",
+    "force_rebuild": true,
+    "is_webhook": false,
+    "is_api": false,
+    "passthrough_extra": "present on failed too"
+  }
+]

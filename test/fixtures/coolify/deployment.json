@@ -1,0 +1,17 @@
+{
+  "deployment_uuid": "deploy-uuid-9876",
+  "status": "finished",
+  "logs": "[{\"command\":\"docker build\",\"output\":\"Step 1/5 : FROM node:20\\n ... build complete\"}]",
+  "commit": "a1b2c3d4e5f6",
+  "commit_message": "feat: add observability endpoints",
+  "application_name": "pfi-api",
+  "server_name": "srv-01",
+  "created_at": "2026-07-09T11:00:00.000Z",
+  "updated_at": "2026-07-09T11:05:23.000Z",
+  "finished_at": "2026-07-09T11:05:23.000Z",
+  "force_rebuild": false,
+  "is_webhook": false,
+  "is_api": true,
+  "pull_request_id": null,
+  "extra_passthrough": "yes"
+}

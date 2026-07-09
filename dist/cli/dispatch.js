@@ -7,6 +7,9 @@ import { loadConfigModule, resolveTarget } from '../config/load.js';
 import { makeAuditSink } from './audit-sink.js';
 import { envDiff, envApply } from './commands/env.js';
 import { deployCmd } from './commands/deploy.js';
+import { statusCmd } from './commands/status.js';
+import { logsCmd } from './commands/logs.js';
+import { deploymentsCmd } from './commands/deployments.js';
 import { EXIT } from './main.js';
 async function buildEnvDeps(configPath) {
     const mod = await loadConfigModule(configPath);
@@ -46,6 +49,19 @@ export async function dispatch(args) {
         case 'deploy': {
             const deps = await buildEnvDeps(resolve(args.config));
             return deployCmd(args, deps);
+        }
+        case 'status': {
+            const deps = await buildEnvDeps(resolve(args.config));
+            return statusCmd(args, deps);
+        }
+        case 'logs': {
+            const deps = await buildEnvDeps(resolve(args.config));
+            return logsCmd(args, deps);
+        }
+        case 'deployments':
+        case 'deployment': {
+            const deps = await buildEnvDeps(resolve(args.config));
+            return deploymentsCmd(args, deps);
         }
     }
 }

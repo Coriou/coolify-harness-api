@@ -12,7 +12,21 @@ import { withScope } from '../scope.js';
 
 export interface EnvCmdDeps {
   resolveTargetFor: (args: ParsedArgs) => ResolvedTarget;
-  clientFactory: (target: ResolvedTarget) => Pick<CoolifyClient, 'listEnvs' | 'upsertEnvs' | 'deploy' | 'restart'>;
+  clientFactory: (target: ResolvedTarget) => Pick<
+    CoolifyClient,
+    | 'listEnvs'
+    | 'upsertEnvs'
+    | 'deploy'
+    | 'restart'
+    // New read-only observability surface (read methods are safe to expose)
+    | 'get'
+    | 'getRuntimeLogs'
+    | 'listDeployments'
+    | 'getDeployment'
+    | 'getLatestDeployment'
+    | 'getLatestBuildLogs'
+    | 'waitForDeployment'
+  >;
   actor: string;
   auditSink: (record: AuditRecord) => Promise<void>;
   now?: () => Date;

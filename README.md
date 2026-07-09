@@ -8,6 +8,7 @@ A standalone ESM TypeScript library and thin CLI for:
 
 - **Env-flag catalog generation** — walk live Zod schemas, emit Markdown + JSON + `.env.example` artifacts, gate CI on freshness.
 - **Safe Coolify env var management** — read, diff, and bulk-upsert env vars on Coolify v4 applications and services via the Coolify API, with dry-run-by-default discipline, audit logging (keys only, never values), and optional redeploy trigger.
+- **Live status, logs & deployment observability** — `status`, runtime & build `logs`, `deployments` history, single `deployment` details, and `wait` polling. All read-only, agent-first via `--json`, fully typed on the library `CoolifyClient`.
 
 ---
 
@@ -149,7 +150,55 @@ coolify-harness deploy --app my-app [--restart] [--json]
 - `deploy` without `--restart` triggers a full redeploy (applications).
 - `--restart` triggers a service restart instead.
 
+### Live status, logs, and deployment history (read-only)
+
+These commands are **read-only** and designed for agents and humans to inspect state without side effects. Use `--json` for clean machine output.
+
+```bash
+# Current resource details + latest deployment summary
+coolify-harness status --app my-app [--json]
+
+# Runtime (container) logs — requires read:sensitive
+coolify-harness logs --app my-app [--lines 200] [--json]
+
+# Build / deploy logs from the latest (or specific) deployment
+coolify-harness logs --app my-app --build [--deployment DEPLOY_UUID] [--json]
+
+# Recent deployments (build history)
+coolify-harness deployments --app my-app [--take 5] [--skip 0] [--json]
+
+# Full details + logs for one deployment
+coolify-harness deployment DEPLOY_UUID --app my-app [--json]
+
+# Deploy and wait for completion (still audit-logs the deploy action)
+coolify-harness deploy --app my-app --wait [--json]
+```
+
+**Important notes for agents:**
+- Always prefer `--json` — it emits only the object/array (no extra prose).
+- `status` + `getLatestDeployment` (via library) lets agents avoid redundant deploys by comparing `git_commit_sha`.
+- `logs --build` and `deployment <uuid>` surface the embedded build logs.
+- `deploy --wait` is a convenience; the ack still returns immediately and the wait is polled client-side.
+- Runtime logs and any deployment record access require the `read:sensitive` scope.
+
+**Library usage (for MCP adapters, direct import, or advanced scripts):**
+
+```ts
+import { CoolifyClient } from 'coolify-harness/client';
+
+const client = new CoolifyClient(target, { fetchImpl: globalThis.fetch, logger: myLogger });
+
+const app = await client.get();                    // status + git info + fqdn etc.
+const runtime = await client.getRuntimeLogs(100);  // { logs: string }
+const deploys = await client.listDeployments({ take: 5 });
+const latest = await client.getLatestDeployment();
+const buildLogs = await client.getLatestBuildLogs();
+const full = await client.getDeployment(deployUuid);
+const final = await client.waitForDeployment(deployUuid, { timeoutMs: 300_000 });
+```
+
 ---
+
 
 ## Coolify hazards encoded
 
@@ -167,8 +216,12 @@ coolify-harness deploy --app my-app [--restart] [--json]
 | `env diff` (with values) | `read` + `read:sensitive` |
 | `env apply` | `read` + `read:sensitive` + `write` |
 | `deploy` / restart | `read` + `write` + `deploy` |
+| `status` | `read` (sufficient for metadata) |
+| `logs` (runtime or build) / `deployments` / `deployment <uuid>` | `read` + `read:sensitive` (logs are sensitive) |
 | `catalog gen` / `catalog check` | No token required (local only) |
 | `config doctor` | `read` (validates connectivity) |
+
+`read:sensitive` is required for **environment variable values** and **logs** (both runtime container logs and build/deployment logs).
 
 `tokenEnv` in the config holds the **name** of the env var, never the token value itself. Set the actual token in your shell or CI secrets.
 
@@ -196,10 +249,13 @@ All capabilities are implemented as pure-ish typed library functions importable 
 import { CoolifyClient } from 'coolify-harness/client';
 import { generateCatalog, buildArtifacts } from 'coolify-harness/catalog';
 import { defineConfig, loadConfigModule } from 'coolify-harness/config';
-import { planEnvWrite, applyEnvWrite, buildAuditRecord } from 'coolify-harness';
+import { planEnvWrite, applyEnvWrite, buildAuditRecord, waitForDeployment } from 'coolify-harness';
+import type { Application, Deployment } from 'coolify-harness';
 ```
 
 The CLI (`coolify-harness/cli`) is a thin orchestration layer over these functions. An MCP adapter can import the same functions directly without going through the CLI.
+
+**New in this release (agent-friendly observability):** `CoolifyClient.get()`, `getRuntimeLogs()`, `listDeployments()`, `getDeployment()`, `getLatest*()`, `waitForDeployment()`. All read paths are exercised with Zod contracts, circuit breaker, and injected transport for testing.
 
 ---
 
