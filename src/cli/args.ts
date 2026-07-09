@@ -8,12 +8,17 @@ const COMMANDS = {
   'flag set': 'flag-set',
   deploy: 'deploy',
   'config doctor': 'config-doctor',
+  status: 'status',
+  logs: 'logs',
+  deployments: 'deployments',
+  deployment: 'deployment',
 } as const;
 
 export interface ParsedArgs {
   command:
     | 'catalog-gen' | 'catalog-check' | 'env-diff' | 'env-apply'
-    | 'flag-set' | 'deploy' | 'config-doctor';
+    | 'flag-set' | 'deploy' | 'config-doctor'
+    | 'status' | 'logs' | 'deployments' | 'deployment';
   config: string;
   app?: string;
   apply: boolean;
@@ -24,11 +29,20 @@ export interface ParsedArgs {
   failOnDrift: boolean;
   set: Record<string, string>;
   fromFile?: string;
+  // New observability / read-only flags
+  lines?: number;
+  build: boolean;
+  runtime: boolean;
+  deployment?: string; // deployment uuid for "deployment <uuid>" or logs --deployment
+  wait: boolean;
+  take?: number;
+  skip?: number;
 }
 
 const FlagSchema = z.object({
   command: z.enum([
     'catalog-gen', 'catalog-check', 'env-diff', 'env-apply', 'flag-set', 'deploy', 'config-doctor',
+    'status', 'logs', 'deployments', 'deployment',
   ]),
   config: z.string().default('coolify-harness.config.ts'),
 });
@@ -50,6 +64,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const out: ParsedArgs = {
     command, config: 'coolify-harness.config.ts',
     apply: false, yes: false, redeploy: false, restart: false, json: false, failOnDrift: false, set: {},
+    build: false, runtime: false, wait: false,
   };
   for (let i = 0; i < rest.length; i += 1) {
     const tok = rest[i]!;
@@ -76,8 +91,39 @@ export function parseArgs(argv: string[]): ParsedArgs {
         out.set[pair.slice(0, eq)] = pair.slice(eq + 1);
         break;
       }
+      // New read-only flags
+      case '--lines': {
+        const v = next();
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) throw new z.ZodError([{ code: 'custom', path: [], message: `--lines expects positive integer, got ${v}` }]);
+        out.lines = n;
+        break;
+      }
+      case '--build': out.build = true; break;
+      case '--runtime': out.runtime = true; break;
+      case '--deployment': out.deployment = next(); break;
+      case '--wait': out.wait = true; break;
+      case '--take': {
+        const v = next();
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) throw new z.ZodError([{ code: 'custom', path: [], message: `--take expects non-negative integer, got ${v}` }]);
+        out.take = n;
+        break;
+      }
+      case '--skip': {
+        const v = next();
+        const n = Number(v);
+        if (!Number.isFinite(n) || n < 0) throw new z.ZodError([{ code: 'custom', path: [], message: `--skip expects non-negative integer, got ${v}` }]);
+        out.skip = n;
+        break;
+      }
       default:
-        throw new z.ZodError([{ code: 'custom', path: [], message: `Unknown flag: ${tok}` }]);
+        // Positional for "deployment <UUID>"
+        if (command === 'deployment' && !out.deployment && !tok.startsWith('--')) {
+          out.deployment = tok;
+        } else {
+          throw new z.ZodError([{ code: 'custom', path: [], message: `Unknown flag: ${tok}` }]);
+        }
     }
   }
   FlagSchema.parse({ command: out.command, config: out.config });

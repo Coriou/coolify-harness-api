@@ -53,3 +53,6 @@ export declare class CatalogStaleError extends CoolifyHarnessError {
         staleFiles: string[];
     });
 }
+export declare class CoolifyFeatureNotSupportedError extends CoolifyHarnessError {
+    constructor(message: string);
+}

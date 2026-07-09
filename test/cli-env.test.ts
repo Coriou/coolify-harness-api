@@ -18,6 +18,13 @@ const fakeClient = (current: EnvVar[], upsert = vi.fn().mockResolvedValue([])) =
   listEnvs: vi.fn().mockResolvedValue(current),
   upsertEnvs: upsert,
   deploy: vi.fn(), restart: vi.fn(),
+  get: vi.fn(),
+  getRuntimeLogs: vi.fn(),
+  listDeployments: vi.fn(),
+  getDeployment: vi.fn(),
+  getLatestDeployment: vi.fn(),
+  getLatestBuildLogs: vi.fn(),
+  waitForDeployment: vi.fn(),
 });
 
 const deps = (client: ReturnType<typeof fakeClient>) => ({

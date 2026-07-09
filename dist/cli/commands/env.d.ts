@@ -4,7 +4,7 @@ import type { ResolvedTarget } from '../../config/schema.js';
 import type { AuditRecord } from '../../client/safe-write.js';
 export interface EnvCmdDeps {
     resolveTargetFor: (args: ParsedArgs) => ResolvedTarget;
-    clientFactory: (target: ResolvedTarget) => Pick<CoolifyClient, 'listEnvs' | 'upsertEnvs' | 'deploy' | 'restart'>;
+    clientFactory: (target: ResolvedTarget) => Pick<CoolifyClient, 'listEnvs' | 'upsertEnvs' | 'deploy' | 'restart' | 'get' | 'getRuntimeLogs' | 'listDeployments' | 'getDeployment' | 'getLatestDeployment' | 'getLatestBuildLogs' | 'waitForDeployment'>;
     actor: string;
     auditSink: (record: AuditRecord) => Promise<void>;
     now?: () => Date;

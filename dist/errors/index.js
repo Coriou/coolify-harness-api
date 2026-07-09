@@ -66,3 +66,8 @@ export class CatalogStaleError extends CoolifyHarnessError {
         this.staleFiles = opts.staleFiles;
     }
 }
+export class CoolifyFeatureNotSupportedError extends CoolifyHarnessError {
+    constructor(message) {
+        super(message, 'COOLIFY_FEATURE_NOT_SUPPORTED');
+    }
+}
