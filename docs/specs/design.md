@@ -125,8 +125,14 @@ and separately consumable.
 - **Services** have parallel endpoints under `/api/v1/services/{uuid}/envs…`.
 - **Deploy/restart:** `GET|POST /api/v1/applications/{uuid}/start` and `…/restart`; service equivalents under
   `/api/v1/services/{uuid}/…`. **Editing env does NOT auto-redeploy** — redeploy is a separate trigger.
-- **Env write fields accepted (the ONLY ones):** `key`, `value`, `is_preview`, `is_build_time`, `is_literal`,
-  `is_multiline`, `is_shown_once`. **No `comment`/`description` field exists.** Do not design around it.
+- **Env write fields accepted (the ONLY ones):** `key`, `value`, `is_preview`, `is_literal`,
+  `is_multiline`, `is_shown_once`. There is **no build-time field on the write path** (neither
+  `is_build_time` nor `is_buildtime`); Coolify 422s ("This field is not allowed.", #6847) on any
+  extra field. Build-time is not settable via the API. **No `comment`/`description` field exists.**
+  Do not design around it. `upsertEnvs` Zod-validates the request body to enforce exactly this set.
+- **Env READ field (build-time rename):** Coolify >= 4.0.0-beta.463 renamed the response flag
+  `is_build_time` → `is_buildtime` (and added `is_runtime`). The read schema accepts either and
+  normalizes onto a canonical `is_build_time`; older instances still work.
 - **Known upstream quirk:** the bulk endpoint can return a `cannot unmarshal array` error. Treat bulk as
   potentially flaky: Zod-validate the request *and* response, and wrap it in retry + breaker.
 

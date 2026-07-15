@@ -62,7 +62,7 @@ pnpm add -D coolify-harness
 For reproducible git dependency (recommended):
 
 ```bash
-pnpm add -D coolify-harness@github:Coriou/coolify-harness-api#v0.2.0
+pnpm add -D coolify-harness@github:Coriou/coolify-harness-api#v0.3.0
 ```
 
 Requires **Node.js >= 24**, **pnpm**, ESM, Zod 3.24+.
@@ -248,6 +248,7 @@ const final = await client.waitForDeployment(deployUuid, { timeoutMs: 300_000 })
 - **Compose-locked vars** — variables locked by Docker Compose are upserted in place; the library never deletes and recreates them. Exit code 6 is reserved for a future explicit delete verb that would refuse to delete a compose-locked var — no delete operation exists in v1.
 - **Duplicate-key drift** — if Coolify has multiple entries with the same key (can occur with some bulk operations), the library detects this, surfaces the duplicates, and repairs them by setting all copies to the single desired value.
 - **Bulk merge** — `env apply` uses Coolify's bulk upsert endpoint. On a Coolify upgrade, re-record fixtures and re-run live-smoke to confirm the bulk endpoint contract has not changed.
+- **Build-time flag rename** — Coolify ≥ 4.0.0-beta.463 renamed the env-var build-time flag on reads from `is_build_time` to `is_buildtime` (and added `is_runtime`). The read schema accepts either and normalizes to a canonical `is_build_time`, so `env diff` / `env apply` keep working across old and new Coolify. Note build-time is **not settable via the API** — the write endpoints reject any build-time field with HTTP 422 — so the harness never sends one.
 
 ---
 

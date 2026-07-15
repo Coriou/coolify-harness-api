@@ -24,6 +24,48 @@ describe('coolify schemas', () => {
     expect(item.is_build_time).toBe(false);
   });
 
+  // Bug 1 (read): Coolify >=4.0.0-beta.463 renamed the response field is_build_time -> is_buildtime
+  // (and added is_runtime). Accept either spelling and normalize onto the canonical is_build_time so
+  // downstream code (safe-write, CLI) only reasons about one field name.
+  it('parses a newer (>=beta.463) env item that uses is_buildtime instead of is_build_time', () => {
+    const list = fx('envs-list-newer-buildtime.json') as unknown[];
+    const item = EnvVarSchema.parse(list[0]);
+    expect(item.key).toBe('NODE_ENV');
+    // normalized onto the canonical field so downstream has one shape
+    expect(item.is_build_time).toBe(true);
+    // the raw newer field is preserved via passthrough, never silently dropped
+    expect((item as { is_buildtime?: boolean }).is_buildtime).toBe(true);
+    // the newly-added is_runtime field is tolerated (passthrough)
+    expect((item as { is_runtime?: boolean }).is_runtime).toBe(true);
+  });
+
+  it('normalizes a MIXED list where one item is old-style and one is new-style', () => {
+    const oldStyle = { uuid: 'e1', key: 'A', value: '1', is_preview: false, is_build_time: true,
+      is_literal: false, is_multiline: false, is_shown_once: false };
+    const newStyle = { uuid: 'e2', key: 'B', value: '2', is_preview: false, is_buildtime: false,
+      is_literal: false, is_multiline: false, is_shown_once: false };
+    const [a, b] = BulkResponseSchema.parse([oldStyle, newStyle]);
+    expect(a!.is_build_time).toBe(true);
+    expect(b!.is_build_time).toBe(false);
+  });
+
+  it('prefers is_build_time when a server sends BOTH fields', () => {
+    const item = EnvVarSchema.parse({
+      uuid: 'e', key: 'K', value: 'v', is_preview: false,
+      is_build_time: true, is_buildtime: false,
+      is_literal: false, is_multiline: false, is_shown_once: false,
+    });
+    expect(item.is_build_time).toBe(true);
+  });
+
+  it('defaults is_build_time to false when neither field is present', () => {
+    const item = EnvVarSchema.parse({
+      uuid: 'e', key: 'K', value: 'v', is_preview: false,
+      is_literal: false, is_multiline: false, is_shown_once: false,
+    });
+    expect(item.is_build_time).toBe(false);
+  });
+
   it('parses the application deploy ack with deployment_uuid', () => {
     const ack = DeployAckApplicationSchema.parse(fx('deploy-ack-application.json'));
     expect(ack.deployment_uuid).toBe('deploy-123');

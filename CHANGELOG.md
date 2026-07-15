@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-15
+
+> Minor bump (not patch) under 0.x semver: the write-surface fix removes the never-valid
+> `is_build_time` field from the `EnvWriteItemSchema` / `EnvFlags` public types (see below), a
+> compile-only breaking change for the narrow case of code that set build-time on a write.
+
+### Fixed
+
+- **Env reads no longer break on newer Coolify (`is_build_time` → `is_buildtime`).** Coolify
+  >= 4.0.0-beta.463 renamed the build-time flag on env responses (and added `is_runtime`), which
+  made `EnvVarSchema` fail contract validation, breaking `env diff` / `env apply`. The read schema
+  now accepts either spelling and normalizes onto a canonical, always-present `is_build_time`
+  (older instances keep working). The raw field is retained via passthrough. (coollabsio/coolify
+  read model rename; consumer repos previously patched or worked around this.)
+- **Env writes only ever send fields the API accepts.** The current Coolify write API
+  (`POST`/`PATCH .../envs` and `.../envs/bulk`) accepts only `key`, `value`, `is_preview`,
+  `is_literal`, `is_multiline`, `is_shown_once` and rejects anything else with HTTP 422
+  ("This field is not allowed.", coollabsio/coolify#6847) — there is no build-time field on the
+  write path in any Coolify version. `is_build_time` has been removed from `EnvWriteItemSchema`
+  and `EnvFlags`, and `upsertEnvs` now Zod-validates the outgoing bulk body (fulfilling the
+  design's "validate the request" contract) so a stray non-writable field can never reach the wire.
+- **CLI bin-entry guard now fires under pnpm symlinks + tsx.** The entry check
+  (`import.meta.url === file://${process.argv[1]}`) never matched when the bin was invoked through
+  a `node_modules/.bin` symlink, so every command silently no-opped and exited 0. Replaced with
+  an exported, unit-tested `isMainModule()` predicate that realpath-resolves both sides.
+- **Duplicate-key drift detector no longer false-positives on prod/preview pairs.** Drift identity
+  now includes `is_preview`, so a production row and a preview row that share a key with different
+  values are not flagged as drift. True same-scope duplicates are still detected.
+
+### Notes
+
+- Verified against the Coolify OpenAPI (`coollabsio/coolify` main) — env read model
+  (`EnvironmentVariable`) vs. env write request bodies — and issue #6847.
+- **BREAKING (types only):** the never-valid `is_build_time` field was removed from the write
+  surface (`EnvWriteItemSchema` / `EnvFlags`). This only affects code that constructs a write item
+  or flags object literal explicitly typed as those and sets `is_build_time` — such code was
+  already getting a runtime 422 from Coolify. The CLI never sent it and no known consumer sets it.
+- Git tag: `v0.3.0`
+
+[0.3.0]: https://github.com/Coriou/coolify-harness-api/compare/v0.2.0...v0.3.0
+
 ## [0.2.0] - 2026-07-09
 
 ### Added

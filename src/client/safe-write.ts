@@ -2,9 +2,10 @@ import type { EnvVar, EnvWriteItem } from './schemas.js';
 import type { Logger } from '../logging/index.js';
 import type { CoolifyClient } from './coolify.js';
 
+// Only the flags Coolify accepts on the WRITE path. Build-time is intentionally absent: it is
+// not settable via the env-write API (the server 422s on it). See EnvWriteItemSchema.
 export interface EnvFlags {
   is_preview: boolean;
-  is_build_time: boolean;
   is_literal: boolean;
   is_multiline: boolean;
   is_shown_once: boolean;
@@ -62,13 +63,19 @@ export function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePl
   const duplicateKeyDrift: DuplicateKeyDrift[] = [];
   const warnings: PlanWarning[] = [];
 
-  // Surface ALL duplicate-key drift, write or not.
-  for (const [key, rows] of byKey) {
-    if (rows.length > 1) {
-      const values = rows.map((r) => r.value);
-      if (new Set(values).size > 1) {
-        duplicateKeyDrift.push({ key, values });
-      }
+  // Surface ALL duplicate-key drift, write or not. Drift identity is (key, is_preview): a prod
+  // row and a preview row may legitimately share a key with different values, so they are NOT
+  // drift. Only two rows in the SAME scope with the same key but differing values are drift.
+  const byScopedKey = new Map<string, { key: string; values: string[] }>();
+  for (const row of current) {
+    const id = `${row.is_preview ? 'preview' : 'prod'} ${row.key}`;
+    const entry = byScopedKey.get(id);
+    if (entry) entry.values.push(row.value);
+    else byScopedKey.set(id, { key: row.key, values: [row.value] });
+  }
+  for (const { key, values } of byScopedKey.values()) {
+    if (values.length > 1 && new Set(values).size > 1) {
+      duplicateKeyDrift.push({ key, values });
     }
   }
 

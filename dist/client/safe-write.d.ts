@@ -3,7 +3,6 @@ import type { Logger } from '../logging/index.js';
 import type { CoolifyClient } from './coolify.js';
 export interface EnvFlags {
     is_preview: boolean;
-    is_build_time: boolean;
     is_literal: boolean;
     is_multiline: boolean;
     is_shown_once: boolean;

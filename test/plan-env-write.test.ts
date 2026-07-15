@@ -7,6 +7,12 @@ const ev = (key: string, value: string, uuid = key): EnvVar => ({
   is_multiline: false, is_shown_once: false,
 });
 
+// Like ev(), but lets a test set is_preview to exercise prod/preview drift identity (Bug 3).
+const evp = (key: string, value: string, is_preview: boolean, uuid = `${key}:${String(is_preview)}`): EnvVar => ({
+  uuid, key, value, is_preview, is_build_time: false, is_literal: false,
+  is_multiline: false, is_shown_once: false,
+});
+
 describe('planEnvWrite', () => {
   it('classifies creates / updates / unchanged', () => {
     const current = [ev('A', '1'), ev('B', '2')];
@@ -32,5 +38,29 @@ describe('planEnvWrite', () => {
   it('threads flag overrides into the write item', () => {
     const plan = planEnvWrite([], { values: { K: 'pem' }, flags: { K: { is_multiline: true } } });
     expect(plan.creates).toEqual([{ key: 'K', value: 'pem', is_multiline: true }]);
+  });
+
+  // Bug 3: duplicate-key drift identity must include is_preview. A prod row and a preview row can
+  // legitimately share a key with different values; that is not drift.
+  it('does NOT flag a legit prod/preview pair (same key, different is_preview) as drift', () => {
+    const current = [evp('API_URL', 'https://prod', false), evp('API_URL', 'https://preview', true)];
+    const plan = planEnvWrite(current, { values: {} });
+    expect(plan.duplicateKeyDrift).toEqual([]);
+  });
+
+  it('still flags true drift within the SAME scope (two prod rows, differing values)', () => {
+    const current = [evp('SECRET', 'a', false, 'u1'), evp('SECRET', 'b', false, 'u2')];
+    const plan = planEnvWrite(current, { values: {} });
+    expect(plan.duplicateKeyDrift).toEqual([{ key: 'SECRET', values: ['a', 'b'] }]);
+  });
+
+  it('flags drift for a same-scope preview pair but not across scopes', () => {
+    const current = [
+      evp('K', 'p1', true, 'u1'), // preview
+      evp('K', 'p2', true, 'u2'), // preview (conflicts with the other preview row)
+      evp('K', 'prod', false, 'u3'), // prod (single in its scope — not drift)
+    ];
+    const plan = planEnvWrite(current, { values: {} });
+    expect(plan.duplicateKeyDrift).toEqual([{ key: 'K', values: ['p1', 'p2'] }]);
   });
 });

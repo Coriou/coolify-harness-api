@@ -40,6 +40,22 @@ describe('CoolifyClient', () => {
     expect(JSON.parse(init.body as string)).toEqual({ data: [{ key: 'NODE_ENV', value: 'production' }] });
   });
 
+  // Bug 1 (write): the current Coolify env-write API accepts only key/value/is_preview/is_literal/
+  // is_multiline/is_shown_once and 422s ("This field is not allowed.") on any build-time field. The
+  // client Zod-validates the outgoing bulk body so a non-writable field can never reach the wire,
+  // even if an untyped caller injects one.
+  it('upsertEnvs strips non-writable fields (build-time) from the bulk body it sends', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(resp(200, fxText('bulk-upsert-response.json')));
+    const client = new CoolifyClient(appTarget, deps(fetchImpl));
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await client.upsertEnvs([{ key: 'NODE_ENV', value: 'production', is_preview: true, is_build_time: true } as any]);
+    const [, init] = fetchImpl.mock.calls[0]! as [string, RequestInit];
+    const sent = JSON.parse(init.body as string);
+    // is_preview is a valid write field and is kept; the build-time field is dropped entirely.
+    expect(sent).toEqual({ data: [{ key: 'NODE_ENV', value: 'production', is_preview: true }] });
+    expect(JSON.stringify(sent)).not.toMatch(/build/i);
+  });
+
   it('deploy on an application returns deploymentUuid', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(resp(200, fxText('deploy-ack-application.json')));
     const ack = await new CoolifyClient(appTarget, deps(fetchImpl)).deploy();

@@ -1,6 +1,6 @@
 {
   "name": "coolify-harness",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Coolify harness for AI agents — safe CLI + typed library to manage deployments, read/write env vars (dry-run by default + keys-only audit), view logs/status, and generate living env catalogs from Zod schemas. Works great inside Claude Code, Cursor, Windsurf and other agentic workflows.",
   "keywords": [
     "coolify",

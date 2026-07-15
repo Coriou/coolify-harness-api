@@ -20,13 +20,21 @@ export function planEnvWrite(current, desired) {
     const unchanged = [];
     const duplicateKeyDrift = [];
     const warnings = [];
-    // Surface ALL duplicate-key drift, write or not.
-    for (const [key, rows] of byKey) {
-        if (rows.length > 1) {
-            const values = rows.map((r) => r.value);
-            if (new Set(values).size > 1) {
-                duplicateKeyDrift.push({ key, values });
-            }
+    // Surface ALL duplicate-key drift, write or not. Drift identity is (key, is_preview): a prod
+    // row and a preview row may legitimately share a key with different values, so they are NOT
+    // drift. Only two rows in the SAME scope with the same key but differing values are drift.
+    const byScopedKey = new Map();
+    for (const row of current) {
+        const id = `${row.is_preview ? 'preview' : 'prod'} ${row.key}`;
+        const entry = byScopedKey.get(id);
+        if (entry)
+            entry.values.push(row.value);
+        else
+            byScopedKey.set(id, { key: row.key, values: [row.value] });
+    }
+    for (const { key, values } of byScopedKey.values()) {
+        if (values.length > 1 && new Set(values).size > 1) {
+            duplicateKeyDrift.push({ key, values });
         }
     }
     for (const [key, value] of Object.entries(desired.values)) {

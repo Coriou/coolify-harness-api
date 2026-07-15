@@ -1,25 +1,51 @@
 import { z } from 'zod';
 import { CoolifyContractError } from '../errors/index.js';
 
-export const EnvVarSchema = z
+/**
+ * Env-var item as returned by Coolify's READ endpoints (list/get envs).
+ *
+ * Coolify >= 4.0.0-beta.463 renamed the build-time flag `is_build_time` -> `is_buildtime`
+ * (and added `is_runtime`); older instances still send `is_build_time`. We accept either
+ * spelling and normalize onto the canonical `is_build_time` so the rest of the codebase
+ * (safe-write, CLI) only ever reasons about one field name. `.passthrough()` retains whatever
+ * raw fields the server actually sent (e.g. `is_buildtime`, `is_runtime`, `comment`).
+ */
+const EnvVarReadSchema = z
   .object({
     uuid: z.string(),
     key: z.string(),
     value: z.string(),
     is_preview: z.boolean(),
-    is_build_time: z.boolean(),
+    is_build_time: z.boolean().optional(), // Coolify < beta.463
+    is_buildtime: z.boolean().optional(), // Coolify >= beta.463
     is_literal: z.boolean(),
     is_multiline: z.boolean(),
     is_shown_once: z.boolean(),
   })
   .passthrough();
+
+export const EnvVarSchema = EnvVarReadSchema.transform((row) => ({
+  ...row,
+  // Canonical, always-present build-time flag. Prefer the older explicit name if a server ever
+  // sends both; fall back to the newer name; default false when neither is present.
+  is_build_time: row.is_build_time ?? row.is_buildtime ?? false,
+}));
 export type EnvVar = z.infer<typeof EnvVarSchema>;
 
+/**
+ * Fields Coolify accepts when WRITING env vars (POST/PATCH .../envs and .../envs/bulk).
+ *
+ * The write API accepts ONLY these fields and rejects anything else with HTTP 422
+ * "This field is not allowed." There is NO build-time field on the write path in current
+ * Coolify (neither `is_build_time` nor `is_buildtime`) — build-time is not settable via the
+ * API — so it is deliberately absent here, and `upsertEnvs` validates the request against this
+ * schema so a stray field can never reach the wire. Verified against the Coolify OpenAPI (main)
+ * and coollabsio/coolify#6847. See docs/specs/design.md §3.1.
+ */
 export const EnvWriteItemSchema = z.object({
   key: z.string().min(1),
   value: z.string(),
   is_preview: z.boolean().optional(),
-  is_build_time: z.boolean().optional(),
   is_literal: z.boolean().optional(),
   is_multiline: z.boolean().optional(),
   is_shown_once: z.boolean().optional(),
@@ -90,7 +116,11 @@ export const RuntimeLogsResponseSchema = z
   .passthrough();
 export type RuntimeLogsResponse = z.infer<typeof RuntimeLogsResponseSchema>;
 
-export function parseOrContractError<T>(schema: z.ZodType<T>, raw: unknown, ctx: string): T {
+// The Input generic is pinned to `unknown` rather than defaulting to T. Zod's
+// ZodType<Output, Def, Input = Output> otherwise forces Input === Output, which rejects any
+// schema whose parsed output differs from its input — e.g. EnvVarSchema now `.transform()`s the
+// is_build_time/is_buildtime rename, so its input shape is not its output shape.
+export function parseOrContractError<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, raw: unknown, ctx: string): T {
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
     throw new CoolifyContractError(`Coolify response (${ctx}) failed contract validation`, {

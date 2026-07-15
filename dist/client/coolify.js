@@ -1,5 +1,5 @@
 import { CircuitBreaker, httpRequest } from './http.js';
-import { BulkResponseSchema, DeployAckApplicationSchema, DeployAckServiceSchema, EnvVarSchema, ApplicationSchema, DeploymentSchema, RuntimeLogsResponseSchema, parseOrContractError, } from './schemas.js';
+import { BulkRequestSchema, BulkResponseSchema, DeployAckApplicationSchema, DeployAckServiceSchema, EnvVarSchema, ApplicationSchema, DeploymentSchema, RuntimeLogsResponseSchema, parseOrContractError, } from './schemas.js';
 import { CoolifyAuthError, CoolifyNotFoundError, CoolifyFeatureNotSupportedError } from '../errors/index.js';
 import { waitForDeployment } from './wait.js';
 /** Default page size used for fetching recent deployments when determining "latest". */
@@ -51,7 +51,11 @@ export class CoolifyClient {
         return parseOrContractError(BulkResponseSchema, res.body, 'listEnvs');
     }
     async upsertEnvs(items) {
-        const res = await this.request('/envs/bulk', 'PATCH', { data: items });
+        // Validate + normalize the request at the boundary (design §3.2). This strips any field the
+        // Coolify write API does not accept — e.g. a build-time flag injected by an untyped caller —
+        // which would otherwise 422 ("This field is not allowed.") the entire bulk write.
+        const body = BulkRequestSchema.parse({ data: items });
+        const res = await this.request('/envs/bulk', 'PATCH', body);
         return parseOrContractError(BulkResponseSchema, res.body, 'upsertEnvs');
     }
     async deploy() {

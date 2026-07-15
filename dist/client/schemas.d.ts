@@ -1,10 +1,11 @@
 import { z } from 'zod';
-export declare const EnvVarSchema: z.ZodObject<{
+export declare const EnvVarSchema: z.ZodEffects<z.ZodObject<{
     uuid: z.ZodString;
     key: z.ZodString;
     value: z.ZodString;
     is_preview: z.ZodBoolean;
-    is_build_time: z.ZodBoolean;
+    is_build_time: z.ZodOptional<z.ZodBoolean>;
+    is_buildtime: z.ZodOptional<z.ZodBoolean>;
     is_literal: z.ZodBoolean;
     is_multiline: z.ZodBoolean;
     is_shown_once: z.ZodBoolean;
@@ -13,7 +14,8 @@ export declare const EnvVarSchema: z.ZodObject<{
     key: z.ZodString;
     value: z.ZodString;
     is_preview: z.ZodBoolean;
-    is_build_time: z.ZodBoolean;
+    is_build_time: z.ZodOptional<z.ZodBoolean>;
+    is_buildtime: z.ZodOptional<z.ZodBoolean>;
     is_literal: z.ZodBoolean;
     is_multiline: z.ZodBoolean;
     is_shown_once: z.ZodBoolean;
@@ -22,17 +24,47 @@ export declare const EnvVarSchema: z.ZodObject<{
     key: z.ZodString;
     value: z.ZodString;
     is_preview: z.ZodBoolean;
-    is_build_time: z.ZodBoolean;
+    is_build_time: z.ZodOptional<z.ZodBoolean>;
+    is_buildtime: z.ZodOptional<z.ZodBoolean>;
+    is_literal: z.ZodBoolean;
+    is_multiline: z.ZodBoolean;
+    is_shown_once: z.ZodBoolean;
+}, z.ZodTypeAny, "passthrough">>, {
+    is_build_time: boolean;
+    value: string;
+    uuid: string;
+    key: string;
+    is_preview: boolean;
+    is_literal: boolean;
+    is_multiline: boolean;
+    is_shown_once: boolean;
+    is_buildtime?: boolean | undefined;
+}, z.objectInputType<{
+    uuid: z.ZodString;
+    key: z.ZodString;
+    value: z.ZodString;
+    is_preview: z.ZodBoolean;
+    is_build_time: z.ZodOptional<z.ZodBoolean>;
+    is_buildtime: z.ZodOptional<z.ZodBoolean>;
     is_literal: z.ZodBoolean;
     is_multiline: z.ZodBoolean;
     is_shown_once: z.ZodBoolean;
 }, z.ZodTypeAny, "passthrough">>;
 export type EnvVar = z.infer<typeof EnvVarSchema>;
+/**
+ * Fields Coolify accepts when WRITING env vars (POST/PATCH .../envs and .../envs/bulk).
+ *
+ * The write API accepts ONLY these fields and rejects anything else with HTTP 422
+ * "This field is not allowed." There is NO build-time field on the write path in current
+ * Coolify (neither `is_build_time` nor `is_buildtime`) — build-time is not settable via the
+ * API — so it is deliberately absent here, and `upsertEnvs` validates the request against this
+ * schema so a stray field can never reach the wire. Verified against the Coolify OpenAPI (main)
+ * and coollabsio/coolify#6847. See docs/specs/design.md §3.1.
+ */
 export declare const EnvWriteItemSchema: z.ZodObject<{
     key: z.ZodString;
     value: z.ZodString;
     is_preview: z.ZodOptional<z.ZodBoolean>;
-    is_build_time: z.ZodOptional<z.ZodBoolean>;
     is_literal: z.ZodOptional<z.ZodBoolean>;
     is_multiline: z.ZodOptional<z.ZodBoolean>;
     is_shown_once: z.ZodOptional<z.ZodBoolean>;
@@ -40,7 +72,6 @@ export declare const EnvWriteItemSchema: z.ZodObject<{
     value: string;
     key: string;
     is_preview?: boolean | undefined;
-    is_build_time?: boolean | undefined;
     is_literal?: boolean | undefined;
     is_multiline?: boolean | undefined;
     is_shown_once?: boolean | undefined;
@@ -48,7 +79,6 @@ export declare const EnvWriteItemSchema: z.ZodObject<{
     value: string;
     key: string;
     is_preview?: boolean | undefined;
-    is_build_time?: boolean | undefined;
     is_literal?: boolean | undefined;
     is_multiline?: boolean | undefined;
     is_shown_once?: boolean | undefined;
@@ -59,7 +89,6 @@ export declare const BulkRequestSchema: z.ZodObject<{
         key: z.ZodString;
         value: z.ZodString;
         is_preview: z.ZodOptional<z.ZodBoolean>;
-        is_build_time: z.ZodOptional<z.ZodBoolean>;
         is_literal: z.ZodOptional<z.ZodBoolean>;
         is_multiline: z.ZodOptional<z.ZodBoolean>;
         is_shown_once: z.ZodOptional<z.ZodBoolean>;
@@ -67,7 +96,6 @@ export declare const BulkRequestSchema: z.ZodObject<{
         value: string;
         key: string;
         is_preview?: boolean | undefined;
-        is_build_time?: boolean | undefined;
         is_literal?: boolean | undefined;
         is_multiline?: boolean | undefined;
         is_shown_once?: boolean | undefined;
@@ -75,7 +103,6 @@ export declare const BulkRequestSchema: z.ZodObject<{
         value: string;
         key: string;
         is_preview?: boolean | undefined;
-        is_build_time?: boolean | undefined;
         is_literal?: boolean | undefined;
         is_multiline?: boolean | undefined;
         is_shown_once?: boolean | undefined;
@@ -85,7 +112,6 @@ export declare const BulkRequestSchema: z.ZodObject<{
         value: string;
         key: string;
         is_preview?: boolean | undefined;
-        is_build_time?: boolean | undefined;
         is_literal?: boolean | undefined;
         is_multiline?: boolean | undefined;
         is_shown_once?: boolean | undefined;
@@ -95,19 +121,19 @@ export declare const BulkRequestSchema: z.ZodObject<{
         value: string;
         key: string;
         is_preview?: boolean | undefined;
-        is_build_time?: boolean | undefined;
         is_literal?: boolean | undefined;
         is_multiline?: boolean | undefined;
         is_shown_once?: boolean | undefined;
     }[];
 }>;
 export type BulkRequest = z.infer<typeof BulkRequestSchema>;
-export declare const BulkResponseSchema: z.ZodArray<z.ZodObject<{
+export declare const BulkResponseSchema: z.ZodArray<z.ZodEffects<z.ZodObject<{
     uuid: z.ZodString;
     key: z.ZodString;
     value: z.ZodString;
     is_preview: z.ZodBoolean;
-    is_build_time: z.ZodBoolean;
+    is_build_time: z.ZodOptional<z.ZodBoolean>;
+    is_buildtime: z.ZodOptional<z.ZodBoolean>;
     is_literal: z.ZodBoolean;
     is_multiline: z.ZodBoolean;
     is_shown_once: z.ZodBoolean;
@@ -116,7 +142,8 @@ export declare const BulkResponseSchema: z.ZodArray<z.ZodObject<{
     key: z.ZodString;
     value: z.ZodString;
     is_preview: z.ZodBoolean;
-    is_build_time: z.ZodBoolean;
+    is_build_time: z.ZodOptional<z.ZodBoolean>;
+    is_buildtime: z.ZodOptional<z.ZodBoolean>;
     is_literal: z.ZodBoolean;
     is_multiline: z.ZodBoolean;
     is_shown_once: z.ZodBoolean;
@@ -125,7 +152,28 @@ export declare const BulkResponseSchema: z.ZodArray<z.ZodObject<{
     key: z.ZodString;
     value: z.ZodString;
     is_preview: z.ZodBoolean;
-    is_build_time: z.ZodBoolean;
+    is_build_time: z.ZodOptional<z.ZodBoolean>;
+    is_buildtime: z.ZodOptional<z.ZodBoolean>;
+    is_literal: z.ZodBoolean;
+    is_multiline: z.ZodBoolean;
+    is_shown_once: z.ZodBoolean;
+}, z.ZodTypeAny, "passthrough">>, {
+    is_build_time: boolean;
+    value: string;
+    uuid: string;
+    key: string;
+    is_preview: boolean;
+    is_literal: boolean;
+    is_multiline: boolean;
+    is_shown_once: boolean;
+    is_buildtime?: boolean | undefined;
+}, z.objectInputType<{
+    uuid: z.ZodString;
+    key: z.ZodString;
+    value: z.ZodString;
+    is_preview: z.ZodBoolean;
+    is_build_time: z.ZodOptional<z.ZodBoolean>;
+    is_buildtime: z.ZodOptional<z.ZodBoolean>;
     is_literal: z.ZodBoolean;
     is_multiline: z.ZodBoolean;
     is_shown_once: z.ZodBoolean;
@@ -259,4 +307,4 @@ export declare const RuntimeLogsResponseSchema: z.ZodObject<{
     logs: z.ZodOptional<z.ZodString>;
 }, z.ZodTypeAny, "passthrough">>;
 export type RuntimeLogsResponse = z.infer<typeof RuntimeLogsResponseSchema>;
-export declare function parseOrContractError<T>(schema: z.ZodType<T>, raw: unknown, ctx: string): T;
+export declare function parseOrContractError<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, raw: unknown, ctx: string): T;
