@@ -32,20 +32,25 @@ export interface EnvWritePlan {
     readonly warnings: PlanWarning[];
 }
 export declare function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePlan;
+export type AuditResourceKind = 'application' | 'service' | 'database' | 'server' | 'deployment';
+export type AuditAction = 'env.apply' | 'env.delete' | 'deploy' | 'restart' | 'compose.update' | 'proxy.configuration' | 'proxy.restart' | 'database.update' | 'database.backup' | 'deployment.cancel';
 export interface AuditRecord {
     ts: string;
     actor: string;
     instanceUrl: string;
-    resourceKind: 'application' | 'service';
+    resourceKind: AuditResourceKind;
     resourceUuid: string;
-    action: 'env.apply' | 'deploy' | 'restart';
+    action: AuditAction;
     planSummary: {
         creates: number;
         updates: number;
         unchanged: number;
         duplicateKeyDrift: number;
     };
+    /** Env keys or field names touched — never their values. */
     keysAffected: string[];
+    /** Non-secret switches of the call (e.g. force, latest, an image reference). Never env/compose values. */
+    options?: Record<string, string | number | boolean>;
     outcome: 'success' | 'failure';
     error?: string;
 }
@@ -59,20 +64,22 @@ export interface ApplyDeps {
     logger: Logger;
     target: {
         instanceUrl: string;
-        kind: 'application' | 'service';
+        kind: AuditResourceKind;
         uuid: string;
     };
     actor: string;
     writeAudit: (record: AuditRecord) => Promise<void>;
     now?: () => Date;
 }
+export declare const EMPTY_PLAN: EnvWritePlan;
 export declare function buildAuditRecord(args: {
     now: Date;
     actor: string;
     target: ApplyDeps['target'];
     action: AuditRecord['action'];
-    plan: EnvWritePlan;
+    plan?: EnvWritePlan;
     keysAffected: string[];
+    options?: Record<string, string | number | boolean>;
     outcome: AuditRecord['outcome'];
     error?: string;
 }): AuditRecord;

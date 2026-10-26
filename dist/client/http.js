@@ -36,6 +36,21 @@ export class CircuitBreaker {
 }
 const UNMARSHAL_RE = /cannot unmarshal array/i;
 const defaultSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Parse a response body. Most Coolify endpoints return JSON, but `/version` and `/health` return a
+ * bare `text/html` string (e.g. `4.5.0`, `OK`) that is not valid JSON. Fall back to the raw text
+ * rather than letting `JSON.parse` throw a SyntaxError out of the transport layer.
+ */
+function parseBody(text) {
+    if (text.length === 0)
+        return undefined;
+    try {
+        return JSON.parse(text);
+    }
+    catch {
+        return text;
+    }
+}
 function bodyHasUnmarshalQuirk(body) {
     if (body && typeof body === 'object' && 'message' in body) {
         const msg = body.message; // reason: narrowed by the 'message' in body guard above
@@ -81,7 +96,7 @@ export async function httpRequest(url, init, opts) {
         }
         const status = response.status;
         const text = await response.text();
-        const body = text.length > 0 ? JSON.parse(text) : undefined;
+        const body = parseBody(text);
         if (status >= 200 && status < 300) {
             breaker.recordSuccess();
             return { status, body };

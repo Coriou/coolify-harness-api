@@ -10,21 +10,29 @@ export function loadRegistry(raw) {
     }
     return parsed.data;
 }
+export function resolveInstance(registry, instanceName, env) {
+    const instance = registry.instances[instanceName];
+    if (!instance) {
+        const known = Object.keys(registry.instances).join(', ');
+        throw new ConfigError(`Unknown instance '${instanceName}'. Known instances: ${known}`);
+    }
+    const token = env[instance.tokenEnv];
+    if (token === undefined || token === '') {
+        throw new MissingTokenError(`Env var '${instance.tokenEnv}' (token for instance '${instanceName}') is not set`, { tokenEnv: instance.tokenEnv });
+    }
+    return { instanceUrl: instance.url, token };
+}
 export function resolveTarget(registry, targetName, env) {
     const target = registry.targets[targetName];
     if (!target) {
         const known = Object.keys(registry.targets).join(', ');
         throw new ConfigError(`Unknown target '${targetName}'. Known targets: ${known}`);
     }
-    const instance = registry.instances[target.instance];
-    if (!instance) {
+    if (!registry.instances[target.instance]) {
         throw new ConfigError(`Target '${targetName}' references unknown instance '${target.instance}'`);
     }
-    const token = env[instance.tokenEnv];
-    if (token === undefined || token === '') {
-        throw new MissingTokenError(`Env var '${instance.tokenEnv}' (token for instance '${target.instance}') is not set`, { tokenEnv: instance.tokenEnv });
-    }
-    return { instanceUrl: instance.url, kind: target.kind, uuid: target.uuid, token };
+    const { instanceUrl, token } = resolveInstance(registry, target.instance, env);
+    return { instanceUrl, kind: target.kind, uuid: target.uuid, token };
 }
 export async function loadConfig(configPath) {
     const mod = await import(configPath);

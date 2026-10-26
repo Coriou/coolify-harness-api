@@ -1,22 +1,24 @@
+import { print, printJson, warn } from '../deps.js';
 import { withScope } from '../scope.js';
 import { EXIT } from '../main.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
 export async function logsCmd(args, deps) {
     if (!args.app) {
-        process.stderr.write('logs: --app <name> is required\n');
+        warn('logs: --app <name> is required');
         return EXIT.usage;
     }
     const target = deps.resolveTargetFor(args);
     const client = deps.clientFactory(target);
     const wantBuild = args.build || !!args.deployment;
-    const wantRuntime = args.runtime || (!args.build && !args.deployment);
     try {
         if (wantBuild) {
             let depUuid = args.deployment;
             if (!depUuid) {
                 const latest = await withScope('read:sensitive', () => client.getLatestDeployment());
                 if (!latest) {
-                    process.stderr.write('logs: no deployments found for build logs\n');
+                    warn(target.kind === 'application'
+                        ? 'logs: no deployments found for build logs'
+                        : `logs: a ${target.kind} has no build/deployment logs; use runtime logs (drop --build)`);
                     return EXIT.usage;
                 }
                 depUuid = latest.deployment_uuid;
@@ -30,35 +32,38 @@ export async function logsCmd(args, deps) {
                 logs: dep.logs ?? '',
             };
             if (args.json) {
-                process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+                printJson(out);
             }
             else {
-                process.stdout.write(`build logs for ${depUuid} [${dep.status}]\n`);
-                process.stdout.write('---\n');
+                print(`build logs for ${depUuid} [${dep.status}]`);
+                print('---');
                 process.stdout.write((dep.logs ?? '') + (dep.logs ? '\n' : ''));
-                process.stdout.write('---\n');
-                process.stdout.write('NOTE: use --json for full machine-readable output.\n');
+                print('---');
+                print('NOTE: use --json for full machine-readable output.');
             }
             return EXIT.ok;
         }
         // runtime (default)
         const lines = args.lines;
-        const r = await withScope('read:sensitive', () => client.getRuntimeLogs(lines));
+        const r = await withScope('read:sensitive', () => client.getRuntimeLogs(lines, {
+            ...(args.service !== undefined ? { service: args.service } : {}),
+            ...(args.timestamps ? { timestamps: true } : {}),
+        }));
         if (args.json) {
-            process.stdout.write(JSON.stringify({ type: 'runtime', lines: lines ?? null, logs: r.logs }, null, 2) + '\n');
+            printJson({ type: 'runtime', lines: lines ?? null, service: args.service ?? null, logs: r.logs });
         }
         else {
-            process.stdout.write(`runtime logs${lines ? ` (last ${lines})` : ''}\n`);
-            process.stdout.write('---\n');
+            print(`runtime logs${args.service ? ` for ${args.service}` : ''}${lines ? ` (last ${lines})` : ''}`);
+            print('---');
             process.stdout.write(r.logs + (r.logs ? '\n' : ''));
-            process.stdout.write('---\n');
-            process.stdout.write('NOTE: use --json for full machine-readable output.\n');
+            print('---');
+            print('NOTE: use --json for full machine-readable output.');
         }
         return EXIT.ok;
     }
     catch (err) {
         if (err instanceof CoolifyFeatureNotSupportedError) {
-            process.stderr.write(`${err.message}\n`);
+            warn(err.message);
             return EXIT.usage;
         }
         throw err;

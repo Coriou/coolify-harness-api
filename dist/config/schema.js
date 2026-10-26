@@ -5,7 +5,7 @@ export const InstanceSchema = z.object({
 });
 export const TargetSchema = z.object({
     instance: z.string().min(1),
-    kind: z.enum(['application', 'service']),
+    kind: z.enum(['application', 'service', 'database']),
     uuid: z.string().min(1),
 });
 export const ProjectRegistrySchema = z.object({

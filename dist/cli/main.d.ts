@@ -6,6 +6,8 @@ export declare const EXIT: {
     readonly drift: 4;
     readonly authScope: 5;
     readonly lockedVar: 6;
+    readonly deployFailed: 7;
+    readonly waitTimeout: 8;
 };
 export declare function errorToExitCode(err: unknown): number;
 export declare function main(argv: string[]): Promise<number>;

@@ -58,7 +58,11 @@ export function planEnvWrite(current, desired) {
     }
     return { creates, updates, unchanged, duplicateKeyDrift, lockedSkips: [], warnings };
 }
+export const EMPTY_PLAN = {
+    creates: [], updates: [], unchanged: [], duplicateKeyDrift: [], lockedSkips: [], warnings: [],
+};
 export function buildAuditRecord(args) {
+    const plan = args.plan ?? EMPTY_PLAN;
     const base = {
         ts: args.now.toISOString(),
         actor: args.actor,
@@ -67,12 +71,13 @@ export function buildAuditRecord(args) {
         resourceUuid: args.target.uuid,
         action: args.action,
         planSummary: {
-            creates: args.plan.creates.length,
-            updates: args.plan.updates.length,
-            unchanged: args.plan.unchanged.length,
-            duplicateKeyDrift: args.plan.duplicateKeyDrift.length,
+            creates: plan.creates.length,
+            updates: plan.updates.length,
+            unchanged: plan.unchanged.length,
+            duplicateKeyDrift: plan.duplicateKeyDrift.length,
         },
         keysAffected: args.keysAffected,
+        ...(args.options !== undefined ? { options: args.options } : {}),
         outcome: args.outcome,
     };
     return args.error === undefined ? base : { ...base, error: args.error };
