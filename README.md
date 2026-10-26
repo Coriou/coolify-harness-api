@@ -168,6 +168,7 @@ coolify-harness env diff --app my-app [--from-file .env] [--set KEY=VALUE] [--js
 - `--fail-on-drift` causes exit 4 if any drift is detected.
 - `--json` emits machine-readable JSON output.
 - `env diff` / `env apply` need `read:sensitive`; without it Coolify withholds values and the harness exits 5 rather than planning against empty values.
+- **Production and preview rows are separate.** Coolify keeps a key's production row and its preview-deployment row apart, and a bulk write touches exactly one scope. `env diff` / `env apply` compare and write **production** rows by default, and `--preview` switches to preview rows. When the other scope's row of a key you are writing holds a different value, it is listed as `not written (preview row differs): KEY` (JSON: `otherScope`). It is never silently counted as a change.
 
 ### Apply (write env vars)
 
@@ -347,7 +348,7 @@ await inst.updateDatabase(dbUuid, { is_public: false });
 
 - **No auto-redeploy on env change** — env changes are inert until you explicitly run `deploy`.
 - **Compose-locked vars** — `env delete` refuses (exit 6) to delete a var the compose still references or Coolify manages, because Coolify would re-create it on the next parse.
-- **Duplicate-key drift** — if Coolify has multiple entries with the same key (can occur with some bulk operations), the library detects this, surfaces the duplicates, and repairs them by setting all copies to the single desired value.
+- **Duplicate-key drift** — two rows of the same key *in the same scope* (production or preview) with different values are detected and surfaced. Coolify's bulk write updates only one of them (`where('key')->first()`), so the apply reports a confirmation mismatch until the extras are removed with `env delete`. A production + preview pair is not drift.
 - **Bulk merge** — `env apply` uses Coolify's bulk upsert endpoint. On a Coolify upgrade, re-record fixtures and re-run live-smoke to confirm the bulk endpoint contract has not changed.
 - **Build-time flag rename** — Coolify ≥ 4.0.0-beta.463 renamed the env-var build-time flag on reads from `is_build_time` to `is_buildtime` (and added `is_runtime`). The read schema accepts either and normalizes to a canonical `is_build_time`. Build-time is **not settable via the API** — the write endpoints reject any build-time field with HTTP 422 — so the harness never sends one.
 - **Nullable columns** — Coolify sends unset fields as JSON `null` (e.g. `git_full_url`, `health_check_port`, and `commit_message` on a queued deployment). All response schemas accept `null`, which is what fixed `status`, `deploy --wait` and `deployment` on 4.3.16+.

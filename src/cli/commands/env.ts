@@ -61,6 +61,7 @@ function printPlan(plan: ReturnType<typeof planEnvWrite>, json: boolean): void {
     process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
     return;
   }
+  process.stdout.write(`scope: ${plan.scope ?? 'production'}\n`);
   process.stdout.write(`creates: ${plan.creates.map((c) => c.key).join(', ') || '(none)'}\n`);
   process.stdout.write(`updates: ${plan.updates.map((u) => u.key).join(', ') || '(none)'}\n`);
   process.stdout.write(`unchanged: ${plan.unchanged.length}\n`);
@@ -68,6 +69,13 @@ function printPlan(plan: ReturnType<typeof planEnvWrite>, json: boolean): void {
     process.stdout.write(`DUPLICATE-KEY DRIFT: ${plan.duplicateKeyDrift.map((d) => d.key).join(', ')}\n`);
   }
   for (const w of plan.warnings) process.stdout.write(`warning: ${w.message}\n`);
+  const other = plan.otherScope ?? [];
+  if (other.length > 0) {
+    const otherName = other[0]!.scope;
+    process.stdout.write(
+      `not written (${otherName} row differs): ${other.map((o) => o.key).join(', ')} — ${otherName === 'preview' ? 're-run with --preview to update preview rows' : 'drop --preview to update production rows'}\n`,
+    );
+  }
   process.stdout.write('NOTE: env changes are inert until a separate redeploy.\n');
 }
 
@@ -77,7 +85,7 @@ export async function envDiff(args: ParsedArgs, deps: EnvCmdDeps): Promise<numbe
   const current = await withScope('read:sensitive', () => client.listEnvs());
   requireValues(current);
   const merged = await resolveValues(args, deps);
-  const plan = planEnvWrite(current, { values: merged });
+  const plan = planEnvWrite(current, { values: merged, scope: args.preview ? 'preview' : 'production' });
   printPlan(plan, args.json);
   if (args.failOnDrift && plan.duplicateKeyDrift.length > 0) {
     throw new DuplicateKeyDriftError('Duplicate-key drift detected', {
@@ -93,7 +101,7 @@ export async function envApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<numb
   const current = await withScope('read:sensitive', () => client.listEnvs());
   requireValues(current);
   const merged = await resolveValues(args, deps);
-  const plan = planEnvWrite(current, { values: merged });
+  const plan = planEnvWrite(current, { values: merged, scope: args.preview ? 'preview' : 'production' });
   printPlan(plan, args.json);
   if (args.failOnDrift && plan.duplicateKeyDrift.length > 0) {
     throw new DuplicateKeyDriftError('Duplicate-key drift detected', {

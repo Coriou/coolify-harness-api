@@ -20,6 +20,13 @@ the operations the API does not expose: `docs/coolify-4.5-api-coverage.md`.
 - `/version` and `/health` return plain text; the transport no longer throws on non-JSON bodies.
 - Env listing with a token lacking `read:sensitive` (Coolify omits `value`) no longer fails the
   contract; `env diff`/`env apply` exit 5 with a clear scope message instead.
+- **`env apply` reported "confirmation mismatch" and `env diff` never converged for keys with
+  both a production and a preview row** (seen live on 4.5.0). Coolify's bulk write touches one
+  scope only (no `is_preview` → production), but planning and confirmation merged both scopes.
+  Plans are now scoped (`DesiredEnv.scope`, default `production`; CLI `--preview`), confirmation
+  checks every row of the key in that scope, and a differing other-scope row is reported as
+  `otherScope` / "not written", not as a pending update. Same-scope duplicates now warn
+  correctly that Coolify updates only one of the rows.
 - CLI parsing: `--flag=value`, `env-diff` / `env:diff` spellings, flags before the command,
   `help` / `--help`.
 
