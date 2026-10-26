@@ -95,3 +95,17 @@ export class CoolifyWaitTimeoutError extends CoolifyHarnessError {
     this.lastStatus = lastStatus;
   }
 }
+
+/**
+ * A non-auth, non-404 HTTP error from Coolify (400 / 409 / 422 / 5xx after retries). Carries the
+ * server's own `message` and, for 422, the names of the rejected fields (never their values).
+ */
+export class CoolifyRequestError extends CoolifyHarnessError {
+  readonly status: number;
+  readonly fields: string[];
+  constructor(message: string, opts: { status: number; fields?: string[] }) {
+    super(message, 'COOLIFY_REQUEST');
+    this.status = opts.status;
+    this.fields = opts.fields ?? [];
+  }
+}

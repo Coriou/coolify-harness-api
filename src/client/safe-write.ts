@@ -102,15 +102,28 @@ export function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePl
   return { creates, updates, unchanged, duplicateKeyDrift, lockedSkips: [], warnings };
 }
 
+export type AuditResourceKind = 'application' | 'service' | 'database' | 'server' | 'deployment';
+
+export type AuditAction =
+  | 'env.apply' | 'env.delete'
+  | 'deploy' | 'restart'
+  | 'compose.update'
+  | 'proxy.configuration' | 'proxy.restart'
+  | 'database.update' | 'database.backup'
+  | 'deployment.cancel';
+
 export interface AuditRecord {
   ts: string;
   actor: string;
   instanceUrl: string;
-  resourceKind: 'application' | 'service';
+  resourceKind: AuditResourceKind;
   resourceUuid: string;
-  action: 'env.apply' | 'deploy' | 'restart';
+  action: AuditAction;
   planSummary: { creates: number; updates: number; unchanged: number; duplicateKeyDrift: number };
+  /** Env keys or field names touched — never their values. */
   keysAffected: string[];
+  /** Non-secret switches of the call (e.g. force, latest, an image reference). Never env/compose values. */
+  options?: Record<string, string | number | boolean>;
   outcome: 'success' | 'failure';
   error?: string;
 }
@@ -124,22 +137,28 @@ export interface EnvWriteResult {
 export interface ApplyDeps {
   client: Pick<CoolifyClient, 'upsertEnvs' | 'listEnvs'>;
   logger: Logger;
-  target: { instanceUrl: string; kind: 'application' | 'service'; uuid: string };
+  target: { instanceUrl: string; kind: AuditResourceKind; uuid: string };
   actor: string;
   writeAudit: (record: AuditRecord) => Promise<void>;
   now?: () => Date;
 }
+
+export const EMPTY_PLAN: EnvWritePlan = {
+  creates: [], updates: [], unchanged: [], duplicateKeyDrift: [], lockedSkips: [], warnings: [],
+};
 
 export function buildAuditRecord(args: {
   now: Date;
   actor: string;
   target: ApplyDeps['target'];
   action: AuditRecord['action'];
-  plan: EnvWritePlan;
+  plan?: EnvWritePlan;
   keysAffected: string[];
+  options?: Record<string, string | number | boolean>;
   outcome: AuditRecord['outcome'];
   error?: string;
 }): AuditRecord {
+  const plan = args.plan ?? EMPTY_PLAN;
   const base: AuditRecord = {
     ts: args.now.toISOString(),
     actor: args.actor,
@@ -148,12 +167,13 @@ export function buildAuditRecord(args: {
     resourceUuid: args.target.uuid,
     action: args.action,
     planSummary: {
-      creates: args.plan.creates.length,
-      updates: args.plan.updates.length,
-      unchanged: args.plan.unchanged.length,
-      duplicateKeyDrift: args.plan.duplicateKeyDrift.length,
+      creates: plan.creates.length,
+      updates: plan.updates.length,
+      unchanged: plan.unchanged.length,
+      duplicateKeyDrift: plan.duplicateKeyDrift.length,
     },
     keysAffected: args.keysAffected,
+    ...(args.options !== undefined ? { options: args.options } : {}),
     outcome: args.outcome,
   };
   return args.error === undefined ? base : { ...base, error: args.error };

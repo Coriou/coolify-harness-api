@@ -58,7 +58,7 @@ export type BulkRequest = z.infer<typeof BulkRequestSchema>;
 export const BulkResponseSchema = z.array(EnvVarSchema);
 
 export const DeployAckApplicationSchema = z
-  .object({ message: z.string(), deployment_uuid: z.string().optional() })
+  .object({ message: z.string(), deployment_uuid: z.string().nullish() })
   .passthrough();
 export const DeployAckServiceSchema = z.object({ message: z.string() }).passthrough();
 

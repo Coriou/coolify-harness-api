@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolve } from 'node:path';
-import { loadRegistry, resolveTarget, defineConfig, loadConfig, loadConfigModule } from '../src/config/load.js';
+import { loadRegistry, resolveTarget, resolveInstance, defineConfig, loadConfig, loadConfigModule } from '../src/config/load.js';
 import { ConfigError, MissingTokenError } from '../src/errors/index.js';
 
 const registry = defineConfig({
@@ -20,6 +20,17 @@ describe('config', () => {
   it('resolves a target to instance url + kind + uuid + token', () => {
     const r = resolveTarget(registry, 'my-api', { COOLIFY_PROD_TOKEN: 'tok' });
     expect(r).toEqual({ instanceUrl: 'https://coolify.example.com', kind: 'application', uuid: 'abc-uuid', token: 'tok' });
+  });
+
+  it('resolves an instance by name (for instance-scoped commands) with the same token rules', () => {
+    expect(resolveInstance(registry, 'prod', { COOLIFY_PROD_TOKEN: 'tok' })).toEqual({ instanceUrl: 'https://coolify.example.com', token: 'tok' });
+    expect(() => resolveInstance(registry, 'staging', { COOLIFY_PROD_TOKEN: 'tok' })).toThrow(/Known instances: prod/);
+    expect(() => resolveInstance(registry, 'prod', {})).toThrow(MissingTokenError);
+  });
+
+  it('accepts standalone database targets', () => {
+    const withDb = loadRegistry({ ...registry, targets: { pg: { instance: 'prod', kind: 'database', uuid: 'db-1' } } });
+    expect(resolveTarget(withDb, 'pg', { COOLIFY_PROD_TOKEN: 'tok' }).kind).toBe('database');
   });
 
   it('throws ConfigError on unknown target name', () => {

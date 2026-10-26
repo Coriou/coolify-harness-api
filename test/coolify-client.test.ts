@@ -85,15 +85,25 @@ describe('CoolifyClient', () => {
     expect((app as any).unknown_passthrough_field).toBe('should be retained');
   });
 
-  it('getRuntimeLogs appends ?lines and requires application kind', async () => {
+  it('getRuntimeLogs appends ?lines for applications', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(resp(200, fxText('runtime-logs.json')));
     const client = new CoolifyClient(appTarget, deps(fetchImpl));
     const r = await client.getRuntimeLogs(50);
     expect(fetchImpl.mock.calls[0]![0]).toBe('https://c.example.com/api/v1/applications/app-1/logs?lines=50');
     expect(r.logs).toContain('Listening');
+  });
 
-    const svcClient = new CoolifyClient(svcTarget, deps(vi.fn()));
+  // Coolify >= 4.4 added GET /services/{uuid}/logs?sub_service_name=… — services have logs now, but
+  // only per sub-service. Without one, the client names the valid choices instead of guessing.
+  it('getRuntimeLogs on a service needs a sub-service and lists the valid names when missing', async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => resp(200, fxText('v4.5/service.json')));
+    const svcClient = new CoolifyClient(svcTarget, deps(fetchImpl));
+    await expect(svcClient.getRuntimeLogs()).rejects.toThrow(/umami, postgresql/);
     await expect(svcClient.getRuntimeLogs()).rejects.toBeInstanceOf(CoolifyFeatureNotSupportedError);
+
+    const f2 = vi.fn().mockResolvedValue(resp(200, fxText('runtime-logs.json')));
+    await new CoolifyClient(svcTarget, deps(f2)).getRuntimeLogs(20, { service: 'umami' });
+    expect(f2.mock.calls[0]![0]).toBe('https://c.example.com/api/v1/services/svc-1/logs?sub_service_name=umami&lines=20');
   });
 
   it('listDeployments uses /deployments/applications/{uuid} for apps and normalizes array response', async () => {
@@ -145,7 +155,91 @@ describe('CoolifyClient', () => {
   });
 });
 
+describe('CoolifyClient — 4.5 control-plane surface', () => {
+  const dbTarget: ResolvedTarget = { instanceUrl: 'https://c.example.com', kind: 'database', uuid: 'db-1', token: 'tok' };
+  const ok = (body: unknown): Response => resp(200, JSON.stringify(body));
+
+  it('deploy({ force }) hits /start?force=true; services refuse force without a request', async () => {
+    const f = vi.fn().mockResolvedValue(resp(200, fxText('deploy-ack-application.json')));
+    await new CoolifyClient(appTarget, deps(f)).deploy({ force: true });
+    expect(f.mock.calls[0]![0]).toBe('https://c.example.com/api/v1/applications/app-1/start?force=true');
+    expect((f.mock.calls[0]![1] as RequestInit).method).toBe('POST');
+    const f2 = vi.fn();
+    await expect(new CoolifyClient(svcTarget, deps(f2)).deploy({ force: true })).rejects.toBeInstanceOf(CoolifyFeatureNotSupportedError);
+    expect(f2).not.toHaveBeenCalled();
+  });
+
+  it('restart({ latest }) pulls images on services only', async () => {
+    const f = vi.fn().mockResolvedValue(resp(200, fxText('deploy-ack-service.json')));
+    await new CoolifyClient(svcTarget, deps(f)).restart({ latest: true });
+    expect(f.mock.calls[0]![0]).toBe('https://c.example.com/api/v1/services/svc-1/restart?latest=true');
+    await expect(new CoolifyClient(appTarget, deps(vi.fn())).restart({ latest: true })).rejects.toBeInstanceOf(CoolifyFeatureNotSupportedError);
+  });
+
+  it('deleteEnv DELETEs one env row by uuid for any resource kind', async () => {
+    const f = vi.fn().mockImplementation(async () => ok({ message: 'Environment variable deleted.' }));
+    await new CoolifyClient(svcTarget, deps(f)).deleteEnv('env-9');
+    await new CoolifyClient(dbTarget, deps(f)).deleteEnv('env-9');
+    expect(f.mock.calls.map((c) => [c[0], (c[1] as RequestInit).method])).toEqual([
+      ['https://c.example.com/api/v1/services/svc-1/envs/env-9', 'DELETE'],
+      ['https://c.example.com/api/v1/databases/db-1/envs/env-9', 'DELETE'],
+    ]);
+  });
+
+  it('updateServiceCompose PATCHes base64 docker_compose_raw and is service-only', async () => {
+    const f = vi.fn().mockResolvedValue(ok({ uuid: 'svc-1', domains: [] }));
+    await new CoolifyClient(svcTarget, deps(f)).updateServiceCompose('services:\n  a:\n    image: x:1\n');
+    const [url, init] = f.mock.calls[0]! as [string, RequestInit];
+    expect(url).toBe('https://c.example.com/api/v1/services/svc-1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(init.body as string)).toEqual({ docker_compose_raw: Buffer.from('services:\n  a:\n    image: x:1\n').toString('base64') });
+    await expect(new CoolifyClient(appTarget, deps(vi.fn())).updateServiceCompose('x')).rejects.toBeInstanceOf(CoolifyFeatureNotSupportedError);
+  });
+
+  it('services and databases have no deployment records: [] without a request', async () => {
+    const f = vi.fn();
+    expect(await new CoolifyClient(svcTarget, deps(f)).listDeployments()).toEqual([]);
+    expect(await new CoolifyClient(dbTarget, deps(f)).getLatestDeployment()).toBeUndefined();
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('database targets route envs, start and logs under /databases', async () => {
+    const f = vi.fn().mockImplementation(async (u: string) => (u.endsWith('/logs?lines=5') ? ok({ logs: 'ready' }) : ok({ message: 'Database starting request queued.' })));
+    const c = new CoolifyClient(dbTarget, deps(f));
+    await c.deploy();
+    expect((await c.getRuntimeLogs(5)).logs).toBe('ready');
+    expect(f.mock.calls.map((x) => x[0])).toEqual([
+      'https://c.example.com/api/v1/databases/db-1/start',
+      'https://c.example.com/api/v1/databases/db-1/logs?lines=5',
+    ]);
+  });
+
+  it('compose applications can filter logs by compose service name', async () => {
+    const f = vi.fn().mockResolvedValue(ok({ logs: '' }));
+    await new CoolifyClient(appTarget, deps(f)).getRuntimeLogs(10, { service: 'clickhouse' });
+    expect(f.mock.calls[0]![0]).toBe('https://c.example.com/api/v1/applications/app-1/logs?lines=10&service_name=clickhouse');
+  });
+});
+
 describe('waitForDeployment (pure + client wrapper)', () => {
+  it('tolerates transient poll errors, reports transitions, but never retries auth errors', async () => {
+    const seen: string[] = [];
+    let n = 0;
+    const flaky = async () => {
+      n += 1;
+      if (n === 2) throw new Error('ECONNRESET');
+      return { deployment_uuid: 'd', status: n < 4 ? 'in_progress' : 'finished' };
+    };
+    const res = await waitForDeployment(flaky, 'd', { intervalMs: 1, timeoutMs: 1000, sleep: async () => {}, onStatus: (s) => seen.push(s) });
+    expect(res.status).toBe('finished');
+    expect(seen).toEqual(['in_progress', 'finished']);
+
+    let calls = 0;
+    const denied = async () => { calls += 1; throw new CoolifyAuthError('nope', { status: 401 }); };
+    await expect(waitForDeployment(denied, 'd', { intervalMs: 1, sleep: async () => {} })).rejects.toBeInstanceOf(CoolifyAuthError);
+    expect(calls).toBe(1);
+  });
+
   it('returns immediately on terminal status', async () => {
     const calls: string[] = [];
     const getter = async (uuid: string) => {
