@@ -4,20 +4,22 @@ import { z } from 'zod';
 import { parseArgs } from './args.js';
 import {
   CatalogStaleError, DuplicateKeyDriftError, CoolifyAuthError, CoolifyAuthScopeError, LockedVarError,
-  CoolifyFeatureNotSupportedError, CoolifyWaitTimeoutError,
+  CoolifyFeatureNotSupportedError, CoolifyWaitTimeoutError, ConfigError, MissingTokenError,
 } from '../errors/index.js';
 
 export const EXIT = {
   ok: 0, internal: 1, usage: 2, catalogStale: 3, drift: 4, authScope: 5, lockedVar: 6,
+  deployFailed: 7, waitTimeout: 8,
 } as const;
 
 export function errorToExitCode(err: unknown): number {
   if (err instanceof CatalogStaleError) return EXIT.catalogStale;
   if (err instanceof DuplicateKeyDriftError) return EXIT.drift;
-  if (err instanceof CoolifyAuthScopeError || err instanceof CoolifyAuthError) return EXIT.authScope;
+  if (err instanceof CoolifyAuthScopeError || err instanceof CoolifyAuthError || err instanceof MissingTokenError) return EXIT.authScope;
+  if (err instanceof ConfigError) return EXIT.usage;
   if (err instanceof LockedVarError) return EXIT.lockedVar;
   if (err instanceof CoolifyFeatureNotSupportedError) return EXIT.usage;
-  if (err instanceof CoolifyWaitTimeoutError) return EXIT.internal;
+  if (err instanceof CoolifyWaitTimeoutError) return EXIT.waitTimeout;
   if (err instanceof z.ZodError) return EXIT.usage;
   return EXIT.internal;
 }

@@ -1,37 +1,16 @@
 import { readFile as nodeReadFile } from 'fs/promises';
 import { z } from 'zod';
 import type { ParsedArgs } from '../args.js';
-import type { CoolifyClient } from '../../client/coolify.js';
-import type { ResolvedTarget } from '../../config/schema.js';
-import type { AuditRecord } from '../../client/safe-write.js';
+import type { EnvVar } from '../../client/schemas.js';
 import { planEnvWrite, applyEnvWrite } from '../../client/safe-write.js';
 import { createLogger } from '../../logging/index.js';
-import { DuplicateKeyDriftError } from '../../errors/index.js';
+import { DuplicateKeyDriftError, LockedVarError } from '../../errors/index.js';
 import { EXIT } from '../main.js';
 import { withScope } from '../scope.js';
+import { audited, print, printJson, warn, type CmdDeps } from '../deps.js';
 
-export interface EnvCmdDeps {
-  resolveTargetFor: (args: ParsedArgs) => ResolvedTarget;
-  clientFactory: (target: ResolvedTarget) => Pick<
-    CoolifyClient,
-    | 'listEnvs'
-    | 'upsertEnvs'
-    | 'deploy'
-    | 'restart'
-    // New read-only observability surface (read methods are safe to expose)
-    | 'get'
-    | 'getRuntimeLogs'
-    | 'listDeployments'
-    | 'getDeployment'
-    | 'getLatestDeployment'
-    | 'getLatestBuildLogs'
-    | 'waitForDeployment'
-  >;
-  actor: string;
-  auditSink: (record: AuditRecord) => Promise<void>;
-  now?: () => Date;
-  readFile?: (path: string) => Promise<string>;
-}
+/** Kept for backwards compatibility; every command now shares CmdDeps. */
+export type EnvCmdDeps = CmdDeps;
 
 const defaultReadFile = (path: string): Promise<string> =>
   nodeReadFile(path, 'utf8');
@@ -119,5 +98,109 @@ export async function envApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<numb
     actor: deps.actor, writeAudit: deps.auditSink, ...(deps.now ? { now: deps.now } : {}),
   }));
   process.stdout.write(result.confirmed ? 'Applied and confirmed.\n' : 'Applied (confirmation mismatch — re-check).\n');
+  return EXIT.ok;
+}
+
+const scopeOf = (e: EnvVar): 'preview' | 'prod' => (e.is_preview ? 'preview' : 'prod');
+const flag = (e: EnvVar, k: string): boolean => (e as unknown as Record<string, unknown>)[k] === true; // reason: passthrough fields (is_runtime, is_coolify, ...) are not in the static type
+
+/** `env list`: keys, scope, flags and value LENGTH only — values are never printed. */
+export async function envList(args: ParsedArgs, deps: CmdDeps): Promise<number> {
+  const target = deps.resolveTargetFor(args);
+  const client = deps.clientFactory(target);
+  const rows = await withScope('read', () => client.listEnvs());
+  const view = rows
+    .map((e) => ({
+      uuid: e.uuid,
+      key: e.key,
+      scope: scopeOf(e),
+      value_length: e.value.length,
+      is_build_time: e.is_build_time,
+      is_runtime: flag(e, 'is_runtime'),
+      is_literal: e.is_literal,
+      is_multiline: e.is_multiline,
+      is_shown_once: e.is_shown_once,
+      is_coolify: flag(e, 'is_coolify'),
+    }))
+    .sort((a, b) => a.key.localeCompare(b.key) || a.scope.localeCompare(b.scope));
+  if (args.json) {
+    printJson(view);
+    return EXIT.ok;
+  }
+  for (const v of view) {
+    const flags = ['build_time', 'runtime', 'literal', 'multiline', 'shown_once', 'coolify']
+      .filter((f) => (v as unknown as Record<string, unknown>)[`is_${f}`] === true); // reason: iterating the boolean flag columns built just above
+    print(`${v.key}  [${v.scope}]  len=${v.value_length}${flags.length ? `  ${flags.join(',')}` : ''}  ${v.uuid}`);
+  }
+  print(`${view.length} variable row(s). Values are never printed.`);
+  return EXIT.ok;
+}
+
+/** True when the compose document still references KEY (`${KEY}`, `$KEY`, `KEY=`, `KEY:` or a bare `- KEY`). */
+export function composeReferences(compose: string, key: string): boolean {
+  const k = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\$\\{?${k}\\b|^\\s*-?\\s*['"]?${k}(\\s*[=:]|['"]?\\s*$)`, 'm').test(compose);
+}
+
+/**
+ * `env delete`: delete env rows by key. Dry-run unless --apply.
+ * Refuses (exit 6, LockedVarError) when a key is Coolify-managed (`is_coolify`) or still referenced
+ * by the resource's docker-compose — Coolify would re-create such a row on its next parse, so the
+ * delete would silently not stick. Remove the reference first (`compose set`) or pass --force.
+ */
+export async function envDelete(args: ParsedArgs, deps: CmdDeps): Promise<number> {
+  if (args.keys.length === 0) {
+    warn('env delete: at least one --key <KEY> is required');
+    return EXIT.usage;
+  }
+  const target = deps.resolveTargetFor(args);
+  const client = deps.clientFactory(target);
+  const rows = await withScope('read', () => client.listEnvs());
+  const wantScope = args.preview ? 'preview' : 'prod';
+  const matches = rows.filter((e) => args.keys.includes(e.key) && scopeOf(e) === wantScope);
+  const missing = args.keys.filter((k) => !matches.some((e) => e.key === k));
+
+  let compose: string | null | undefined;
+  if (target.kind === 'service') compose = (await withScope('read', () => client.getService())).docker_compose_raw;
+  else if (target.kind === 'application') {
+    const app = await withScope('read', () => client.get());
+    if (app.build_pack === 'dockercompose') compose = app.docker_compose_raw;
+  }
+  const locked = [...new Set(matches.filter((e) => flag(e, 'is_coolify') || (compose ? composeReferences(compose, e.key) : false)).map((e) => e.key))];
+
+  const plan = { scope: wantScope, delete: matches.map((e) => ({ key: e.key, uuid: e.uuid })), notFound: missing, locked };
+  if (args.json) printJson({ dryRun: !args.apply, ...plan });
+  else {
+    for (const m of plan.delete) print(`delete: ${m.key} [${wantScope}] ${m.uuid}`);
+    for (const k of missing) print(`not found [${wantScope}]: ${k}`);
+    for (const k of locked) print(`LOCKED: ${k} is Coolify-managed or still referenced by the compose file`);
+  }
+  if (matches.length === 0) {
+    warn(`env delete: no ${wantScope} rows match ${args.keys.join(', ')}`);
+    return EXIT.usage;
+  }
+  if (locked.length > 0 && !args.force) {
+    throw new LockedVarError(
+      `Refusing to delete ${locked.join(', ')}: Coolify would re-create ${locked.length > 1 ? 'them' : 'it'} on the next compose parse. Remove the reference from the compose first (compose set), or pass --force.`,
+      { key: locked[0]! },
+    );
+  }
+  if (!args.apply) {
+    if (!args.json) print('Dry-run. Re-run with --apply to delete. NOTE: a running container keeps its env until redeploy/restart.');
+    return EXIT.ok;
+  }
+  const keysAffected = [...new Set(matches.map((e) => e.key))];
+  await audited(deps, {
+    instanceUrl: target.instanceUrl, kind: target.kind, uuid: target.uuid, action: 'env.delete', keysAffected,
+    options: { scope: wantScope, rows: matches.length, ...(args.force ? { force: true } : {}) },
+  }, () => withScope('write', async () => {
+    for (const m of matches) await client.deleteEnv(m.uuid);
+  }));
+  const after = await withScope('read', () => client.listEnvs());
+  const remaining = after.filter((e) => matches.some((m) => m.uuid === e.uuid));
+  if (!args.json) {
+    print(remaining.length === 0 ? `Deleted ${matches.length} row(s) and confirmed.` : `Deleted, but ${remaining.length} row(s) still listed — re-check.`);
+    print('NOTE: env changes are inert until a separate redeploy / restart.');
+  }
   return EXIT.ok;
 }

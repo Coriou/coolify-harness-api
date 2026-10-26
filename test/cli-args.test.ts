@@ -56,7 +56,7 @@ describe('errorToExitCode', () => {
     expect(errorToExitCode(new CatalogStaleError('x', { staleFiles: [] }))).toBe(3);
     expect(errorToExitCode(new CoolifyAuthError('x'))).toBe(5);
     expect(errorToExitCode(new LockedVarError('x', { key: 'K' }))).toBe(6);
-    expect(errorToExitCode(new CoolifyWaitTimeoutError('d-1', 5000, 'queued'))).toBe(1);
+    expect(errorToExitCode(new CoolifyWaitTimeoutError('d-1', 5000, 'queued'))).toBe(8);
     expect(errorToExitCode(new Error('boom'))).toBe(1);
   });
 });

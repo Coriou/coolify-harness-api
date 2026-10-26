@@ -1,53 +1,112 @@
 import type { ParsedArgs } from '../args.js';
-import type { EnvCmdDeps } from './env.js';
+import type { Deployment, DeploymentCancel } from '../../client/schemas.js';
+import { isTerminalDeploymentStatus } from '../../client/schemas.js';
+import { audited, print, printJson, requireInstance, warn, type CmdDeps } from '../deps.js';
 import { withScope } from '../scope.js';
 import { EXIT } from '../main.js';
 
-export async function deploymentsCmd(args: ParsedArgs, deps: EnvCmdDeps): Promise<number> {
-  if (!args.app) {
+/** Deployment lookups work with --app (its instance) or --instance; the uuid is instance-global. */
+function deploymentReader(args: ParsedArgs, deps: CmdDeps): {
+  instanceUrl: string;
+  get: (uuid: string) => Promise<Deployment>;
+  cancel: (uuid: string) => Promise<DeploymentCancel>;
+} {
+  if (args.app && !args.instance) {
+    const target = deps.resolveTargetFor(args);
+    const client = deps.clientFactory(target);
+    return { instanceUrl: target.instanceUrl, get: (u) => client.getDeployment(u), cancel: (u) => client.cancelDeployment(u) };
+  }
+  const { client } = requireInstance(args, deps);
+  return { instanceUrl: client.instanceUrl, get: (u) => client.getDeployment(u), cancel: (u) => client.cancelDeployment(u) };
+}
+
+function printDeploymentLine(d: Deployment): void {
+  print(`  ${d.deployment_uuid}  [${d.status}]  ${d.application_name ?? ''}  ${d.commit ?? ''}  ${d.updated_at ?? d.created_at ?? ''}`);
+}
+
+export async function deploymentsCmd(args: ParsedArgs, deps: CmdDeps): Promise<number> {
+  if (!args.app && !args.instance) {
     const label = args.command === 'deployment' ? 'deployment <uuid>' : 'deployments';
-    process.stderr.write(`${label} --app <name> is required\n`);
+    warn(`${label}: --app <name> or --instance <name> is required`);
     return EXIT.usage;
   }
-  const target = deps.resolveTargetFor(args);
-  const client = deps.clientFactory(target);
 
-  // If a specific deployment uuid is provided via --deployment or (for "deployment <uuid>" cmd), show single
+  // Single deployment: "deployment <uuid>" or --deployment
   const singleUuid = args.deployment;
   if (singleUuid) {
-    const d = await withScope('read:sensitive', () => client.getDeployment(singleUuid));
+    const reader = deploymentReader(args, deps);
+    const d = await withScope('read', () => reader.get(singleUuid));
     if (args.json) {
-      process.stdout.write(JSON.stringify(d, null, 2) + '\n');
+      printJson(d);
     } else {
-      process.stdout.write(`deployment ${d.deployment_uuid} [${d.status}]\n`);
-      if (d.commit) process.stdout.write(`commit: ${d.commit} ${d.commit_message ?? ''}\n`);
-      if (d.created_at) process.stdout.write(`created: ${d.created_at}\n`);
-      process.stdout.write('logs:\n');
-      process.stdout.write((d.logs ?? '(none)') + '\n');
-      process.stdout.write('NOTE: use --json for full machine-readable output.\n');
+      print(`deployment ${d.deployment_uuid} [${d.status}]`);
+      if (d.application_name) print(`application: ${d.application_name}`);
+      if (d.commit) print(`commit: ${d.commit} ${d.commit_message ?? ''}`);
+      if (d.created_at) print(`created: ${d.created_at}`);
+      if (d.finished_at) print(`finished: ${d.finished_at}`);
+      print('logs:');
+      print(d.logs ?? '(none — needs read:sensitive, or not written yet)');
+      print('NOTE: use --json for full machine-readable output.');
     }
     return EXIT.ok;
   }
 
-  // list
-  const listOpts: { skip?: number; take?: number } = {};
-  if (args.skip !== undefined) listOpts.skip = args.skip;
-  if (args.take !== undefined) listOpts.take = args.take;
-  else listOpts.take = 10;
-  const list = await withScope('read:sensitive', () => client.listDeployments(listOpts));
-
-  if (args.json) {
-    process.stdout.write(JSON.stringify(list, null, 2) + '\n');
+  // Team-wide queue: --instance without --app, or --running
+  if (!args.app || args.running) {
+    const { name, client } = requireInstance(args, deps);
+    const list = await withScope('read', () => client.listRunningDeployments());
+    if (args.json) {
+      printJson(list);
+      return EXIT.ok;
+    }
+    print(`queued / in-progress deployments on ${name}: ${list.length}`);
+    for (const d of list) printDeploymentLine(d);
     return EXIT.ok;
   }
 
-  process.stdout.write(`recent deployments for ${args.app} (showing ${list.length})\n`);
-  for (const d of list) {
-    const short = (d.logs ?? '').slice(0, 60).replace(/\n/g, ' ');
-    process.stdout.write(
-      `  ${d.deployment_uuid}  [${d.status}]  ${d.commit ?? ''}  ${d.updated_at ?? d.created_at ?? ''}  ${short}\n`,
-    );
+  // History for one application
+  const target = deps.resolveTargetFor(args);
+  const client = deps.clientFactory(target);
+  const listOpts: { skip?: number; take?: number } = { take: args.take ?? 10 };
+  if (args.skip !== undefined) listOpts.skip = args.skip;
+  const list = await withScope('read', () => client.listDeployments(listOpts));
+
+  if (args.json) {
+    printJson(list);
+    return EXIT.ok;
   }
-  process.stdout.write('NOTE: use --json for full machine-readable output. Use "deployment <UUID> --app X" for full logs.\n');
+  if (target.kind !== 'application') {
+    print(`${args.app} is a ${target.kind}: ${target.kind}s are started/restarted directly and have no deployment history.`);
+    return EXIT.ok;
+  }
+  print(`recent deployments for ${args.app} (showing ${list.length})`);
+  for (const d of list) printDeploymentLine(d);
+  print('NOTE: use --json for full machine-readable output. Use "deployment <UUID> --app X" for full logs.');
+  return EXIT.ok;
+}
+
+/** `deployment cancel <uuid>`: dry-run unless --apply; a finished deployment is reported, not an error. */
+export async function deploymentCancelCmd(args: ParsedArgs, deps: CmdDeps): Promise<number> {
+  const uuid = args.deployment;
+  if (!uuid || (!args.app && !args.instance)) {
+    warn('deployment cancel <uuid>: the deployment uuid and --app <name> or --instance <name> are required');
+    return EXIT.usage;
+  }
+  const reader = deploymentReader(args, deps);
+  const current = await withScope('read', () => reader.get(uuid));
+  if (isTerminalDeploymentStatus(current.status)) {
+    if (args.json) printJson({ deployment_uuid: uuid, status: current.status, cancelled: false, reason: 'already terminal' });
+    else print(`deployment ${uuid} is already ${current.status}; nothing to cancel.`);
+    return EXIT.ok;
+  }
+  if (!args.apply) {
+    if (args.json) printJson({ dryRun: true, deployment_uuid: uuid, status: current.status, application: current.application_name ?? null });
+    else print(`would cancel deployment ${uuid} [${current.status}] of ${current.application_name ?? '?'}. Re-run with --apply.`);
+    return EXIT.ok;
+  }
+  const res = await audited(deps, { instanceUrl: reader.instanceUrl, kind: 'deployment', uuid, action: 'deployment.cancel' },
+    () => withScope('deploy', () => reader.cancel(uuid)));
+  if (args.json) printJson(res);
+  else print(`${res.message} (status: ${res.status ?? '?'})`);
   return EXIT.ok;
 }

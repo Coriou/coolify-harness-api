@@ -12,7 +12,7 @@ const SENSITIVE_KEY_RE =
   /(pass(word|wd|phrase)?|secret|token|api[_-]?key|private[_-]?key|license[_-]?key|credential|auth[_-]?(user|header|hash)|basicauth|dsn|salt|cookie|signature|^value$|^real_value$|custom_labels|custom_docker_run_options)/i;
 
 /** Object keys whose string values are docker-compose / config documents: redact line by line. */
-const DOCUMENT_KEY_RE = /^(docker_compose(_raw)?|configuration|last_saved_proxy_configuration|dockerfile|redis_conf|custom_nginx_configuration|logdrain_custom_config)$/i;
+const DOCUMENT_KEY_RE = /^(compose|docker_compose(_raw)?|configuration|last_saved_proxy_configuration|dockerfile|redis_conf|custom_nginx_configuration|logdrain_custom_config)$/i;
 
 /** An env-style key inside a compose document: UPPER_SNAKE_CASE. */
 const ENV_KEY_RE = /^[A-Z][A-Z0-9_]*$/;
