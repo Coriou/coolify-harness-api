@@ -1,0 +1,11 @@
+[
+  {
+    "id": 12,
+    "uuid": "fake-uuid",
+    "name": "fake-name",
+    "type": "application",
+    "created_at": "2026-10-26T09:00:00.000000Z",
+    "updated_at": "2026-10-26T09:00:00.000000Z",
+    "status": "running:healthy"
+  }
+]

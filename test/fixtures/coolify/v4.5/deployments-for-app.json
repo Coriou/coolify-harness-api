@@ -1,0 +1,37 @@
+{
+  "count": 8,
+  "deployments": [
+    {
+      "id": 555,
+      "application_id": "fake-application_id",
+      "deployment_uuid": "dep-finished-1",
+      "pull_request_id": 0,
+      "force_rebuild": false,
+      "commit": "fake-commit",
+      "status": "finished",
+      "is_webhook": false,
+      "created_at": "2026-10-26T09:00:00.000000Z",
+      "updated_at": "2026-10-26T09:00:00.000000Z",
+      "logs": "fake-logs",
+      "current_process_id": "fake-current_process_id",
+      "restart_only": false,
+      "git_type": null,
+      "server_id": 1,
+      "application_name": "fake-application_name",
+      "server_name": "fake-server_name",
+      "deployment_url": "fake-deployment_url",
+      "destination_id": "fake-destination_id",
+      "only_this_server": false,
+      "rollback": false,
+      "commit_message": "fake-commit_message",
+      "is_api": true,
+      "build_server_id": null,
+      "horizon_job_id": "fake-horizon_job_id",
+      "horizon_job_worker": "fake-horizon_job_worker",
+      "finished_at": "2026-10-26T09:00:00.000000Z",
+      "docker_registry_image_tag": null,
+      "configuration_hash": "fake-configuration_hash",
+      "parent_deployment_uuid": null
+    }
+  ]
+}

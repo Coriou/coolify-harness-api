@@ -1,0 +1,9 @@
+{
+  "proxy_type": "TRAEFIK",
+  "status": "running",
+  "redirect_enabled": true,
+  "redirect_url": null,
+  "generate_exact_labels": false,
+  "traefik_certificate_resolver": "fake-traefik_certificate_resolver",
+  "configuration": "name: coolify-proxy\nnetworks:\n  coolify:\n    external: true\nservices:\n  traefik:\n    container_name: coolify-proxy\n    image: 'traefik:v3.6'\n    restart: unless-stopped\n    networks:\n      - coolify\n    ports:\n      - '80:80'\n      - '443:443'\n    command:\n      - '--providers.docker=true'\n      - '--certificatesresolvers.letsencrypt.acme.email=fixture@example.com'\n    labels:\n      - traefik.enable=true\n      - 'traefik.http.middlewares.dash-auth.basicauth.users=admin:$$apr1$$fixture$$notreal'\n"
+}

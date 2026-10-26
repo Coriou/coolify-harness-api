@@ -120,7 +120,11 @@ describe('Application / Deployment / Logs schemas (new observability)', () => {
     expect((failed as any).passthrough_extra).toBe('present on failed too');
   });
 
-  it('rejects invalid deployment status', () => {
-    expect(() => DeploymentSchema.parse({ deployment_uuid: 'x', status: 'weird' })).toThrow();
+  // status is a plain string since 0.4.0: an enum value added upstream must not become a contract
+  // failure mid-`deploy --wait`. A missing or non-string status is still rejected.
+  it('accepts an unknown deployment status string but rejects a missing/non-string one', () => {
+    expect(DeploymentSchema.parse({ deployment_uuid: 'x', status: 'weird' }).status).toBe('weird');
+    expect(() => DeploymentSchema.parse({ deployment_uuid: 'x' })).toThrow();
+    expect(() => DeploymentSchema.parse({ deployment_uuid: 'x', status: 3 })).toThrow();
   });
 });
