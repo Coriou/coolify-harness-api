@@ -4,7 +4,7 @@ import type { ParsedArgs } from '../args.js';
 import type { EnvVar } from '../../client/schemas.js';
 import { planEnvWrite, applyEnvWrite } from '../../client/safe-write.js';
 import { createLogger } from '../../logging/index.js';
-import { DuplicateKeyDriftError, LockedVarError } from '../../errors/index.js';
+import { CoolifyAuthScopeError, DuplicateKeyDriftError, LockedVarError } from '../../errors/index.js';
 import { EXIT } from '../main.js';
 import { withScope } from '../scope.js';
 import { audited, print, printJson, warn, type CmdDeps } from '../deps.js';
@@ -46,6 +46,16 @@ async function resolveValues(args: ParsedArgs, deps: EnvCmdDeps): Promise<Record
   return { ...fileValues, ...args.set };
 }
 
+/** A diff against withheld values would call every key "changed"; refuse instead. */
+function requireValues(current: EnvVar[]): void {
+  if (current.some((e) => e.value_hidden)) {
+    throw new CoolifyAuthScopeError(
+      "Coolify withheld env values: the token lacks 'read:sensitive', so a diff/apply cannot be planned",
+      { requiredScope: 'read:sensitive' },
+    );
+  }
+}
+
 function printPlan(plan: ReturnType<typeof planEnvWrite>, json: boolean): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
@@ -65,6 +75,7 @@ export async function envDiff(args: ParsedArgs, deps: EnvCmdDeps): Promise<numbe
   const target = deps.resolveTargetFor(args);
   const client = deps.clientFactory(target);
   const current = await withScope('read:sensitive', () => client.listEnvs());
+  requireValues(current);
   const merged = await resolveValues(args, deps);
   const plan = planEnvWrite(current, { values: merged });
   printPlan(plan, args.json);
@@ -80,6 +91,7 @@ export async function envApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<numb
   const target = deps.resolveTargetFor(args);
   const client = deps.clientFactory(target);
   const current = await withScope('read:sensitive', () => client.listEnvs());
+  requireValues(current);
   const merged = await resolveValues(args, deps);
   const plan = planEnvWrite(current, { values: merged });
   printPlan(plan, args.json);
@@ -114,7 +126,7 @@ export async function envList(args: ParsedArgs, deps: CmdDeps): Promise<number> 
       uuid: e.uuid,
       key: e.key,
       scope: scopeOf(e),
-      value_length: e.value.length,
+      value_length: e.value_hidden ? null : e.value.length,
       is_build_time: e.is_build_time,
       is_runtime: flag(e, 'is_runtime'),
       is_literal: e.is_literal,
@@ -130,9 +142,9 @@ export async function envList(args: ParsedArgs, deps: CmdDeps): Promise<number> 
   for (const v of view) {
     const flags = ['build_time', 'runtime', 'literal', 'multiline', 'shown_once', 'coolify']
       .filter((f) => (v as unknown as Record<string, unknown>)[`is_${f}`] === true); // reason: iterating the boolean flag columns built just above
-    print(`${v.key}  [${v.scope}]  len=${v.value_length}${flags.length ? `  ${flags.join(',')}` : ''}  ${v.uuid}`);
+    print(`${v.key}  [${v.scope}]  len=${v.value_length ?? 'hidden'}${flags.length ? `  ${flags.join(',')}` : ''}  ${v.uuid}`);
   }
-  print(`${view.length} variable row(s). Values are never printed.`);
+  print(`${view.length} variable row(s). Values are never printed${view.some((v) => v.value_length === null) ? '; lengths need read:sensitive' : ''}.`);
   return EXIT.ok;
 }
 

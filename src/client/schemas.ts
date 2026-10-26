@@ -14,7 +14,8 @@ const EnvVarReadSchema = z
   .object({
     uuid: z.string(),
     key: z.string(),
-    value: z.string(),
+    // Absent when the token lacks read:sensitive: Coolify then hides `value` and `real_value`.
+    value: z.string().optional(),
     is_preview: z.boolean(),
     is_build_time: z.boolean().optional(), // Coolify < beta.463
     is_buildtime: z.boolean().optional(), // Coolify >= beta.463
@@ -26,6 +27,9 @@ const EnvVarReadSchema = z
 
 export const EnvVarSchema = EnvVarReadSchema.transform((row) => ({
   ...row,
+  // Never undefined downstream; `value_hidden` tells a withheld value apart from an empty one.
+  value: row.value ?? '',
+  value_hidden: row.value === undefined,
   // Canonical, always-present build-time flag. Prefer the older explicit name if a server ever
   // sends both; fall back to the newer name; default false when neither is present.
   is_build_time: row.is_build_time ?? row.is_buildtime ?? false,

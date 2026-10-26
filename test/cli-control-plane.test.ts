@@ -4,14 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs, type ParsedArgs } from '../src/cli/args.js';
 import { errorToExitCode } from '../src/cli/main.js';
 import { deployCmd } from '../src/cli/commands/deploy.js';
-import { envList, envDelete, composeReferences } from '../src/cli/commands/env.js';
+import { envList, envDelete, envDiff, composeReferences } from '../src/cli/commands/env.js';
+import { EnvVarSchema } from '../src/client/schemas.js';
 import { composeGet, composeSet } from '../src/cli/commands/compose.js';
 import { proxySet, proxyRestart, proxyGet } from '../src/cli/commands/proxy.js';
 import { databaseSet, databaseBackup } from '../src/cli/commands/database.js';
 import { deploymentCancelCmd } from '../src/cli/commands/deployments.js';
 import { statusCmd } from '../src/cli/commands/status.js';
 import { instanceInfo, notInApi } from '../src/cli/commands/instance.js';
-import { LockedVarError, CoolifyFeatureNotSupportedError } from '../src/errors/index.js';
+import { LockedVarError, CoolifyFeatureNotSupportedError, CoolifyAuthScopeError } from '../src/errors/index.js';
 import type { CmdDeps } from '../src/cli/deps.js';
 import type { AuditRecord } from '../src/client/safe-write.js';
 import type { ResolvedTarget } from '../src/config/schema.js';
@@ -180,6 +181,20 @@ describe('env list / env delete', () => {
     expect(client.deleteEnv).not.toHaveBeenCalled();
     await envDelete(args(['env', 'delete', '--app', 's', '--key', 'PASSWORD', '--apply', '--force']), deps);
     expect(client.deleteEnv).toHaveBeenCalledWith('e1');
+  });
+
+  // Without read:sensitive Coolify omits `value` / `real_value`. That used to be a contract error;
+  // now listing works (length unknown) and diff/apply refuse with a scope error (exit 5).
+  it('handles a token without read:sensitive: list works, diff refuses with exit 5', async () => {
+    const hidden = EnvVarSchema.parse({ uuid: 'h1', key: 'API_KEY', is_preview: false, is_literal: false, is_multiline: false, is_shown_once: false });
+    expect(hidden).toMatchObject({ value: '', value_hidden: true });
+    const client = targetClient({ listEnvs: vi.fn().mockResolvedValue([hidden]) });
+    const { deps } = makeDeps(svcTarget, client);
+    await envList(args(['env', 'list', '--app', 's']), deps);
+    expect(stdout()).toContain('API_KEY  [prod]  len=hidden');
+    const e = await envDiff(args(['env', 'diff', '--app', 's', '--set', 'API_KEY=x']), deps).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(CoolifyAuthScopeError);
+    expect(errorToExitCode(e)).toBe(5);
   });
 
   it('detects compose references in all the shapes compose uses', () => {
