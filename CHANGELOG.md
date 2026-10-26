@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-26
+
+Verified against **Coolify 4.5.0** (two live instances, read-only). Endpoint coverage, scopes and
+the operations the API does not expose: `docs/coolify-4.5-api-coverage.md`.
+
+### Fixed
+- **`status` failed contract validation on every application (since 4.3.16).** Coolify sends unset
+  columns as `null` (`git_full_url`, `health_check_port`); response schemas now use `.nullish()`.
+- **`deploy --wait` and `deployment <uuid>` failed on in-flight deployments.** A queued row has
+  `commit_message`, `finished_at`, `server_name`, … = `null`. Deployment `status` is now a plain
+  string (`DEPLOYMENT_STATUSES` / `isTerminalDeploymentStatus` exported) so an upstream enum
+  addition cannot abort a wait.
+- `/version` and `/health` return plain text; the transport no longer throws on non-JSON bodies.
+- Env listing with a token lacking `read:sensitive` (Coolify omits `value`) no longer fails the
+  contract; `env diff`/`env apply` exit 5 with a clear scope message instead.
+- CLI parsing: `--flag=value`, `env-diff` / `env:diff` spellings, flags before the command,
+  `help` / `--help`.
+
+### Added
+- `deploy --force` (no-cache rebuild, `POST /applications/{uuid}/start?force=true`),
+  `deploy --restart --latest` (services pull images), `deploy --wait --timeout SEC` with status
+  transitions; exit **7** when the deployment fails/cancels, **8** on wait timeout.
+- `env list` (never values) and `env delete` (dry-run; refuses compose-locked / Coolify-managed
+  keys with exit 6 unless `--force`).
+- `compose get` / `compose set` for services (`--image svc=ref` or `--from-file`, redacted diff,
+  read-back confirmation, `--restart` with `latest=true`).
+- `instance info` (`version`), `servers`, `server get`, `proxy get` / `proxy set` /
+  `proxy restart` — `proxy set --image traefik:vX --apply --restart` changes the Traefik version
+  through the API (`PUT /servers/{uuid}/proxy/configuration` + restart).
+- `databases`, `database get` / `set` (`--public`, `--public-port`, `--image`) / `backups` /
+  `backup` (run a schedule now); targets may now be `kind: 'database'`.
+- `deployments --instance` (team queue), `deployment … --instance`, `deployment cancel`.
+- `logs --service` (services' sub-containers via `/services/{uuid}/logs`, compose apps'
+  `service_name` filter) and `--timestamps`; database runtime logs.
+- `server patch`, `server reboot`, `instance upgrade`: explicit exit 2 explaining that the Coolify
+  API has no such endpoint and where in the dashboard to do it. No SSH / DB workarounds.
+- Library: `CoolifyInstanceClient`, `client.instance()`, `deleteEnv`, `getService`,
+  `getDatabase`, `updateServiceCompose`, `cancelDeployment`, `deploy({ force })`,
+  `restart({ latest })`, `resolveInstance`, `redactDeep` / `redactDocument`, compose image helpers,
+  `CoolifyRequestError` (carries Coolify's message and 422 field names).
+- Output redaction everywhere: webhook secrets, sentinel token, basic-auth hashes, URL passwords,
+  literal env values in compose documents. `status --json` previously printed them verbatim.
+- Audit records cover every new mutation (`env.delete`, `compose.update`, `proxy.*`,
+  `database.*`, `deployment.cancel`) with keys and non-secret options only, including failures.
+
+### Changed
+- `listDeployments()` for services and databases returns `[]` (they never create deployment rows)
+  instead of the team-wide running list.
+- `waitForDeployment` default timeout 5 → 10 minutes; tolerates up to 3 consecutive transient poll
+  errors (auth / 404 / contract errors stay fatal).
+- `CoolifyWaitTimeoutError` exits **8** (was 1); `ConfigError` exits 2 and a missing token 5 (were 1).
+- `getRuntimeLogs` on a service no longer throws "not supported"; it needs a sub-service name and
+  lists the valid ones when missing.
+
+[0.4.0]: https://github.com/Coriou/coolify-harness-api/compare/v0.3.0...v0.4.0
+
 ## [0.3.0] - 2026-07-15
 
 > Minor bump (not patch) under 0.x semver: the write-surface fix removes the never-valid
