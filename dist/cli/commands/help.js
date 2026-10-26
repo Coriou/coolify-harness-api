@@ -7,8 +7,8 @@ Targets come from coolify-harness.config.ts (--app <target>); instance-wide comm
 
 Env (per target)
   env list        --app T                         keys, scope, flags, value length
-  env diff        --app T [--from-file F] [--set K=V]... [--fail-on-drift]
-  env apply *     --app T [--from-file F] [--set K=V]...
+  env diff        --app T [--from-file F] [--set K=V]... [--preview] [--fail-on-drift]
+  env apply *     --app T [--from-file F] [--set K=V]... [--preview]   (production rows unless --preview)
   env delete *    --app T --key K [--key K2]... [--preview] [--force]
   flag set *      --app T --set K=V [--redeploy]
 

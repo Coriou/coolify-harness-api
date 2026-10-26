@@ -7,9 +7,21 @@ export interface EnvFlags {
     is_multiline: boolean;
     is_shown_once: boolean;
 }
+export type EnvScope = 'production' | 'preview';
 export interface DesiredEnv {
     values: Record<string, string>;
     flags?: Record<string, Partial<EnvFlags>>;
+    /**
+     * Which rows to compare and write. Coolify keeps production and preview-deployment rows of the
+     * same key apart: a bulk item without `is_preview` updates or creates only the production row,
+     * one with `is_preview: true` only the preview row. Default: 'production'.
+     */
+    scope?: EnvScope;
+}
+/** A key being written whose row in the OTHER scope holds a different value (left untouched). */
+export interface OtherScopeDifference {
+    key: string;
+    scope: EnvScope;
 }
 export interface DuplicateKeyDrift {
     key: string;
@@ -24,6 +36,10 @@ export interface PlanWarning {
     message: string;
 }
 export interface EnvWritePlan {
+    /** Scope the plan compares and writes (absent = production, for plans built by hand). */
+    readonly scope?: EnvScope;
+    /** Keys whose other-scope row differs from the desired value; reported, never written. */
+    readonly otherScope?: OtherScopeDifference[];
     readonly creates: EnvWriteItem[];
     readonly updates: EnvWriteItem[];
     readonly unchanged: string[];

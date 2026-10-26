@@ -9,12 +9,20 @@ function groupByKey(current) {
     }
     return map;
 }
+const scopeOf = (row) => (row.is_preview ? 'preview' : 'production');
 function withFlags(key, value, desired) {
     const flags = desired.flags?.[key];
-    return flags ? { key, value, ...flags } : { key, value };
+    const item = flags ? { key, value, ...flags } : { key, value };
+    // Production items omit is_preview (Coolify defaults it to false); preview items must carry it.
+    return desired.scope === 'preview' ? { ...item, is_preview: true } : item;
 }
 export function planEnvWrite(current, desired) {
-    const byKey = groupByKey(current);
+    const scope = desired.scope ?? 'production';
+    // Compare only rows of the scope being written: a preview row of the same key is a different
+    // variable to Coolify, and folding it in made a correct production write look like a mismatch
+    // forever (the bulk write never touches it).
+    const byKey = groupByKey(current.filter((r) => scopeOf(r) === scope));
+    const otherByKey = groupByKey(current.filter((r) => scopeOf(r) !== scope));
     const creates = [];
     const updates = [];
     const unchanged = [];
@@ -37,7 +45,12 @@ export function planEnvWrite(current, desired) {
             duplicateKeyDrift.push({ key, values });
         }
     }
+    const otherScope = [];
     for (const [key, value] of Object.entries(desired.values)) {
+        const other = otherByKey.get(key);
+        if (other && other.some((r) => r.value !== value)) {
+            otherScope.push({ key, scope: scope === 'production' ? 'preview' : 'production' });
+        }
         const rows = byKey.get(key);
         if (!rows || rows.length === 0) {
             creates.push(withFlags(key, value, desired));
@@ -51,12 +64,14 @@ export function planEnvWrite(current, desired) {
         if (rows.length > 1) {
             warnings.push({
                 kind: 'duplicate-key-repair',
-                message: `Key '${key}' has ${rows.length} upstream rows; writing sets all copies to one value`,
+                // Coolify's bulk handler updates `->where('key', …)->first()`: only ONE of the duplicate
+                // rows changes, so confirmation will report a mismatch until the extras are deleted.
+                message: `Key '${key}' has ${rows.length} ${scope} rows; the bulk write updates only one of them — remove the extras with \`env delete\` and re-apply`,
             });
         }
         updates.push(withFlags(key, value, desired));
     }
-    return { creates, updates, unchanged, duplicateKeyDrift, lockedSkips: [], warnings };
+    return { scope, otherScope, creates, updates, unchanged, duplicateKeyDrift, lockedSkips: [], warnings };
 }
 export const EMPTY_PLAN = {
     creates: [], updates: [], unchanged: [], duplicateKeyDrift: [], lockedSkips: [], warnings: [],
@@ -88,7 +103,7 @@ export async function applyEnvWrite(plan, deps) {
     const keysAffected = items.map((i) => i.key);
     if (items.length === 0) {
         const audit = buildAuditRecord({
-            now, actor: deps.actor, target: deps.target, action: 'env.apply', plan,
+            now, actor: deps.actor, target: deps.target, action: 'env.apply', plan, options: { scope: plan.scope ?? 'production' },
             keysAffected: [], outcome: 'success',
         });
         deps.logger.info('coolify.env.apply', { action: 'env.apply', keysAffected: [] });
@@ -98,10 +113,16 @@ export async function applyEnvWrite(plan, deps) {
     try {
         await deps.client.upsertEnvs(items);
         const after = await deps.client.listEnvs();
-        const byKey = new Map(after.map((e) => [e.key, e.value]));
-        const confirmed = items.every((i) => byKey.get(i.key) === i.value);
+        // Confirm against the written scope only, and require EVERY row of the key in that scope to
+        // hold the value (a surviving duplicate is a real mismatch).
+        const scope = plan.scope ?? 'production';
+        const inScope = groupByKey(after.filter((e) => scopeOf(e) === scope));
+        const confirmed = items.every((i) => {
+            const rows = inScope.get(i.key) ?? [];
+            return rows.length > 0 && rows.every((r) => r.value === i.value);
+        });
         const audit = buildAuditRecord({
-            now, actor: deps.actor, target: deps.target, action: 'env.apply', plan,
+            now, actor: deps.actor, target: deps.target, action: 'env.apply', plan, options: { scope: plan.scope ?? 'production' },
             keysAffected, outcome: 'success',
         });
         deps.logger.info('coolify.env.apply', { action: 'env.apply', keysAffected, confirmed });
@@ -111,7 +132,7 @@ export async function applyEnvWrite(plan, deps) {
     catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         const audit = buildAuditRecord({
-            now, actor: deps.actor, target: deps.target, action: 'env.apply', plan,
+            now, actor: deps.actor, target: deps.target, action: 'env.apply', plan, options: { scope: plan.scope ?? 'production' },
             keysAffected, outcome: 'failure', error: message,
         });
         deps.logger.error('coolify.env.apply.failed', { action: 'env.apply', keysAffected, error: message });
