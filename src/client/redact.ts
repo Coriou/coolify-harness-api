@@ -71,8 +71,13 @@ const PEM_END_RE = /-----END [A-Z0-9 ]+-----/;
 const PEM_KEY_RE = /(KEY|CERTIFICATE|PGP|PARAMETERS|REQUEST|CRL|MESSAGE|SIGNATURE)/;
 /** A base64 line (the body of a PEM block), possibly commented out or quoted. */
 const PEM_B64_RE = /^[\s#>]*[A-Za-z0-9+/=]+\s*$/;
-/** `Name: value` right after BEGIN (`Proc-Type: 4,ENCRYPTED`, PGP's `Comment: …`, `Version: …`). */
-const PEM_HEADER_RE = /^[\s#>]*[A-Za-z][A-Za-z0-9-]*:[ \t]*\S/;
+/**
+ * A header line right after BEGIN, by its real names only (RFC 1421, OpenPGP armor): any
+ * `name: value` would do for a marker that is mere text in a YAML value, and hide the keys after it.
+ */
+const PEM_HEADER_RE = /^[\s#>]*(Proc-Type|DEK-Info|Content-Domain|Version|Comment|MessageID|Hash|Charset):[ \t]*\S/;
+/** Any `Name: value` line: a header of a block whose BEGIN marker stood alone on its line. */
+const PEM_ANY_HEADER_RE = /^[\s#>]*[A-Za-z][A-Za-z0-9-]*:[ \t]*\S/;
 /**
  * What cannot be a line of a PEM body: a list item, a `key: value` / `key:` mapping line or a
  * `NAME=value` assignment (base64 has no `:` and `=` only as trailing padding) — the two RFC 1421
@@ -309,14 +314,28 @@ const isBlank = (c: string): boolean => c === ' ' || c === '\t' || c === '\n' ||
 const isSeparator = (c: string): boolean => isBlank(c) || c === ',' || c === '[' || c === ']';
 
 /**
+ * Passed along one scan: once a search for the end of a `$(…)` / backtick substitution has run to
+ * the end of the text without finding it, no later search will, and looking again from every `$(`
+ * would re-read the rest each time.
+ */
+interface SubstitutionMemo { off: boolean }
+
+/**
  * Index just after the quote opened at `i`, and whether it closed. Double quotes honour `\`, and
  * so does an ANSI-C `$'…'` string (`escapes`).
  */
-function endOfQuote(text: string, i: number, escapes = false): { end: number; closed: boolean } {
+function endOfQuote(text: string, i: number, escapes = false, sub?: SubstitutionMemo): { end: number; closed: boolean } {
   const q = text.charAt(i);
   let j = i + 1;
   while (j < text.length) {
     if ((q === '"' || escapes) && text.charAt(j) === '\\') { j += 2; continue; }
+    // `"$(prog --pw "x")"`: the quotes inside the substitution are its own, not the end of ours.
+    if (sub && !sub.off && q === '"') {
+      const c = text.charAt(j);
+      const close = c === '$' && text.charAt(j + 1) === '(' ? closingParen(text, j + 1) : c === '`' ? closingBacktick(text, j) : -2;
+      if (close >= 0) { j = close + 1; continue; }
+      if (close === -1) sub.off = true;
+    }
     if (text.charAt(j) === q) return { end: j + 1, closed: true };
     j += 1;
   }
@@ -359,9 +378,15 @@ function closingBacktick(text: string, open: number): number {
  * searching from `from`; -1 when there is none. One level deeper, quotes are written `\\\"`: a
  * run of three or more backslashes before a quote belongs to the content, not to the delimiter.
  */
-function closingEscapedQuote(text: string, from: number): number {
+function closingEscapedQuote(text: string, from: number, sub?: SubstitutionMemo): number {
   let j = from;
   while (j < text.length) {
+    // `\"$(prog --pw \"x\")\"`: the escaped quotes inside the substitution are its own.
+    if (sub && !sub.off && text.charAt(j) === '$' && text.charAt(j + 1) === '(') {
+      const close = closingParen(text, j + 1);
+      if (close >= 0) { j = close + 1; continue; }
+      sub.off = true;
+    }
     if (text.charAt(j) !== '\\') { j += 1; continue; }
     let run = 1;
     while (text.charAt(j + run) === '\\') run += 1;
@@ -389,9 +414,10 @@ function tokenize(text: string): Token[] {
   // Once a search for a closing `\"` has run to the end without finding one, no later search
   // will: searching again from every `\"` would re-read the rest of the line each time.
   let noClosingEscapedQuote = false;
+  const sub: SubstitutionMemo = { off: false };
   const closeOf = (from: number): number => {
     if (noClosingEscapedQuote) return -1;
-    const at = closingEscapedQuote(text, from);
+    const at = closingEscapedQuote(text, from, sub);
     if (at < 0) noClosingEscapedQuote = true;
     return at;
   };
@@ -423,7 +449,7 @@ function tokenize(text: string): Token[] {
     }
     let j = i;
     if (c === '"' || c === "'") {
-      const q = endOfQuote(text, i);
+      const q = endOfQuote(text, i, false, sub);
       // Alone (followed by a separator, a shell operator or the end): a quoted word, judged by
       // its content.
       if (!q.closed || q.end >= n || isSeparator(text.charAt(q.end)) || isShellOperator(text.charAt(q.end))) {
@@ -442,7 +468,7 @@ function tokenize(text: string): Token[] {
         j = close >= 0 ? close + 2 : j + 2;
         continue;
       }
-      if (d === '"' || d === "'") { j = endOfQuote(text, j, d === "'" && text.charAt(j - 1) === '$').end; continue; }
+      if (d === '"' || d === "'") { j = endOfQuote(text, j, d === "'" && text.charAt(j - 1) === '$', sub).end; continue; }
       // `$(…)` and backticks hold a command with its own blanks: one word (`X=$(cat f)`).
       if (d === '$' && text.charAt(j + 1) === '(') {
         const close = closingParen(text, j + 1);
@@ -479,28 +505,36 @@ function redactComposite(word: string, depth: number): string {
   // One carry for the whole word: `'redis-cli -a '\\''secret'\\''` ends a part on a flag whose
   // value is the next part. A part without blanks is a word too (`'--requirepass=x'`).
   const carry: Carry = { flag: '' };
-  const nested = (inner: string): string => (inner === '' ? inner : depth < MAX_DEPTH ? redactCommand(inner, depth + 1, carry) : REDACTED);
+  // A QUOTED part that follows a flag waiting for its value IS that value, blanks included
+  // (`curl -H '\\''X-Api-Key: x'\\''`); a part that is only a quote character (the `'"'"'` idiom)
+  // is nothing.
+  const nested = (inner: string, quoted = false): string => {
+    if (inner === '' || (quoted && (inner === "'" || inner === '"'))) return inner;
+    if (depth >= MAX_DEPTH) return REDACTED;
+    return redactCommand(inner, depth + 1, carry, quoted && carry.pending !== undefined ? { atom: true } : {});
+  };
   let out = '';
   let bare = 0;
   let i = 0;
   let noClosingEscapedQuote = false;
-  const part = (from: number, innerStart: number, innerEnd: number, end: number): void => {
-    out += v.slice(bare, from) + v.slice(from, innerStart) + nested(v.slice(innerStart, innerEnd)) + v.slice(innerEnd, end);
+  const sub: SubstitutionMemo = { off: false };
+  const part = (from: number, innerStart: number, innerEnd: number, end: number, quoted = false): void => {
+    out += v.slice(bare, from) + v.slice(from, innerStart) + nested(v.slice(innerStart, innerEnd), quoted) + v.slice(innerEnd, end);
     i = end;
     bare = end;
   };
   while (i < v.length) {
     const c = v.charAt(i);
     if (c === '\\') {
-      const close = v.charAt(i + 1) === '"' && !noClosingEscapedQuote ? closingEscapedQuote(v, i + 2) : -1;
-      if (close >= 0) { part(i, i + 2, close, close + 2); continue; }
+      const close = v.charAt(i + 1) === '"' && !noClosingEscapedQuote ? closingEscapedQuote(v, i + 2, sub) : -1;
+      if (close >= 0) { part(i, i + 2, close, close + 2, true); continue; }
       if (v.charAt(i + 1) === '"') noClosingEscapedQuote = true;
       i += 2;
       continue;
     }
     if (c === '"' || c === "'") {
-      const q = endOfQuote(v, i, c === "'" && v.charAt(i - 1) === '$');
-      part(i, i + 1, q.closed ? q.end - 1 : q.end, q.end);
+      const q = endOfQuote(v, i, c === "'" && v.charAt(i - 1) === '$', sub);
+      part(i, i + 1, q.closed ? q.end - 1 : q.end, q.end, true);
       continue;
     }
     if (c === '$' && v.charAt(i + 1) === '(') {
@@ -546,8 +580,10 @@ function redactWord(t: Token, depth: number): string {
   }
   // -H"X-Api-Key: value" (the header glued to its flag).
   if (/^-H["']/.test(v)) {
-    const header = hiddenHeader(stripQuotes(v.slice(2)));
-    if (header !== undefined) return `${t.open}-H${v.charAt(2)}${header}${v.charAt(2)}${t.close}`;
+    const q = endOfQuote(v, 2);
+    const header = hiddenHeader(v.slice(3, q.closed ? q.end - 1 : q.end));
+    // What follows the closing quote (`;echo`, `|jq`) is not part of the header.
+    if (header !== undefined) return `${t.open}-H${v.charAt(2)}${header}${q.closed ? v.charAt(2) : ''}${scrubWord(v.slice(q.end))}${t.close}`;
   }
   // JSON / YAML flow text that names a secret (`--config '{"password":"…"}'`): hidden whole.
   if (v.length > 2 && /^\s*[{[]/.test(v) && SENSITIVE_NAME_RE.test(v)) return hidden(t);
@@ -571,8 +607,10 @@ function redactWord(t: Token, depth: number): string {
     const name = v.slice(0, eq);
     const value = v.slice(eq + 1);
     if (HEADER_FLAG_RE.test(name)) {
-      const header = hiddenHeader(stripQuotes(value));
-      if (header !== undefined) return `${t.open}${name}=${header}${t.close}`;
+      const quoted = value.charAt(0) === '"' || value.charAt(0) === "'";
+      const q = quoted ? endOfQuote(value, 0) : undefined;
+      const header = hiddenHeader(q ? value.slice(1, q.closed ? q.end - 1 : q.end) : stripQuotes(value));
+      if (header !== undefined) return `${t.open}${name}=${q ? value.charAt(0) : ''}${header}${q?.closed ? value.charAt(0) : ''}${q ? scrubWord(value.slice(q.end)) : ''}${t.close}`;
     }
     // `--user=name:password`
     if (USERPASS_FLAG_RE.test(name) && value.includes(':')) return `${t.open}${name}=${value.slice(0, value.indexOf(':'))}:${REDACTED}${t.close}`;
@@ -808,7 +846,8 @@ function redactFlowItems(text: string, carry: Carry, opening: boolean): { text: 
       let depth = 0;
       while (j < n) {
         const d = text.charAt(j);
-        if (d === '"' || d === "'") { j = endOfQuote(text, j).end; continue; }
+        // A quote inside a plain element (`echo it's up`, `5" disk`) is a character, not a
+        // string: taking it for one swallowed the `]` and left the list open.
         if (d === '#' && isBlank(text.charAt(j - 1))) break;
         if (d === '[' || d === '{') depth += 1;
         else if (d === ']' || d === '}') { if (depth === 0) break; depth -= 1; }
@@ -922,14 +961,14 @@ function redactEnvInstruction(rest: string, continuation: boolean): string {
 }
 
 /** The value of a compose `command:` given inline. A YAML single-quoted scalar doubles its quotes. */
-function redactYamlCommand(value: string): string {
+function redactYamlCommand(value: string, carry: Carry): string {
   const lead = value.length - value.trimStart().length;
   const v = value.trim();
   if (v.length >= 2 && v.startsWith("'") && closingQuoteIndex(v.slice(1), "'") === v.length - 2) {
     const inner = v.slice(1, -1).replace(/''/g, "'");
     return `${value.slice(0, lead)}'${redactCommandLine(inner).replace(/'/g, "''")}'${value.slice(lead + v.length)}`;
   }
-  return redactCommandLine(value);
+  return redactCommandPart(value, carry);
 }
 
 /**
@@ -975,14 +1014,18 @@ export function redactDocumentLines(text: string): string[] {
   let blockIndent = -1; // column of a key whose multi-line value is being swallowed
   let quote = ''; // inside a quoted scalar that did not close on its own line
   let quoteLines = 0;
+  let quoteIndent = -1; // indent of the YAML line that opened it (-1: a dotenv line, any indent continues)
   let cmdIndent = -1; // indent of an open `command:` / `entrypoint:` / `test:` list
   let cmdFlow = false; // …written as a flow list `[ … ]` that is still open
+  let cmdTextIndent = -1; // column of a `command:` key whose inline value continues on deeper lines
+  const cmdTextCarry: Carry = { flag: '' };
   let cmdItemIndent = -1; // column of the `- ` items of a block list
   let cmdScriptIndent = -1; // column of a `- |` item whose script body follows (ordinary lines)
   const cmdCarry: Carry = { flag: '' };
   let inPem = false;
   let pemStrong = false; // the BEGIN marker names key material
   let pemHeaders = 0; // header lines seen since BEGIN (-1 once the body has started)
+  let pemAlone = false; // the BEGIN marker stood alone on its line: a block, not text in a value
   let pemComment = false; // the BEGIN marker stood in a comment
   let continues: '' | 'run' | 'env' = ''; // inside a Dockerfile instruction continued with `\`
   const runCarry: Carry = { flag: '' };
@@ -1027,11 +1070,19 @@ export function redactDocumentLines(text: string): string[] {
     const hide = (): void => { push(blank ? line : `${line.slice(0, indent)}${REDACTED}`); };
 
     if (quote !== '') {
-      // Up to the closing quote, whatever the indent. Bounded: a stray quote must not hide a document.
-      quoteLines += 1;
-      if (closingQuoteIndex(line, quote) >= 0 || quoteLines >= 400) quote = '';
-      hide();
-      continue;
+      // In YAML the lines of a quoted scalar sit deeper than its key: a `key:` line at or left of
+      // it means the quote was a stray one, and what follows is the document again.
+      const stray = quoteIndent >= 0 && !blank && indent <= quoteIndent
+        && /^\s*(-\s+)?['"]?[A-Za-z_][A-Za-z0-9_.-]*['"]?\s*:(\s|$)/.test(line) && closingQuoteIndex(line, quote) < 0;
+      if (stray) {
+        quote = '';
+      } else {
+        // Up to the closing quote. Bounded: a stray quote must not hide a document.
+        quoteLines += 1;
+        if (closingQuoteIndex(line, quote) >= 0 || quoteLines >= 400) quote = '';
+        hide();
+        continue;
+      }
     }
     if (inPem) {
       if (PEM_END_RE.test(line)) { inPem = false; hide(); continue; }
@@ -1041,9 +1092,11 @@ export function redactDocumentLines(text: string): string[] {
         : blank || PEM_B64_RE.test(line)
           // Key material: its header lines right after BEGIN (at most a handful) and a body line
           // that is not plain base64 are part of it; a line of YAML structure is not.
-          || (pemStrong && ((pemHeaders >= 0 && pemHeaders < 6 && PEM_HEADER_RE.test(line)) || !NOT_PEM_BODY_RE.test(line)));
+          // (After a marker that is the value of a key on its own line, only the real armor
+          // header names count: any `name: value` there is the next YAML key.)
+          || (pemStrong && ((pemHeaders >= 0 && pemHeaders < 6 && (pemAlone ? PEM_ANY_HEADER_RE : PEM_HEADER_RE).test(line)) || !NOT_PEM_BODY_RE.test(line)));
       if (stays) {
-        if (!pemComment) pemHeaders = pemHeaders >= 0 && !blank && PEM_HEADER_RE.test(line) && !PEM_B64_RE.test(line) ? pemHeaders + 1 : -1;
+        if (!pemComment) pemHeaders = pemHeaders >= 0 && !blank && PEM_ANY_HEADER_RE.test(line) && !PEM_B64_RE.test(line) ? pemHeaders + 1 : -1;
         hide();
         continue;
       }
@@ -1054,6 +1107,14 @@ export function redactDocumentLines(text: string): string[] {
     if (blockIndent >= 0) {
       if (blank || indent > blockIndent) { hide(); continue; }
       blockIndent = -1;
+    }
+    if (cmdTextIndent >= 0) {
+      // The rest of a command written over several lines (a plain or quoted scalar folded by
+      // YAML): command text like its first line, readable, a flag on one line and its value on
+      // the next still hidden.
+      if (blank) { push(line); continue; }
+      if (indent > cmdTextIndent) { push(redactCommandPart(line, cmdTextCarry)); continue; }
+      cmdTextIndent = -1;
     }
     if (continues !== '') {
       // A blank line or a comment inside a continued instruction does not end it (nor does the
@@ -1073,11 +1134,12 @@ export function redactDocumentLines(text: string): string[] {
       // Opened inside a quoted scalar (`KEY: "-----BEGIN …`): hidden up to the closing quote,
       // wherever the following lines sit.
       const q = line.charAt(pem.index - 1);
-      if ((q === '"' || q === "'") && closingQuoteIndex(line.slice(pem.index), q) < 0) { quote = q; quoteLines = 0; continue; }
+      if ((q === '"' || q === "'") && closingQuoteIndex(line.slice(pem.index), q) < 0) { quote = q; quoteLines = 0; quoteIndent = -1; continue; }
       inPem = true;
       pemStrong = PEM_KEY_RE.test(pem[0]);
       pemHeaders = 0;
       pemComment = /^\s*#/.test(line);
+      pemAlone = line.replace(/^[\s#>]+/, '').trimEnd() === pem[0];
       continue;
     }
     // A comment changes no state. What it comments out is redacted like a live line.
@@ -1095,6 +1157,8 @@ export function redactDocumentLines(text: string): string[] {
       // At the key's own indent: the next key. (The elements of a flow list may sit there too,
       // as prettier writes them: only a line that reads `key:` ends an open flow list.)
       || (indent === cmdIndent && !isItem && !/^\s*[\]}]/.test(line) && (!cmdFlow || /^\s*['"]?[A-Za-z_][A-Za-z0-9_.-]*['"]?\s*:(\s|$)/.test(line)))
+      // A flow list that never closes: a `key:` line (not an argument of any command) ends it.
+      || (cmdFlow && /^\s*[A-Za-z_][A-Za-z0-9_.-]*\s*:(\s|$)/.test(line))
       // In a block list, a line that is not an item and sits at or left of the items is the next key.
       || (!cmdFlow && cmdScriptIndent < 0 && !isItem && cmdItemIndent >= 0 && indent <= cmdItemIndent)
     )) {
@@ -1209,8 +1273,10 @@ export function redactDocumentLines(text: string): string[] {
         // Not `- KEY="`: that item is a plain scalar, one line, whatever quote it holds — and
         // treating it as open hid every line after it.
         const scalarStart = sep.includes(':') || lead.trim() === '';
-        if (trail === '' && scalarStart && (q === '"' || q === "'") && closingQuoteIndex(v.slice(1), q) < 0) { quote = q; quoteLines = 0; }
-        else if (trail === '' && !quotedKey && keyOpen !== '' && closingQuoteIndex(value, keyOpen) < 0) { quote = keyOpen; quoteLines = 0; }
+        // A dotenv line (`KEY="…` at column 0) continues at any indent; a YAML one only deeper.
+        const yamlIndent = sep.includes(':') || lead.trim() !== '' || indent > 0 ? indent : -1;
+        if (trail === '' && scalarStart && (q === '"' || q === "'") && closingQuoteIndex(v.slice(1), q) < 0) { quote = q; quoteLines = 0; quoteIndent = yamlIndent; }
+        else if (trail === '' && !quotedKey && keyOpen !== '' && closingQuoteIndex(value, keyOpen) < 0) { quote = keyOpen; quoteLines = 0; quoteIndent = yamlIndent; }
       };
 
       // Inside `environment:`, a variable may be NAMED `command` or `test`: it is still a variable.
@@ -1239,8 +1305,9 @@ export function redactDocumentLines(text: string): string[] {
           push(`${head}${flow.text}${trail}`);
           if (flow.closed) swallowRest();
         } else {
-          push(`${lead}${keyText}${sep}${redactYamlCommand(value)}${trail}`);
-          swallowRest();
+          delete cmdTextCarry.pending; delete cmdTextCarry.redis;
+          push(`${lead}${keyText}${sep}${redactYamlCommand(value, cmdTextCarry)}${trail}`);
+          cmdTextIndent = keyColumn;
         }
         continue;
       }
@@ -1248,7 +1315,10 @@ export function redactDocumentLines(text: string): string[] {
       const sensitiveName = SENSITIVE_NAME_RE.test(key) || (section === 'secrets' && /^(content|value|data)$/.test(key));
       if (ENV_KEY_RE.test(key) || sensitiveName || inEnv) {
         if (BLOCK_SCALAR_RE.test(v)) { blockIndent = keyColumn; push(keyOnly(head, value, true)); continue; }
-        if (v === '' || v.startsWith('#')) {
+        // An anchor or a tag in front of a nested block (`DB: &db` + its mapping) is no value
+        // either; alone on its line under such a key it is taken for one (`PASSWORD: !abc`).
+        const anchorOnly = sep.includes(':') && /^[&!][^\s{[]*\s*(#.*)?$/.test(v) && nestedFollows(idx + 1, keyColumn);
+        if (v === '' || v.startsWith('#') || anchorOnly) {
           // Nothing on this line. A plain continuation below is the value itself, swallowed. A
           // mapping / list nested under a SENSITIVE key keeps its shape and loses its leaves —
           // unless the key is a NAME (a service called `supertokens`) or the top-level

