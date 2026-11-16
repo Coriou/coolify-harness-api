@@ -48,9 +48,11 @@ export function listServiceImages(yaml: string): ServiceImage[] {
     if (!current || indent <= current.indent) continue;
     if (current.childIndent < 0) current.childIndent = indent;
     if (indent !== current.childIndent || current.found) continue;
-    const img = /^\s*image:\s*(.+?)\s*(#.*)?$/.exec(line);
+    // No lazy `(.+?)\s*(#.*)?$`: that re-scans a long run of blanks from every position.
+    const img = /^\s*image:\s*(\S.*)$/.exec(line);
     if (img?.[1]) {
-      out.push({ service: current.name, image: unquote(img[1]), line: i });
+      const comment = img[1].search(/\s#/);
+      out.push({ service: current.name, image: unquote((comment < 0 ? img[1] : img[1].slice(0, comment)).trimEnd()), line: i });
       current.found = true;
     }
   }
@@ -96,24 +98,41 @@ export type DiffOp = { op: 'same' | 'del' | 'add'; line: string };
 
 interface IndexedOp { op: DiffOp['op']; a: number; b: number }
 
-/** LCS line diff by index. Compose files are small (tens to hundreds of lines), so O(n·m) is fine. */
+/** Above this many table cells (n·m of the differing middle) the diff is not aligned line by line. */
+const MAX_LCS_CELLS = 4_000_000;
+
+/**
+ * LCS line diff by index. The common head and tail are set aside first (an image bump differs in
+ * one line), then the middle is aligned with an O(n·m) table: compose files are tens to hundreds
+ * of lines. A middle too large for the table (two unrelated documents of thousands of lines) is
+ * reported as "all removed, all added" instead of taking seconds and hundreds of MB.
+ */
 function diffIndices(a: string[], b: string[]): IndexedOp[] {
-  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
-  for (let i = a.length - 1; i >= 0; i -= 1) {
-    for (let j = b.length - 1; j >= 0; j -= 1) {
-      dp[i]![j] = a[i] === b[j] ? dp[i + 1]![j + 1]! + 1 : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
-    }
-  }
   const out: IndexedOp[] = [];
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) { out.push({ op: 'same', a: head, b: head }); head += 1; }
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail += 1;
+  const n = a.length - head - tail;
+  const m = b.length - head - tail;
   let i = 0;
   let j = 0;
-  while (i < a.length && j < b.length) {
-    if (a[i] === b[j]) { out.push({ op: 'same', a: i, b: j }); i += 1; j += 1; }
-    else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) { out.push({ op: 'del', a: i, b: -1 }); i += 1; }
-    else { out.push({ op: 'add', a: -1, b: j }); j += 1; }
+  if (n * m <= MAX_LCS_CELLS) {
+    const dp: number[][] = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
+    for (let x = n - 1; x >= 0; x -= 1) {
+      for (let y = m - 1; y >= 0; y -= 1) {
+        dp[x]![y] = a[head + x] === b[head + y] ? dp[x + 1]![y + 1]! + 1 : Math.max(dp[x + 1]![y]!, dp[x]![y + 1]!); // reason: x ≤ n, y ≤ m by the loop bounds
+      }
+    }
+    while (i < n && j < m) {
+      if (a[head + i] === b[head + j]) { out.push({ op: 'same', a: head + i, b: head + j }); i += 1; j += 1; }
+      else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) { out.push({ op: 'del', a: head + i, b: -1 }); i += 1; } // reason: i < n, j < m
+      else { out.push({ op: 'add', a: -1, b: head + j }); j += 1; }
+    }
   }
-  while (i < a.length) { out.push({ op: 'del', a: i, b: -1 }); i += 1; }
-  while (j < b.length) { out.push({ op: 'add', a: -1, b: j }); j += 1; }
+  while (i < n) { out.push({ op: 'del', a: head + i, b: -1 }); i += 1; }
+  while (j < m) { out.push({ op: 'add', a: -1, b: head + j }); j += 1; }
+  for (let t = tail; t > 0; t -= 1) out.push({ op: 'same', a: a.length - t, b: b.length - t });
   return out;
 }
 
