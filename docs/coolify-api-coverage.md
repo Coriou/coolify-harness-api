@@ -36,10 +36,20 @@ Nothing the harness uses was removed. `GET /version` and `GET /health` still ans
 
 Behaviours that are the same on 4.5.0 and 4.7.5 and that the harness now handles:
 
-- `POST /applications/{uuid}/start` answers 200 **without** a `deployment_uuid` when the same
-  commit is already queued or building (`skipped`). `deploy --wait` follows the deployment in
-  progress. The same handler does not check for a full queue, so an acknowledged deployment may
-  not exist: `deploy --wait` explains the 404.
+- `POST /applications/{uuid}/start` (and `/restart`) answers 200 **without** a `deployment_uuid`
+  when the same commit is already queued or building (`skipped`); it does not say which
+  deployment that is. `deploy --wait` reports on the production deployment of that commit
+  (running, or ended moments ago) and fails rather than report an older one.
+- The same handlers test only for `skipped`: when the server's deployment queue is full
+  (`queue_full`, `deployment_queue_limit`, default 25) they answer "queued" with a uuid that was
+  never created. `deploy` reads the deployment back once (`GET /deployments/{uuid}`; under
+  `--wait` the first poll is that read) and reports `DEPLOY_NOT_QUEUED` on Coolify's own 404.
+  `POST /deploy` handles a full queue (429) but returns a uuid even when it skipped.
+- `PATCH /services/{uuid}` saves the compose before it re-parses it, and the proxy configuration
+  is recorded before the file is written on the server: a 5xx can leave the new document stored.
+  `compose set` / `proxy set` read it back and say which one is there.
+- The deployment list mixes production and pull-request preview rows (`pull_request_id`), newest
+  first (`created_at desc, id desc`), each with its full build log.
 - The bulk env endpoint validates and writes item by item, with no transaction: an invalid key in
   the middle leaves the earlier keys written. Names are validated before sending.
 - Creating a key on a service or database answers a row without its flag columns
