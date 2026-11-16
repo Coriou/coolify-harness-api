@@ -4,12 +4,16 @@ import type { EnvVar } from '../../client/schemas.js';
 import { planEnvWrite, applyEnvWrite, isLockedRow, type EnvWritePlan } from '../../client/safe-write.js';
 import { createLogger } from '../../logging/index.js';
 import {
-  CoolifyAuthScopeError, CoolifyFeatureNotSupportedError, DuplicateKeyDriftError, LockedVarError, UsageError,
+  CoolifyAuthScopeError, CoolifyFeatureNotSupportedError, DuplicateKeyDriftError, EnvChangesPendingError, LockedVarError,
+  UsageError,
 } from '../../errors/index.js';
 import type { ResolvedTarget } from '../../config/schema.js';
 import { EXIT } from '../exit.js';
 import { withScope } from '../scope.js';
 import { audited, print, printJson, warn, writeAuditSafely, type CmdDeps, usageFail } from '../deps.js';
+import { parseDotenv } from '../dotenv.js';
+
+export { parseDotenv } from '../dotenv.js';
 
 /** Kept for backwards compatibility; every command now shares CmdDeps. */
 export type EnvCmdDeps = CmdDeps;
@@ -20,70 +24,11 @@ const defaultReadFile = (path: string): Promise<string> =>
 /** Coolify 4.7's own rule for env keys (ValidationPatterns::environmentVariableKeyRules). */
 const COOLIFY_KEY_RE = /^[A-Za-z_][A-Za-z0-9_.]*$/;
 
-/**
- * Parse dotenv-style text into a record.
- * - blank lines and `#` comment lines are ignored; an optional `export ` prefix is dropped;
- * - a value wrapped in matching quotes loses them (`KEY="a b"` → `a b`), as every dotenv loader
- *   does; a double-quoted value also expands `\n`, `\r`, `\t`, `\"` and `\\`, and a quoted value
- *   may span several lines (PEM keys);
- * - an UNQUOTED value is taken verbatim up to the end of the line (no trimming, no inline-comment
- *   stripping: a secret containing ` #` must not be silently cut).
- * A line that is not `KEY=VALUE` is a usage error; its content is never echoed.
- */
-export function parseDotenv(text: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  const lines = text.split('\n');
-  for (let n = 0; n < lines.length; n += 1) {
-    const line = (lines[n] ?? '').replace(/\r$/, ''); // trim trailing CR
-    const trimmed = line.trimStart();
-    if (trimmed === '' || trimmed.startsWith('#')) continue; // blank or comment
-    const withoutExport = trimmed.startsWith('export ') ? trimmed.slice(7).trimStart() : trimmed;
-    const eqIdx = withoutExport.indexOf('=');
-    const key = eqIdx < 0 ? '' : withoutExport.slice(0, eqIdx).trim();
-    if (eqIdx < 0 || key === '' || /\s/.test(key)) {
-      throw new UsageError(`Invalid dotenv line ${n + 1}: expected KEY=VALUE${eqIdx < 0 ? " (missing '=')" : ''}`);
-    }
-    let value = withoutExport.slice(eqIdx + 1);
-    const quote = value[0];
-    if (quote === '"' || quote === "'") {
-      // Find the closing quote, on this line or a later one (multi-line value).
-      let body = value.slice(1);
-      let close = closingQuote(body, quote);
-      const firstLine = n;
-      while (close < 0 && n + 1 < lines.length) {
-        n += 1;
-        body += `\n${(lines[n] ?? '').replace(/\r$/, '')}`;
-        close = closingQuote(body, quote);
-      }
-      if (close < 0) {
-        throw new UsageError(`Invalid dotenv value for ${key} (line ${firstLine + 1}): unterminated ${quote === '"' ? 'double' : 'single'} quote`);
-      }
-      // Text after the closing quote (`"a" b`) means this was not a quoted value: keep it verbatim.
-      if (body.slice(close + 1).trim().replace(/^#.*/, '') === '') {
-        value = quote === '"' ? unescapeDouble(body.slice(0, close)) : body.slice(0, close);
-      } else if (n !== firstLine) {
-        throw new UsageError(`Invalid dotenv value for ${key} (line ${firstLine + 1}): unexpected text after the closing quote`);
-      }
-    }
-    result[key] = value;
-  }
-  return result;
-}
-
-function closingQuote(body: string, quote: string): number {
-  for (let i = 0; i < body.length; i += 1) {
-    if (quote === '"' && body[i] === '\\') { i += 1; continue; }
-    if (body[i] === quote) return i;
-  }
-  return -1;
-}
-
-function unescapeDouble(body: string): string {
-  return body.replace(/\\([nrt"\\])/g, (_m, c: string) => ({ n: '\n', r: '\r', t: '\t', '"': '"', '\\': '\\' })[c] ?? c);
-}
-
 async function resolveValues(args: ParsedArgs, deps: EnvCmdDeps): Promise<Record<string, string>> {
-  if (!args.fromFile) return args.set;
+  if (!args.fromFile) {
+    requireValidKeys(args, []);
+    return args.set;
+  }
   let fileText: string;
   try {
     fileText = await (deps.readFile ?? defaultReadFile)(args.fromFile);
@@ -92,6 +37,7 @@ async function resolveValues(args: ParsedArgs, deps: EnvCmdDeps): Promise<Record
     throw new UsageError(`Cannot read --from-file ${args.fromFile}${typeof code === 'string' ? ` (${code})` : ''}`);
   }
   const fileValues = parseDotenv(fileText);
+  requireValidKeys(args, Object.keys(fileValues));
   // --set overrides file values for the same key
   return { ...fileValues, ...args.set };
 }
@@ -122,15 +68,23 @@ function scopeFor(args: ParsedArgs, target: ResolvedTarget): EnvScopeArg {
   return args.preview ? 'preview' : 'production';
 }
 
-function keyWarnings(values: Record<string, string>): string[] {
-  return Object.keys(values)
-    .filter((k) => !COOLIFY_KEY_RE.test(k))
-    .map((k) => `Key '${k}' is not a valid Coolify variable name (letters, digits, _ and ., not starting with a digit); Coolify 4.7 rejects it`);
+/**
+ * Refuse a key Coolify would reject, before anything is sent. Coolify validates and writes a bulk
+ * request item by item with no transaction: one bad key in the middle left the keys before it
+ * written and the whole command reported as failed. The key is not echoed: a "key" that fails
+ * this test is often a stray line of a secret (a wrapped base64 value in a dotenv file).
+ */
+function requireValidKeys(args: ParsedArgs, fileKeys: readonly string[]): void {
+  const badSet = Object.keys(args.set).filter((k) => !COOLIFY_KEY_RE.test(k)).length;
+  const badFile = fileKeys.filter((k) => !COOLIFY_KEY_RE.test(k)).length;
+  if (badSet + badFile === 0) return;
+  const where = [badSet > 0 ? `${badSet} from --set` : '', badFile > 0 ? `${badFile} from ${args.fromFile ?? '--from-file'}` : ''].filter(Boolean).join(', ');
+  throw new UsageError(
+    `${badSet + badFile} variable name(s) are not valid (${where}): a name starts with a letter or _ and contains only letters, digits, _ and . — nothing was sent. (Names are not echoed: a multi-line value that is not quoted reads as extra names.)`,
+  );
 }
 
-interface EnvPlanDoc extends EnvWritePlan {
-  keyWarnings?: string[];
-}
+type EnvPlanDoc = EnvWritePlan;
 
 function printPlanText(plan: EnvPlanDoc): void {
   print(`scope: ${plan.scope ?? 'production'}`);
@@ -141,7 +95,6 @@ function printPlanText(plan: EnvPlanDoc): void {
     print(`DUPLICATE-KEY DRIFT: ${plan.duplicateKeyDrift.map((d) => d.key).join(', ')}`);
   }
   for (const w of plan.warnings) print(`warning: ${w.message}`);
-  for (const w of plan.keyWarnings ?? []) print(`warning: ${w}`);
   const other = plan.otherScope ?? [];
   if (other.length > 0) {
     const otherName = other[0]!.scope;
@@ -162,9 +115,7 @@ async function buildPlan(args: ParsedArgs, deps: EnvCmdDeps): Promise<{
   const client = deps.clientFactory(target);
   const current = await withScope('read:sensitive', () => client.listEnvs());
   requireValues(current);
-  const plan: EnvPlanDoc = planEnvWrite(current, { values: merged, scope });
-  const kw = keyWarnings(merged);
-  return { target, client, plan: kw.length > 0 ? { ...plan, keyWarnings: kw } : plan };
+  return { target, client, plan: planEnvWrite(current, { values: merged, scope }) };
 }
 
 function failOnDrift(args: ParsedArgs, plan: EnvWritePlan): void {
@@ -186,10 +137,9 @@ export async function envDiff(args: ParsedArgs, deps: EnvCmdDeps): Promise<numbe
   if (args.json) printJson(plan);
   else printPlanText(plan);
   failOnDrift(args, plan);
-  const pending = plan.creates.length + plan.updates.length;
-  if (args.failOnChanges && pending > 0) {
-    if (!args.json) warn(`env diff: ${pending} key(s) differ from the desired values (--fail-on-changes)`);
-    return EXIT.drift;
+  const pending = [...plan.creates, ...plan.updates].map((i) => i.key);
+  if (args.failOnChanges && pending.length > 0) {
+    throw new EnvChangesPendingError(`${pending.length} key(s) differ from the desired values (--fail-on-changes)`, { keys: pending });
   }
   return EXIT.ok;
 }
@@ -199,8 +149,6 @@ export interface EnvApplyOutcome {
   code: number;
   /** The single JSON document of the run (plan + dryRun/applied/confirmed). Values are redacted on print. */
   doc: Record<string, unknown>;
-  /** True when something was written to Coolify. */
-  wrote: boolean;
 }
 
 export async function runEnvApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<EnvApplyOutcome> {
@@ -213,7 +161,7 @@ export async function runEnvApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<E
   }
   if (!args.apply) {
     if (!args.json) print('Dry-run. Re-run with --apply to write.');
-    return { code: EXIT.ok, doc: { ...base, dryRun: true, applied: [], confirmed: null }, wrote: false };
+    return { code: EXIT.ok, doc: { ...base, dryRun: true, applied: [], confirmed: null } };
   }
   const result = await withScope('write', () => applyEnvWrite(plan, {
     client, logger: createLogger({ sink: () => {} }),
@@ -235,7 +183,6 @@ export async function runEnvApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<E
       confirmed: result.confirmed,
       ...(result.confirmError !== undefined ? { confirmError: result.confirmError } : {}),
     },
-    wrote: result.applied.length > 0,
   };
 }
 
@@ -319,12 +266,26 @@ export async function envDelete(args: ParsedArgs, deps: CmdDeps): Promise<number
 
   // The compose is only needed to decide whether a MATCHED row would be re-created.
   let compose: string | null | undefined;
+  let composeExpected = false;
   if (matches.length > 0) {
-    if (target.kind === 'service') compose = (await withScope('read', () => client.getService())).docker_compose_raw;
-    else if (target.kind === 'application') {
+    if (target.kind === 'service') {
+      composeExpected = true;
+      compose = (await withScope('read', () => client.getService())).docker_compose_raw;
+    } else if (target.kind === 'application') {
       const app = await withScope('read', () => client.get());
-      if (app.build_pack === 'dockercompose') compose = app.docker_compose_raw;
+      if (app.build_pack === 'dockercompose') {
+        composeExpected = true;
+        compose = app.docker_compose_raw;
+      }
     }
+  }
+  // Coolify only returns the compose to a read:sensitive token of a team admin/owner. Without it
+  // the lock check cannot run: refuse rather than delete a row Coolify would silently re-create.
+  if (composeExpected && compose == null && !args.force) {
+    throw new CoolifyAuthScopeError(
+      "Coolify withheld the docker-compose document (the token needs 'read:sensitive' and a team admin/owner user), so env delete cannot check whether the compose still references the key. Use such a token, or pass --force to delete without the check.",
+      { requiredScope: 'read:sensitive' },
+    );
   }
   const locked = [...new Set(matches.filter((e) => flag(e, 'is_coolify') || (compose ? composeReferences(compose, e.key) : false)).map((e) => e.key))];
 
@@ -352,15 +313,22 @@ export async function envDelete(args: ParsedArgs, deps: CmdDeps): Promise<number
   }
   const keysAffected = [...new Set(matches.map((e) => e.key))];
   let deleted = 0;
-  await audited(deps, {
-    instanceUrl: target.instanceUrl, kind: target.kind, uuid: target.uuid, action: 'env.delete', keysAffected,
-    options: { scope: wantScope, rows: matches.length, ...(args.force ? { force: true } : {}) },
-  }, () => withScope('delete', async () => {
-    for (const m of matches) {
-      await client.deleteEnv(m.uuid);
-      deleted += 1;
-    }
-  }));
+  try {
+    await audited(deps, {
+      instanceUrl: target.instanceUrl, kind: target.kind, uuid: target.uuid, action: 'env.delete', keysAffected,
+      options: { scope: wantScope, rows: matches.length, ...(args.force ? { force: true } : {}) },
+    }, () => withScope('delete', async () => {
+      for (const m of matches) {
+        await client.deleteEnv(m.uuid);
+        deleted += 1;
+      }
+    }));
+  } catch (err) {
+    // Rows deleted before the failure are gone: say how many, so the caller does not assume none.
+    if (args.json) printJson({ dryRun: false, ...plan, deleted, confirmed: null, failed: true });
+    else if (deleted > 0) warn(`env delete: ${deleted} of ${matches.length} row(s) were deleted before the failure below.`);
+    throw err;
+  }
   let confirmed: boolean | null = null;
   let remaining = 0;
   try {

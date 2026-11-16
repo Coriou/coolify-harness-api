@@ -36,7 +36,7 @@ describe('zod is loaded lazily', () => {
     expect(state.zodLoaded).toBe(false);
   });
 
-  it('the transport starts loading it only after the request has been sent', async () => {
+  it('with a fetch that is not undici (no send event) it is still not loaded before the request, and loads for the answer', async () => {
     const lib = await import('../src/index.js');
     let zodLoadedWhenFetchWasCalled: boolean | undefined;
     const client = new lib.CoolifyClient({ instanceUrl: 'https://c.example', kind: 'application', uuid: 'a', token: 't' }, {

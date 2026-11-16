@@ -1,4 +1,5 @@
-import { chmod, writeFile as nodeWriteFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open } from 'node:fs/promises';
 import type { ParsedArgs } from './args.js';
 import type { CoolifyClient } from '../client/coolify.js';
 import type { CoolifyInstanceClient } from '../client/instance.js';
@@ -42,12 +43,18 @@ export interface CmdDeps {
 }
 
 /**
- * Write an unredacted document for `--out`, readable by the owner only. `mode` on writeFile only
- * applies when the file is created, so an existing world-readable file is chmod-ed as well.
+ * Write an unredacted document for `--out`, readable by the owner only. The file is opened
+ * without following a symlink and its mode is forced to 0600 BEFORE the content is written, so an
+ * existing world-readable file (or a planted link) never receives the secrets.
  */
 export const defaultWriteFile = async (path: string, content: string): Promise<void> => {
-  await nodeWriteFile(path, content, { encoding: 'utf8', mode: 0o600 });
-  await chmod(path, 0o600);
+  const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+  try {
+    await handle.chmod(0o600);
+    await handle.writeFile(content, 'utf8');
+  } finally {
+    await handle.close();
+  }
 };
 
 export function requireInstance(args: ParsedArgs, deps: CmdDeps): { name: string; client: InstanceClient } {
@@ -59,13 +66,21 @@ export const print = (line = ''): void => { process.stdout.write(`${line}\n`); }
 export const warn = (line: string): void => { process.stderr.write(`${line}\n`); };
 
 /**
- * Report a usage problem the way the rest of the CLI reports errors — prose on stderr, or with
- * `--json` the `{ "error": { code, message, exitCode } }` document — and return exit code 2.
+ * Report a failure that is returned as an exit code rather than thrown, the way thrown errors are
+ * reported: prose on stderr, or with `--json` the `{ "error": { code, message, exitCode, … } }`
+ * document. Returns the exit code.
  */
-export function usageFail(args: Pick<ParsedArgs, 'json'>, message: string): number {
-  if (args.json) process.stderr.write(`${JSON.stringify({ error: { code: 'USAGE', message, exitCode: EXIT.usage } })}\n`);
+export function emitError(
+  args: Pick<ParsedArgs, 'json'>, code: string, message: string, exitCode: number, extra: Record<string, unknown> = {},
+): number {
+  if (args.json) process.stderr.write(`${JSON.stringify({ error: { code, message, exitCode, ...extra } })}\n`);
   else warn(message);
-  return EXIT.usage;
+  return exitCode;
+}
+
+/** A usage problem (exit 2). */
+export function usageFail(args: Pick<ParsedArgs, 'json'>, message: string): number {
+  return emitError(args, 'USAGE', message, EXIT.usage);
 }
 
 /** JSON output for agents: always redacted, never prose. */

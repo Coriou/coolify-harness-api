@@ -11,12 +11,12 @@ import { logsCmd } from '../src/cli/commands/logs.js';
 import { deploymentsCmd } from '../src/cli/commands/deployments.js';
 import { instanceInfo, serverGet } from '../src/cli/commands/instance.js';
 import { configDoctor } from '../src/cli/commands/config-doctor.js';
-import { HELP } from '../src/cli/commands/help.js';
+import { HELP, EXIT_CODES } from '../src/cli/commands/help.js';
 import { BulkResponseSchema, type EnvVar, type EnvWriteItem } from '../src/client/schemas.js';
 import { planEnvWrite } from '../src/client/safe-write.js';
 import {
   CoolifyAuthError, CoolifyContractError, CoolifyFeatureNotSupportedError, CoolifyNetworkError, CoolifyNotFoundError,
-  InvalidInputError, UsageError,
+  EnvChangesPendingError, InvalidInputError, UsageError,
 } from '../src/errors/index.js';
 import { HARNESS_VERSION, TESTED_COOLIFY } from '../src/version.js';
 import type { CmdDeps } from '../src/cli/deps.js';
@@ -172,7 +172,9 @@ describe('errors are precise and machine-readable', () => {
     delete process.env['COOLIFY_PROD_TOKEN'];
     try {
       expect(await main(['status', '--app', 'my-api', '--json', '--config', CONFIG])).toBe(5);
-      expect((JSON.parse(stderr()) as { error: Record<string, unknown> }).error).toMatchObject({ code: 'MISSING_TOKEN', exitCode: 5 });
+      expect((JSON.parse(stderr()) as { error: Record<string, unknown> }).error).toEqual({
+        code: 'MISSING_TOKEN', exitCode: 5, message: "Env var 'COOLIFY_PROD_TOKEN' (token for instance 'prod') is not set",
+      });
     } finally {
       if (saved !== undefined) process.env['COOLIFY_PROD_TOKEN'] = saved;
     }
@@ -245,13 +247,20 @@ describe('argument parsing protects the agent from itself', () => {
     expect(stdout()).toBe(HELP);
   });
 
-  it('the help text documents every command and every exit code', () => {
-    for (const cmd of ['config doctor', 'status', 'env list', 'env diff', 'env apply', 'env delete', 'flag set', 'deploy', 'logs', 'deployments', 'deployment cancel',
-      'compose get', 'compose set', 'instance info', 'servers', 'server get', 'proxy get', 'proxy set', 'proxy restart', 'databases', 'database get', 'database set',
-      'database backups', 'database backup', 'catalog gen', 'catalog check']) {
-      expect(HELP, cmd).toContain(cmd);
+  it('the help text has a line for every command and names every exit code', () => {
+    const lines = HELP.split('\n');
+    const hasLine = (re: RegExp): boolean => lines.some((l) => re.test(l));
+    // Each command at the START of a help line (so `deploy` is not satisfied by `deployments`).
+    for (const cmd of ['config doctor', 'status', 'env list', 'env diff', 'env apply \\*', 'env delete \\*', 'flag set \\*', 'deploy', 'logs', 'deployments',
+      'deployment', 'deployment cancel \\*', 'compose get', 'compose set \\*', 'instance info', 'servers', 'server get', 'proxy get', 'proxy set \\*',
+      'proxy restart \\*', 'databases', 'database get', 'database set \\*', 'database backups', 'database backup \\*']) {
+      expect(hasLine(new RegExp(`^  ${cmd}\\s`)), cmd).toBe(true);
     }
-    for (const code of [0, 1, 2, 3, 4, 5, 6, 7, 8]) expect(HELP).toMatch(new RegExp(`\\b${code} `));
+    expect(hasLine(/^  catalog gen \| catalog check/)).toBe(true);
+    const codes = HELP.slice(HELP.indexOf('Exit codes:'));
+    for (const code of [0, 1, 2, 3, 4, 5, 6, 7, 8, 130]) expect(codes, String(code)).toMatch(new RegExp(`(^|[\\s·:])${code} [a-zA-Z-]`));
+    expect(Object.keys(EXIT_CODES).map(Number).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 130]);
+    for (const flag of ['--json', '--config', '--env-file', '--apply', '--dry-run', '--no-logs', '--fail-on-changes', '--offline', '--version']) expect(HELP, flag).toContain(flag);
     expect(HELP).not.toMatch(/\bnpm\b|\bnpx\b/);
   });
 });
@@ -313,7 +322,7 @@ describe('safety: nothing changes behind a dry-run', () => {
     const d = deps(api);
     expect(await envApply(parseArgs(['env', 'apply', '--app', 'web', '--set', 'A=2', '--apply', '--json']), d.deps)).toBe(0);
     expect(oneJson()).toMatchObject({ dryRun: false, applied: ['A'], confirmed: false, confirmError: 'Cannot reach Coolify' });
-    expect(d.audits[0]).toMatchObject({ outcome: 'success', options: { scope: 'production', confirmed: false } });
+    expect(d.audits[0]).toMatchObject({ outcome: 'success', options: { scope: 'production' } });
   });
 });
 
@@ -324,10 +333,15 @@ describe('env planning on real-world rows', () => {
     expect(plan.warnings[0]!.kind).toBe('duplicate-key-repair');
   });
 
-  it('--fail-on-changes exits 4 only when something would be written', async () => {
+  it('--fail-on-changes exits 4 only when something would be written, after printing the plan', async () => {
     const api = fakeCoolify([row('A', '1')]);
     expect(await envDiff(parseArgs(['env', 'diff', '--app', 'web', '--set', 'A=1', '--fail-on-changes']), deps(api).deps)).toBe(0);
-    expect(await envDiff(parseArgs(['env', 'diff', '--app', 'web', '--set', 'A=2', '--fail-on-changes']), deps(api).deps)).toBe(4);
+    out = [];
+    const err = await envDiff(parseArgs(['env', 'diff', '--app', 'web', '--set', 'A=2', '--fail-on-changes', '--json']), deps(api).deps).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(EnvChangesPendingError);
+    expect(errorToExitCode(err)).toBe(4);
+    expect((err as EnvChangesPendingError).keys).toEqual(['A']);
+    expect(oneJson()['updates']).toEqual([{ key: 'A', value: '[REDACTED] (1 chars)' }]);
   });
 
   it('a value update keeps the flags the row has set (Coolify 4.5 reset omitted flags)', () => {
@@ -390,13 +404,18 @@ describe('status', () => {
     api.getLatestDeployment.mockRejectedValue(new CoolifyContractError('Coolify response (listDeployments[0]) failed contract validation: status: expected string', { zodIssues: '' }));
     expect(await statusCmd(parseArgs(['status', '--app', 'web', '--json']), deps(api).deps)).toBe(0);
     expect(oneJson()).toMatchObject({ latestDeployment: null, latestDeploymentError: expect.stringContaining('failed contract validation') as unknown });
+    expect(stderr()).toBe(''); // with --json the reason is in the document
+    out = [];
+    expect(await statusCmd(parseArgs(['status', '--app', 'web']), deps(api).deps)).toBe(0);
     expect(stderr()).toContain('could not read the latest deployment');
+    expect(stdout()).toContain('latest deploy: (unavailable');
   });
 
-  it('an auth failure on the latest deployment still fails the command', async () => {
+  it('a failure reading the latest deployment never fails status (0.4 behaviour), whatever the error', async () => {
     const api = fakeCoolify([]);
-    api.getLatestDeployment.mockRejectedValue(new CoolifyAuthError('Coolify auth failed (401)', { status: 401 }));
-    await expect(statusCmd(parseArgs(['status', '--app', 'web']), deps(api).deps)).rejects.toBeInstanceOf(CoolifyAuthError);
+    api.getLatestDeployment.mockRejectedValue(new CoolifyAuthError('Coolify auth failed (403)', { status: 403 }));
+    expect(await statusCmd(parseArgs(['status', '--app', 'web', '--json']), deps(api).deps)).toBe(0);
+    expect(oneJson()['latestDeploymentError']).toContain('403');
   });
 });
 
@@ -428,7 +447,7 @@ describe('compatibility with the live Coolify version', () => {
   it('instance info WARNS (stderr + JSON, exit 0) when Coolify is newer or older than the tested range', async () => {
     expect(await instanceInfo(parseArgs(['instance', 'info', '--instance', 'prod', '--json']), withInstance('4.9.0'))).toBe(0);
     expect(oneJson()).toMatchObject({ version: '4.9.0', compatibility: 'newer', warning: expect.stringContaining('newer than the range') as unknown });
-    expect(stderr()).toContain('WARNING: Coolify 4.9.0 is newer than the range');
+    expect(stderr()).toBe(''); // with --json the warning is in the document
     out = []; err = [];
     expect(await instanceInfo(parseArgs(['instance', 'info', '--instance', 'prod']), withInstance('4.3.16'))).toBe(0);
     expect(stdout()).toContain('OUTSIDE the tested range');
@@ -441,29 +460,48 @@ describe('compatibility with the live Coolify version', () => {
     expect(code).toBe(0);
     const doc = oneJson();
     expect(doc).toMatchObject({ ok: true, harness: HARNESS_VERSION, offline: false });
-    expect((doc['instances'] as Array<Record<string, unknown>>)[0]).toMatchObject({ name: 'prod', tokenPresent: true, reachable: true, version: '4.8.1', compatibility: 'newer' });
+    const inst = (doc['instances'] as Array<Record<string, unknown>>)[0]!;
+    // The NAME of the variable must be readable: it is what the agent has to set.
+    expect(inst).toMatchObject({ name: 'prod', envVar: 'COOLIFY_PROD_TOKEN', envVarSet: true, reachable: true, version: '4.8.1', compatibility: 'newer' });
+    expect((inst['warnings'] as string[])[0]).toContain('Coolify 4.8.1 is newer');
     expect(stdout()).not.toContain('"tok"');
-    expect(stderr()).toContain('WARNING [prod]: Coolify 4.8.1 is newer');
+    expect(stderr()).toBe('');
     expect(getVersion).toHaveBeenCalledWith({ instanceUrl: 'https://coolify.example.com', token: 'tok' });
+    out = [];
+    await configDoctor(parseArgs(['config', 'doctor', '--config', CONFIG]), { env: { COOLIFY_PROD_TOKEN: 'tok' }, getVersion });
+    expect(stdout()).toContain('Config OK.');
+    expect(stderr()).toContain('WARNING [prod]: Coolify 4.8.1 is newer');
   });
 
-  it('config doctor without a token reports it and stays exit 0; naming the target makes it exit 5', async () => {
+  it('config doctor is not "OK" when nothing is usable: no token at all is exit 5, in prose and in JSON', async () => {
     const getVersion = vi.fn();
-    expect(await configDoctor(parseArgs(['config', 'doctor', '--config', CONFIG]), { env: {}, getVersion })).toBe(0);
+    expect(await configDoctor(parseArgs(['config', 'doctor', '--config', CONFIG]), { env: {}, getVersion })).toBe(5);
+    expect(stdout()).toContain('Config loaded, with problems.');
     expect(stdout()).toContain('token COOLIFY_PROD_TOKEN: MISSING');
+    expect(stderr()).toContain("Env var 'COOLIFY_PROD_TOKEN' (token for instance 'prod') is not set");
     expect(getVersion).not.toHaveBeenCalled();
     out = []; err = [];
-    expect(await configDoctor(parseArgs(['config', 'doctor', '--app', 'my-api', '--config', CONFIG]), { env: {}, getVersion })).toBe(5);
-    expect(stderr()).toContain("Env var 'COOLIFY_PROD_TOKEN' (token for instance 'prod') is not set");
+    expect(await configDoctor(parseArgs(['config', 'doctor', '--app', 'my-api', '--json', '--config', CONFIG]), { env: {}, getVersion })).toBe(5);
+    expect(oneJson()).toMatchObject({ ok: false });
+    expect(JSON.parse(stderr())).toEqual({ error: { code: 'MISSING_TOKEN', message: "Env var 'COOLIFY_PROD_TOKEN' (token for instance 'prod') is not set", exitCode: 5 } });
   });
 
-  it('config doctor --offline never calls Coolify; a rejected token fails the named target with exit 5', async () => {
-    const getVersion = vi.fn(async () => { throw new CoolifyAuthError('Coolify auth failed (401) — Unauthenticated.', { status: 401 }); });
+  it('config doctor fails when a token is set but rejected (5) or the instance is unreachable (1)', async () => {
+    const rejected = vi.fn(async () => { throw new CoolifyAuthError('Coolify auth failed (401) — Unauthenticated.', { status: 401 }); });
+    expect(await configDoctor(parseArgs(['config', 'doctor', '--json', '--config', CONFIG]), { env: { COOLIFY_PROD_TOKEN: 'tok' }, getVersion: rejected })).toBe(5);
+    expect(oneJson()).toMatchObject({ ok: false });
+    expect((JSON.parse(stderr()) as { error: { code: string } }).error.code).toBe('COOLIFY_AUTH');
+    out = []; err = [];
+    const down = vi.fn(async () => { throw new CoolifyNetworkError('Cannot reach Coolify at https://coolify.example.com', { reason: 'ENOTFOUND' }); });
+    expect(await configDoctor(parseArgs(['config', 'doctor', '--config', CONFIG]), { env: { COOLIFY_PROD_TOKEN: 'tok' }, getVersion: down })).toBe(1);
+    expect(stdout()).toContain('FAILED: Cannot reach Coolify');
+  });
+
+  it('config doctor --offline never calls Coolify and passes when the token is set', async () => {
+    const getVersion = vi.fn();
     expect(await configDoctor(parseArgs(['config', 'doctor', '--offline', '--app', 'my-api', '--config', CONFIG]), { env: { COOLIFY_PROD_TOKEN: 'tok' }, getVersion })).toBe(0);
     expect(getVersion).not.toHaveBeenCalled();
     expect(stdout()).toContain("Target 'my-api' resolves and its token is present.");
-    out = []; err = [];
-    expect(await configDoctor(parseArgs(['config', 'doctor', '--app', 'my-api', '--json', '--config', CONFIG]), { env: { COOLIFY_PROD_TOKEN: 'tok' }, getVersion })).toBe(5);
-    expect(oneJson()).toMatchObject({ ok: false });
+    expect(stdout()).toContain('not checked (--offline)');
   });
 });

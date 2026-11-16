@@ -4,26 +4,31 @@ import { configPathFor } from '../config-path.js';
 import { generateCatalog } from '../../catalog/generate.js';
 import { checkCatalogFresh } from '../../catalog/stale-check.js';
 import { EXIT } from '../exit.js';
-import { ConfigError } from '../../errors/index.js';
+import { CatalogStaleError, ConfigError } from '../../errors/index.js';
+import { print, printJson } from '../deps.js';
 
-export async function catalogGen(args: ParsedArgs): Promise<number> {
+async function catalogConfig(args: ParsedArgs): Promise<NonNullable<Awaited<ReturnType<typeof loadConfigModule>>['catalog']>> {
   const path = configPathFor(args);
   const mod = await loadConfigModule(path);
-  if (!mod.catalog) throw new ConfigError(`Config '${path}' has no 'catalog' export (see the README "Catalog flow" section)`);
-  await generateCatalog({ schemas: mod.catalog.schemas, out: mod.catalog.out });
-  process.stdout.write('Catalog regenerated.\n');
+  if (!mod.catalog) throw new ConfigError(`Config '${path}' has no 'catalog' export (README, "Env catalog from Zod schemas")`);
+  return mod.catalog;
+}
+
+export async function catalogGen(args: ParsedArgs): Promise<number> {
+  const catalog = await catalogConfig(args);
+  const artifacts = await generateCatalog({ schemas: catalog.schemas, out: catalog.out });
+  const written = [catalog.out.markdown, catalog.out.json, catalog.out.dotenvExample].filter((p): p is string => typeof p === 'string');
+  if (args.json) printJson({ written, keys: artifacts.model.length });
+  else print('Catalog regenerated.');
   return EXIT.ok;
 }
 
+/** Exit 3 (CatalogStaleError) when a committed artifact differs from what the schemas generate. */
 export async function catalogCheck(args: ParsedArgs): Promise<number> {
-  const path = configPathFor(args);
-  const mod = await loadConfigModule(path);
-  if (!mod.catalog) throw new ConfigError(`Config '${path}' has no 'catalog' export (see the README "Catalog flow" section)`);
-  const res = await checkCatalogFresh({ schemas: mod.catalog.schemas, files: mod.catalog.out });
-  if (!res.fresh) {
-    process.stderr.write(`${res.diff}\n`);
-    return EXIT.catalogStale;
-  }
-  process.stdout.write('Catalog is fresh.\n');
+  const catalog = await catalogConfig(args);
+  const res = await checkCatalogFresh({ schemas: catalog.schemas, files: catalog.out });
+  if (!res.fresh) throw new CatalogStaleError(res.diff, { staleFiles: res.staleFiles });
+  if (args.json) printJson({ fresh: true, staleFiles: [] });
+  else print('Catalog is fresh.');
   return EXIT.ok;
 }

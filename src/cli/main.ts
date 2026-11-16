@@ -1,7 +1,8 @@
+#!/usr/bin/env node
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from './args.js';
-import { EXIT, errorCode, errorToExitCode } from './exit.js';
+import { errorCode, errorToExitCode } from './exit.js';
 import { sanitizeErrorMessage } from './errors-out.js';
 
 export { EXIT, errorToExitCode } from './exit.js';
@@ -75,10 +76,15 @@ export function isMainModule(metaUrl: string, argv1: string | undefined): boolea
 
 // Bin entrypoint: run main and set the process exit code.
 if (isMainModule(import.meta.url, process.argv[1])) {
-  // `coolify-harness … | head`: the reader closing the pipe is not an error worth a stack trace.
-  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EPIPE') process.exit(process.exitCode ?? EXIT.ok);
-  });
+  // `coolify-harness … | head`: the reader closed the pipe. That is no reason to crash, and no
+  // reason to STOP either: a mutation in flight must finish, be audited and set its real exit
+  // code. Further output is simply dropped.
+  for (const stream of [process.stdout, process.stderr]) {
+    stream.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EPIPE') throw err;
+      stream.write = (() => true) as typeof stream.write;
+    });
+  }
   main(process.argv.slice(2))
     .then((code) => { process.exitCode = code; })
     .catch((err: unknown) => { process.exitCode = reportError(err, process.argv.includes('--json')); });

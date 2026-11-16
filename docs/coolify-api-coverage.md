@@ -20,19 +20,36 @@ How it was verified:
 | Area | Change in Coolify | What the harness does |
 |---|---|---|
 | Token abilities | **Every `DELETE` route now needs a new `delete` ability** (`write` no longer covers it). | `env delete` asks for `delete`; a 403 prints Coolify's own reason (`Missing required permissions: delete`). Add `delete` to the token. |
-| Token scoping | Tokens can be limited to projects / environments / resources. Such a token gets a 403 on team-level routes (servers, proxy, databases list is fine; `/servers/*` is not). | The 403 message carries Coolify's sentence, so the cause is visible. |
+| Token scoping | Tokens can be limited to projects / environments / resources. Such a token gets a 403 on team-level routes (everything under `/servers`; applications, services, databases and deployments stay reachable). | The 403 message carries Coolify's sentence, so the cause is visible. |
 | Env rows | A compose-declared blank variable (`${VAR:-}`) is stored with `value: null`. | Read as an empty value flagged `value_null` (fixed in 0.4.1). |
 | Env rows | A locked variable (`is_shown_once`) is permanent, and its `value` / `real_value` are omitted for every token. | `env list` shows `len=locked`; `env diff` / `apply` rewrite it with a warning instead of failing as "missing read:sensitive". |
 | Env bulk write | On update, Coolify 4.7 keeps the flags the request omits. 4.5 reset them (`is_literal`, `is_multiline`, `is_shown_once`). | An update re-sends the flags the row has set, so both versions keep them. |
-| Env bulk write | Services and databases accept only `key, value, is_literal, is_multiline, is_shown_once, comment`; `is_preview` is dropped silently. | `--preview` on a service / database is refused (exit 2) before any request. |
+| Env bulk write | On 4.7 services and databases keep only `key, value, is_literal, is_multiline, is_shown_once, comment` and drop `is_preview` silently (4.5 wrote every fillable field it was given). Either way they have no preview rows. | `--preview` on a service / database is refused (exit 2) before any request. |
 | Env bulk write | A duplicate key in the same scope can no longer be created. Existing duplicates remain. | Duplicate detection and repair advice unchanged. |
-| Deploy queue | `/applications/{uuid}/start` can answer "queued" while the queue is full; the deployment then never exists. | `deploy --wait` explains a 404 on the acknowledged deployment instead of a bare "not found". |
+| Hidden documents | `docker_compose_raw` is omitted (no 403) for a token without `read:sensitive` or a non-admin user — unchanged since 4.5, but the harness treated it as an empty compose. | `compose get` / `compose set` and the `env delete` lock check fail with exit 5. |
 | `POST /deploy` | New `cancel_previous=queued|building`. | Not wrapped (see below). |
 | Proxy | `proxy_error_page` on `GET` / `PATCH /servers/{uuid}/proxy`. | Accepted by `ServerProxyUpdateSchema` (library). |
 | Deployments | `is_mcp`, `scan_gate_*`, `github_deployment_*` columns. | Passed through. |
 | New families | DNS records, secret-manager sources, integration tokens, image scanning / vulnerabilities, Gitea apps, host-key reset (29 operations). | Not wrapped. |
 
 Nothing the harness uses was removed. `GET /version` and `GET /health` still answer `text/html`.
+
+Behaviours that are the same on 4.5.0 and 4.7.5 and that the harness now handles:
+
+- `POST /applications/{uuid}/start` answers 200 **without** a `deployment_uuid` when the same
+  commit is already queued or building (`skipped`). `deploy --wait` follows the deployment in
+  progress. The same handler does not check for a full queue, so an acknowledged deployment may
+  not exist: `deploy --wait` explains the 404.
+- The bulk env endpoint validates and writes item by item, with no transaction: an invalid key in
+  the middle leaves the earlier keys written. Names are validated before sending.
+- Creating a key on a service or database answers a row without its flag columns
+  (`updateOrCreate` without a refresh). The acknowledgement of an accepted write is not validated
+  strictly; the confirmation is the re-read.
+- Values are trimmed on save (single-line values on 4.7, every value on 4.5).
+- `PATCH /databases/{uuid}` starts the public-port proxy only when the same request carries
+  `is_public: true` and `public_port`.
+- `PUT /servers/{uuid}/proxy/configuration` records the new configuration before writing the
+  file: a replay finds "nothing changed" and skips the backup. It is not retried.
 
 ## What the Coolify API does not expose (and the harness therefore does not do)
 

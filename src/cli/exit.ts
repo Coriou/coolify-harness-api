@@ -1,7 +1,7 @@
 import {
   CatalogStaleError, DuplicateKeyDriftError, CoolifyAuthError, CoolifyAuthScopeError, LockedVarError,
   CoolifyFeatureNotSupportedError, CoolifyWaitTimeoutError, ConfigError, MissingTokenError,
-  UsageError, InvalidInputError, CoolifyHarnessError,
+  UsageError, InvalidInputError, CoolifyHarnessError, EnvChangesPendingError,
 } from '../errors/index.js';
 
 /**
@@ -16,7 +16,7 @@ export const EXIT = {
 
 export function errorToExitCode(err: unknown): number {
   if (err instanceof CatalogStaleError) return EXIT.catalogStale;
-  if (err instanceof DuplicateKeyDriftError) return EXIT.drift;
+  if (err instanceof DuplicateKeyDriftError || err instanceof EnvChangesPendingError) return EXIT.drift;
   if (err instanceof CoolifyAuthScopeError || err instanceof CoolifyAuthError || err instanceof MissingTokenError) return EXIT.authScope;
   if (err instanceof ConfigError || err instanceof UsageError || err instanceof InvalidInputError) return EXIT.usage;
   if (err instanceof LockedVarError) return EXIT.lockedVar;

@@ -11,66 +11,102 @@ Verified against **Coolify 4.7.5** (latest stable; two live instances, read-only
 **4.5.0 – 4.7.5**. What changed in Coolify and what the API still cannot do:
 `docs/coolify-api-coverage.md`.
 
-Upgrading from 0.4.x needs no change to a config or to the commands you run. Read "Changed" if you
-parse `--json` output of `env apply`, call the library, or run `env delete` on Coolify ≥ 4.7.
+### Upgrading from 0.4.x
+
+No config change is needed, and no command or flag was removed. Check these:
+
+- **`env delete` on Coolify ≥ 4.7 needs a token with the `delete` ability** (a Coolify change).
+- **`config doctor` now calls Coolify** (`GET /version`) and exits non-zero when a token is set
+  but rejected (5), the instance cannot be reached (1), or no token is set at all (5). Add
+  `--offline` for the old local-only check.
+- **`--from-file` strips the quotes around a value.** The first `env diff --from-file` after
+  upgrading lists the keys 0.4 wrote *with* their quotes as updates; applying fixes them.
+- **Variable names are validated** (letters, digits, `_`, `.`): a bad name is exit 2 before any
+  request, instead of a half-applied write.
+- `compose get` / `compose set` need `read:sensitive` (they printed an empty document without it).
+- `env diff --json` / `env apply --json`: every `value` is redacted (they were printed in clear).
+- If you parse `env apply --json` / `flag set --json`: it is now ONE document (plan + `dryRun`,
+  `applied`, `confirmed`); it used to be JSON followed by prose.
+- Library: invalid input raises `InvalidInputError`, not a `ZodError`; `DEFAULT_LATEST_TAKE` is 1.
 
 ### Security
 - **`env diff --json` and `env apply --json` printed env values in clear**: the desired values
   (`creates[].value`, `updates[].value`) and, on a key with duplicate rows, the LIVE values
   (`duplicateKeyDrift[].values`). Every value in a plan is now `[REDACTED] (N chars)`. Human
   output was never affected.
-- A `--set` argument without `=`, a stray positional argument and a malformed dotenv line are no
-  longer echoed in the error (they are often a secret that slipped out of its flag).
+- **Redaction bypasses closed.** A compose with Windows line endings (CRLF) was not redacted at
+  all. Also now covered: quoted keys and JSON-style compose, flow mappings, a list at the indent
+  of `environment:`, anchors, values spanning lines (block scalars with indicators, a value on the
+  next line, multi-line quoted scalars), PEM blocks, every value under `environment:` whatever the
+  key case, `command:` / `entrypoint:` / `test:` and Dockerfile `RUN` / `ENV` / `ARG` (flags such as
+  `--requirepass x`, `-a x`, `-pSECRET`, `-u user:pass`, header values, `export token=…`),
+  `requirepass` / `http_Passwd` style directives in `*_conf` documents, Traefik / Caddy auth
+  labels, URL passwords after an empty user or containing `@`, `?password=` query parameters,
+  token-only URLs, `Bearer` tokens in Coolify's own format, and everything nested under a
+  sensitive key. The compose diff redacts each document as a whole.
+- The API token can no longer reach an error message: a token with a line break is refused
+  without being quoted, and the runtime's own message is scrubbed.
+- Redirects are not followed, so a token or a request body never travels to another address.
+- A `--set` argument without `=`, a stray argument, an invalid variable name and a malformed
+  dotenv line are described in errors, never quoted (they are often a secret out of place).
 - Server error messages are sanitised before they reach stderr or the audit log: anything that
-  repeats a value sent in the request, credentials inside URLs and `Bearer` tokens are removed,
-  and the message is bounded.
-- Redaction now also covers: URL passwords after an empty user (`redis://:pw@host`), token-only
-  URLs (`https://TOKEN@github.com/…`), every value under a compose `environment:` block whatever
-  the key case, YAML block scalars and PEM blocks, sensitive `--flag=value` proxy arguments,
-  Dockerfile `ENV` / `ARG`, build / start / deployment commands, `init_scripts` and `*_conf`
-  documents. The compose diff redacts each document as a whole, so a changed line of a multi-line
-  secret is not shown.
-- `--out FILE` forces mode 0600 on a file that already existed; the audit log is created 0600.
-- The config refuses an instance URL with credentials and a `tokenEnv` that looks like a token.
+  repeats a value or a line of a document sent in the request, URL credentials and tokens.
+- `--out FILE` refuses to write through a symlink and sets mode 0600 before writing; the audit
+  log is 0600 (also when an older version created it).
+- The config refuses an instance URL with credentials and a `tokenEnv` that is not a variable name.
 
 ### Fixed
-- **`flag set --redeploy` without `--apply` triggered a real deploy** after its dry-run. It now
-  deploys only after a real write.
+- **`flag set --redeploy` without `--apply` triggered a real deploy** after its dry-run.
 - **Mutations were retried after a lost answer.** A network error or 5xx on `POST …/start`,
-  `…/restart`, a cancel or a delete was replayed up to 3 times, which could queue a second
-  deployment. Only reads, idempotent writes (env bulk upsert, compose and proxy saves) and 429
-  answers are retried now.
+  `…/restart`, a cancel, a delete or a proxy save was replayed up to 3 times, which could queue a
+  second deployment. Only reads, the env bulk upsert, the service compose save and 429 answers are
+  retried now.
+- **A mutation that landed could be reported as failed**: an acknowledgement in an unexpected
+  shape (creating a key on a service or database answers a row without its flags), or a failing
+  confirmation read after `compose set` / `proxy set` / `database set`. The write is now reported
+  as done, "not confirmed" when the re-read failed, and `--restart` still runs.
+- **`deploy --wait` returned at once (exit 0) when Coolify skipped the request** because the same
+  commit was already queued or building. It now follows that deployment.
+- **`deploy --wait` gave up after ~6 s of Coolify being unreachable** (and again after 20 s once
+  the circuit breaker opened). It rides out 5 failed polls, does not count polls refused by the
+  open breaker, treats a 404 as fatal only before the deployment was first seen, stops at once on
+  other 4xx answers, and never runs past its timeout.
 - **No request timeout**: a hung connection hung the command forever. Every attempt has a 30 s
-  timeout (`timeoutMs`), and a `Retry-After` longer than 30 s is reported instead of slept through.
+  timeout, and a `Retry-After` longer than 30 s is reported instead of slept through.
 - **`status` downloaded 20 build logs** (megabytes) to show one deployment: it now asks for one
-  row, in parallel with the resource. `logs --build` reuses that row instead of fetching it again.
-- `status` hid any error on the latest deployment behind "(none found)"; it now warns and adds
-  `latestDeploymentError` to the JSON.
+  row, in parallel with the resource. `logs --build` reuses that row.
+- `status` hid any error on the latest deployment behind "(none found)"; it now says why
+  (`latestDeploymentError` in the JSON).
 - `env apply --json` printed the plan followed by prose; `flag set --json --redeploy` printed two
-  documents; `env delete --apply --json` printed its document before deleting. Each prints exactly
-  one document, after the fact.
+  documents; `env delete --apply --json` printed its document before deleting.
 - **`--preview` on a service or database wrote the production row** (Coolify drops `is_preview`
   there). It is refused before any request.
 - **A locked ("shown once") variable made `env diff` / `env apply` fail** with a misleading
   "token lacks read:sensitive". Locked rows are listed as `len=locked` and rewritten with a warning.
-- `env diff` never came back clean for a key with duplicate rows that all held the desired value.
+- `env diff` never came back clean for a key with duplicate rows that all held the desired value,
+  nor for a value with leading or trailing whitespace (Coolify trims on save).
 - An env update on Coolify 4.5 reset `is_literal` / `is_multiline` / the lock; the flags a row has
   set are now sent back with the update.
+- One invalid variable name in a bulk write left the keys before it written and the command
+  reported as failed. Names are validated before anything is sent.
 - A dotenv value in quotes was written to Coolify **with its quotes**. `--from-file` now removes
   matching quotes, expands `\n` in double quotes and reads multi-line quoted values. Unquoted
-  values are unchanged.
-- A write that succeeded but could not be re-read was reported (and audited) as a failed write.
-- A failing audit log (read-only checkout, full disk) turned a successful mutation into an error.
-- `deploy --wait` gave up after ~6 s of Coolify being unreachable; it now rides out 5 failed polls
-  and stops at once on answers that cannot recover (4xx). It no longer sleeps past its timeout.
+  values are unchanged; an unterminated quote is an error.
+- `compose get` / `compose set` / the `env delete` lock check treated a compose Coolify withheld
+  (no `read:sensitive`) as an empty one; they now fail with exit 5.
+- `database set --public true` flipped the column without opening the port: Coolify needs
+  `is_public` and `public_port` in one request.
+- `env delete` with several keys said nothing about the rows deleted before a failure.
+- A failing audit log (read-only checkout, full disk) turned a successful mutation into an error;
+  a closed pipe (`… | head`) killed a command mid-mutation with exit 0.
 - A missing config file, an unreadable `--from-file`, and `--app --json` (a flag swallowed as a
   value) are usage/config errors (exit 2) with a clear message, not raw runtime errors.
 - 403 errors show Coolify's own reason (`Missing required permissions: delete`, a token limited to
-  some projects) instead of a guessed scope name.
-- Network failures say which host and why (`ENOTFOUND`, timeout) instead of `fetch failed`.
-- Contract errors name the failing fields and types (`[1].value: expected string, received null`).
+  some projects); network failures say which host and why; contract errors name the failing
+  fields and types.
 - pnpm refused to install the package from git (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`) and Bun
   skipped its `prepare` script: the script is gone, `dist/` is committed and checked in CI.
+- The `coolify-harness` bin had no shebang: under Bun it was run by the shell.
 
 ### Added
 - **Coolify 4.7.5 contract**: `env delete` asks for the new `delete` token ability; fixtures in
@@ -80,41 +116,46 @@ parse `--json` output of `env apply`, call the library, or run `env delete` on C
   `instance info` and `config doctor` warn (never fail) when the live Coolify is outside the
   tested range; `coolify-harness --version` prints the harness version and the range.
 - `config doctor` checks every instance that has a token (`GET /version`): reachability, token,
-  version. `--offline` skips the network, `--json` is supported, `--instance` narrows it.
+  version. `--offline`, `--json`, `--instance`.
 - With `--json`, a failure is one JSON document on stderr:
-  `{ "error": { "code", "message", "exitCode", … } }`.
+  `{ "error": { "code", "message", "exitCode", … } }`, for every non-zero exit; `help` and
+  `catalog gen` / `catalog check` honour `--json` too.
+- `--env-file FILE`: read the API token(s) from a dotenv file (the real environment wins), so
+  `"coolify": "coolify-harness --env-file .env"` is the whole wrapper script.
 - `deploy --dry-run`; `env diff --fail-on-changes` (exit 4 when anything would be written);
   `--no-logs` on `status`, `deployments`, `deployment`, `deploy --wait` (`logs_length` instead of
   the build log).
 - `env apply --json`: `dryRun`, `applied`, `confirmed`, `confirmError`. `env delete --json`:
   `deleted`, `confirmed`.
 - Catalog: **zod 4 and zod mini schemas** (a zod 4 schema used to throw "not a ZodObject"), next
-  to zod 3. `SchemaInput.schema` accepts any of them.
+  to zod 3, whose output is unchanged. `SchemaInput.schema` accepts any of them.
 - Config: `coolify-harness.config.{mts,mjs,js}` are found automatically; clearer validation errors.
 - `waitForDeployment`: `signal` (abort), `maxIntervalMs`; Ctrl-C during `deploy --wait` prints how
   to follow or cancel the deployment (exit 130).
 - Unknown commands suggest the nearest one.
-- Library: `CoolifyNetworkError`, `UsageError`, `InvalidInputError`, `isLockedRow`,
-  `findConfigFile`, `redactCommandLine`, `redactUrlCredentials`, the `EnvVar` / `EnvWriteItem` /
-  `EnvWriteResult` types, `CoolifyClientDeps.timeoutMs` / `maxRetryDelayMs`.
+- Library: `CoolifyNetworkError`, `UsageError`, `InvalidInputError`, `EnvChangesPendingError`,
+  `isLockedRow`, `findConfigFile`, `redactCommandLine`, `redactUrlCredentials`, the `EnvVar` /
+  `EnvWriteItem` / `EnvWriteResult` types, `CoolifyClientDeps.timeoutMs` / `maxRetryDelayMs`.
 - Onboarding: README rewritten (install from GitHub with pnpm or Bun, 5-minute quick start, "For
   AI agents", troubleshooting, compatibility table), `CONTRIBUTING.md`, `SECURITY.md`, issue
   template, GitHub releases.
 
 ### Changed
-- **zod 4** internally (was zod 3). Consumers are not affected: the catalog reads schemas
-  structurally, and invalid input to the library now raises `InvalidInputError` (exit 2 as
-  before) instead of a raw `ZodError`. Usage errors are `UsageError`, not `ZodError`.
-- `env apply --json` / `env diff --json`: `value` fields are redacted (see Security); `env apply`
-  adds `dryRun` / `applied` / `confirmed` to the plan document.
+- **zod 4** internally (was zod 3), loaded only while a request is in flight: `help` and usage
+  errors no longer load it at all. The config is validated without zod.
+- `config doctor` contacts Coolify and its exit code reflects what it found (see Upgrading).
+- `catalog check` on stale artifacts and `catalog gen` on a schema that is not an object are
+  typed errors (exit 3 and exit 2; the second was exit 1).
 - `DEFAULT_LATEST_TAKE` is 1 (was 20) and `getLatestDeployment()` returns the newest deployment by
   creation time.
 - HTTP defaults: first retry after 250 ms (was 50 ms); `deploy --wait` polls every 2 s growing to
   5 s (a fixed `intervalMs` is honoured as before); 5 consecutive poll failures tolerated (was 3).
-- Requests send `Accept: application/json` and `User-Agent: coolify-harness/<version>`.
+- Requests send `Accept: application/json` and `User-Agent: coolify-harness/<version>`; redirects
+  are not followed.
 - An env update carries `is_literal` / `is_multiline` / `is_shown_once` when the existing row has
   them set (visible in the plan JSON).
-- Toolchain: pnpm 12, TypeScript 6, vitest 5, ESLint 10 + typescript-eslint, zod 4.6. CI runs on
+- `--take 0` is a usage error (Coolify requires at least 1).
+- Toolchain: pnpm 12, TypeScript 6, vitest 5, ESLint 10 + typescript-eslint, zod 4. CI runs on
   Node 24 and 26. No `prepare` script; `prepublishOnly` runs the checks.
 - `docs/coolify-4.5-api-coverage.md` is now `docs/coolify-api-coverage.md` (pinned to 4.7.5).
 

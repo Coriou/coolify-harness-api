@@ -103,7 +103,7 @@ describe('CLI arg parsing quirks agents hit', () => {
 
   it('rejects unknown flags, stray positionals and bad values with a usage error', () => {
     expect(() => parseArgs(['status', '--nope'])).toThrow(/Unknown flag/);
-    expect(() => parseArgs(['status', 'extra'])).toThrow(/Unexpected argument/);
+    expect(() => parseArgs(['status', 'extra'])).toThrow(/1 unexpected argument\(s\) after the command \(not echoed/);
     expect(() => parseArgs(['database', 'set', '--public', 'maybe'])).toThrow(/true or false/);
     expect(() => parseArgs([])).toThrow(/No command/);
   });

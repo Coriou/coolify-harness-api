@@ -1,7 +1,6 @@
 import type { ParsedArgs } from '../args.js';
 import type { CmdDeps } from '../deps.js';
 import type { Deployment } from '../../client/schemas.js';
-import { CoolifyAuthError, CoolifyAuthScopeError } from '../../errors/index.js';
 import { print, printJson, warn, usageFail } from '../deps.js';
 import { sanitizeErrorMessage } from '../errors-out.js';
 import { withScope } from '../scope.js';
@@ -28,12 +27,12 @@ export async function statusCmd(args: ParsedArgs, deps: CmdDeps): Promise<number
   const [app, latest] = await Promise.all([
     withScope('read', () => client.get()),
     withScope('read', () => client.getLatestDeployment()).catch((err: unknown): Deployment | undefined => {
-      if (err instanceof CoolifyAuthError || err instanceof CoolifyAuthScopeError) throw err;
       latestError = sanitizeErrorMessage(err);
       return undefined;
     }),
   ]);
-  if (latestError !== undefined) warn(`status: could not read the latest deployment: ${latestError}`);
+  // With --json the reason is in the document (latestDeploymentError); stderr stays empty on success.
+  if (latestError !== undefined && !args.json) warn(`status: could not read the latest deployment: ${latestError}`);
 
   if (args.json) {
     // The raw resource carries webhook secrets, basic-auth fields and compose documents: redacted.

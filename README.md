@@ -85,27 +85,29 @@ export default defineConfig({
 
 **3. Add a script** to `package.json` so the token is loaded and the command is short:
 
-```jsonc
+```json
 {
   "scripts": {
-    // Node: loads .env itself
-    "coolify": "node --env-file-if-exists=.env node_modules/coolify-harness/dist/cli/main.js"
-    // Bun (loads .env on its own):
-    // "coolify": "bun node_modules/coolify-harness/dist/cli/main.js"
+    "coolify": "coolify-harness --env-file .env"
   }
 }
 ```
 
+`--env-file` reads the token from the file without touching your environment (a variable that is
+already set wins). On a machine with Bun and no Node, use
+`"coolify": "bun node_modules/coolify-harness/dist/cli/main.js"` instead: Bun loads `.env` itself.
+
 **4. Check the wiring, then look around:**
 
 ```bash
-pnpm coolify config doctor          # config valid? token present? instance reachable? version tested?
-pnpm coolify status --app my-app    # state + latest deployment
-pnpm coolify env list --app my-app  # keys, flags and value LENGTHS — never values
-pnpm coolify help
+pnpm -s coolify config doctor          # config valid? token set? instance reachable? version tested?
+pnpm -s coolify status --app my-app    # state + latest deployment
+pnpm -s coolify env list --app my-app  # keys, flags and value LENGTHS — never values
+pnpm -s coolify help
 ```
 
-With Bun: `bun run coolify config doctor`, and so on.
+With Bun: `bun run --silent coolify config doctor`, and so on. Keep `-s` / `--silent`: without it
+the script runner prints its own banner around the output (and echoes the command line).
 
 <details>
 <summary>Alternative: a tiny entry script (handy when you want to load env your own way)</summary>
@@ -125,7 +127,8 @@ Run it with `bun scripts/coolify.ts status --app my-app` (Bun loads `.env`), or
 ## For AI agents
 
 Everything an agent needs to drive a deployment safely. The examples write `coolify-harness`; use
-the script from the quick start (`pnpm coolify …`) so the token is loaded.
+the script from the quick start (`pnpm -s coolify …`) so the token is loaded and nothing but the
+tool's own output reaches stdout.
 
 **The loop**
 
@@ -150,14 +153,20 @@ coolify-harness logs --app my-app --build              #    on failure: the buil
 - `compose get` / `proxy get` print a redacted document. `--out FILE` writes the real one (mode
   0600): keep it out of git and out of your context.
 - The harness never prints a token or an env value, and never SSHes into a server.
+- **Pass secret values with `--from-file`, never with `--set`.** A command line is visible to
+  script runners, process lists and shell history, outside the harness's control. `--set` is for
+  flags and other non-secret values.
 - Every mutation is appended to `.coolify-harness/audit.jsonl` (who, what, which keys, outcome).
   Git-ignore that directory.
 
 **Output contract**
 
-- `--json`: stdout is exactly one JSON document (redacted). Nothing else is written to stdout.
-- On failure with `--json`, stderr is one JSON document:
+- `--json`: stdout is exactly one JSON document (redacted), on every command including `help`.
+  On success stderr is empty.
+- On failure (any non-zero exit) with `--json`, stderr is one JSON document:
   `{ "error": { "code": "COOLIFY_AUTH_SCOPE", "message": "…", "exitCode": 5 } }`.
+  When part of the work was done before the failure (a deployment queued, rows deleted, a compose
+  saved), stdout still carries the document saying so.
 - Build logs are large (hundreds of kB per deployment). Use `--no-logs` on `status`, `deployments`,
   `deployment` and `deploy --wait`; you get `logs_length` instead.
 
@@ -174,6 +183,7 @@ coolify-harness logs --app my-app --build              #    on failure: the buil
 | 6 | Refused to delete an env var Coolify would re-create | Remove it from the compose first, or `--force` |
 | 7 | `deploy --wait`: the deployment failed or was cancelled | `logs --build` |
 | 8 | `deploy --wait`: timed out (`--timeout`, default 600 s) | The deployment is still running: `deployment <uuid>` |
+| 130 | `deploy --wait` interrupted (Ctrl-C) | The deployment is still running; the message says how to follow or cancel it |
 
 **Copy-paste for your `CLAUDE.md` / `AGENTS.md`**
 
@@ -181,17 +191,18 @@ coolify-harness logs --app my-app --build              #    on failure: the buil
 ## Deploys (Coolify)
 
 This project is operated with `coolify-harness` (config: `coolify-harness.config.ts`, token in the
-git-ignored `.env`). Run it as `pnpm coolify <command>`; `pnpm coolify help` lists everything.
+git-ignored `.env`). Run it as `pnpm -s coolify <command>`; `pnpm -s coolify help` lists everything.
 
-- Look first: `pnpm coolify config doctor`, `pnpm coolify status --app <target> --json --no-logs`.
+- Look first: `pnpm -s coolify config doctor`, `pnpm -s coolify status --app <target> --json --no-logs`.
 - Env: `env list` shows keys and lengths only. `env diff --from-file <file>` shows what would
-  change; `env apply … --apply` writes it. Env changes are inert until a redeploy.
-- Deploy: `pnpm coolify deploy --app <target> --wait` (exit 0 finished, 7 failed, 8 timed out;
-  `--force` rebuilds without the Docker cache). On failure: `pnpm coolify logs --app <target> --build`.
+  change; `env apply --from-file <file> --apply` writes it. Env changes are inert until a redeploy.
+- Deploy: `pnpm -s coolify deploy --app <target> --wait` (exit 0 finished, 7 failed, 8 timed out;
+  `--force` rebuilds without the Docker cache). On failure: `pnpm -s coolify logs --app <target> --build`.
 - Commands that change Coolify are a dry-run without `--apply`. `deploy` is the exception: it acts
   immediately. Ask before deploying to production unless told otherwise.
-- Never print, log or commit a token or an env value. Never write `compose get --out` /
-  `proxy get --out` files inside the repository.
+- Never print, log or commit a token or an env value. Put secret values in a file and use
+  `--from-file`, never `--set`. Never write `compose get --out` / `proxy get --out` files inside
+  the repository.
 - Exit codes: 0 ok, 1 Coolify/network error, 2 usage/config, 4 drift, 5 auth, 6 locked env var,
   7 deploy failed, 8 wait timeout. With `--json`, errors are `{ "error": { "code", "message" } }` on stderr.
 ```
@@ -224,7 +235,10 @@ coolify-harness flag set   --app my-app --set KEY=VALUE [--apply] [--redeploy [-
   have none). A differing row in the other scope is reported as "not written", never changed.
 - `env delete` refuses (exit 6) a key that Coolify manages or that the compose file still
   references: Coolify would re-create it. Remove the reference first, or pass `--force`.
-- `flag set` is `env apply` plus, with `--redeploy`, a deploy — only when run with `--apply`.
+- `flag set` is `env apply` plus, with `--redeploy`, a deploy. The deploy only happens together
+  with `--apply` (and then even if the value was already set: you asked for a redeploy).
+- A variable name must start with a letter or `_` and contain only letters, digits, `_` and `.`;
+  anything else is refused (exit 2) before a request is sent.
 - `env diff` / `apply` need `read:sensitive`; without it Coolify withholds values and the harness
   stops (exit 5) instead of planning against blanks.
 
@@ -260,7 +274,7 @@ coolify-harness deployment cancel UUID (--app my-app | --instance prod) [--apply
 ### Service compose
 
 ```bash
-coolify-harness compose get --app my-svc [--out svc.yml]
+coolify-harness compose get --app my-svc [--out svc.yml]                 # needs read:sensitive
 coolify-harness compose set --app my-svc --image umami=ghcr.io/umami-software/umami:3.4.0 [--apply] [--restart]
 coolify-harness compose set --app my-svc --from-file svc.yml [--apply]
 ```
@@ -338,14 +352,16 @@ the CLI through Bun or `tsx`.
 | `env list` | `read` (`read:sensitive` to see value lengths) |
 | `env diff`, `logs` (runtime or build) | `read` + `read:sensitive` |
 | `env apply` | `read` + `read:sensitive` + `write` |
-| `env delete` | `read` + `delete` (Coolify ≥ 4.7; `write` on older versions) |
-| `deploy`, `deploy --restart`, `deployment cancel` | `deploy` (+ `read` for `--wait`) |
-| `compose get` / `compose set` | `read` / `write` (+ `deploy` for `--restart`) |
-| `proxy get` | `read`; the configuration needs `read:sensitive` and a team admin/owner user |
-| `proxy set` | `read:sensitive` + `write` + `deploy` |
-| `proxy restart` | `deploy` |
-| `database set` | `write` (+ `deploy` when changing `--public`) |
-| `database backup` | `write` + `deploy` |
+| `env delete` | `read` + `delete` (Coolify ≥ 4.7; `write` on older versions); `read:sensitive` too on a service or a docker-compose application (the compose is read to check the key is not referenced) |
+| `deploy`, `deploy --restart` | `deploy` (+ `read` for `--wait`) |
+| `deployment cancel` | `read` + `deploy` |
+| `compose get` | `read` + `read:sensitive` |
+| `compose set` | `read` + `read:sensitive` + `write` (+ `deploy` for `--restart`) |
+| `proxy get` | `read`; the configuration needs `read:sensitive` |
+| `proxy set` | `read` + `read:sensitive` + `write` + `deploy` |
+| `proxy restart` | `read` + `deploy` |
+| `database set` | `read` + `write` (+ `deploy` when changing `--public` / `--public-port`) |
+| `database backup` | `read` + `write` + `deploy` |
 | `catalog gen` / `catalog check`, `help`, `--version` | none (local) |
 
 `read:sensitive` only works when the token's user is an admin or owner of the team. A token
@@ -362,12 +378,17 @@ limited to some projects cannot use server-level commands (`servers`, `server ge
 | Exit 5, `This API token is limited to selected projects…` | Scoped token on a server-level command | Use a team-wide token for `servers` / `proxy` |
 | Exit 5, `Env var 'X' … is not set` | The token is not in the environment | Load `.env` (`node --env-file=.env`, Bun does it itself) |
 | Exit 6 on `env delete` | Coolify manages the key or the compose still references it | Remove the reference (`compose set` or git), or `--force` |
+| Exit 5, `Coolify did not return the docker-compose document` | Coolify hides the compose from a token without `read:sensitive` (or a non-admin user) | Use such a token |
+| `… answered … with a redirect (301)` | The instance `url` in the config is not the final address (http → https, another host) | Put the final URL in the config. Redirects are never followed: the token would travel |
+| Exit 2, `variable name(s) are not valid` | A name with a dash or a space, or a multi-line value that is not quoted in the dotenv file | Quote multi-line values (`KEY="line1\nline2"`), fix the name |
+| JSON on stdout is preceded by `> pkg@1.0.0 coolify …` | The script runner's banner | `pnpm -s coolify …` / `bun run --silent coolify …` |
 | `env apply` says "confirmation mismatch" | Two rows of the same key in one scope: Coolify updates only one | `env list`, then `env delete` the extra row |
 | `env diff` keeps listing a key as an update | The key is locked (`len=locked`): Coolify never returns its value, so it cannot be compared | Expected; it is rewritten each time |
 | Env changed but the app did not | Coolify never redeploys on an env change | `deploy --app … --wait` |
 | Redeploy did not pick up a new base image | An unchanged commit reuses the cached image | `deploy --force` |
 | `Cannot reach Coolify at …` (exit 1, `COOLIFY_NETWORK`) | DNS, TLS, VPN, or Coolify is restarting | Retry reads freely. For a deploy, check `deployments` first |
 | `Could not load config …` | The runtime cannot import the config | Node ≥ 24 runs a self-contained `.ts`; otherwise use Bun / `tsx`, or a `.mjs` config |
+| `deploy --wait` says it is "following the deployment already in progress" | Coolify skipped the request: the same commit is already queued or building | Nothing: it waits for that deployment |
 | pnpm: `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` installing ≤ 0.4.1 | Old versions had a `prepare` script | Install ≥ 0.5.0 |
 
 Set `COOLIFY_HARNESS_DEBUG=1` to print a stack trace with an error.
@@ -388,7 +409,13 @@ Set `COOLIFY_HARNESS_DEBUG=1` to print a stack trace with an error.
 - **Redeploy reuses images.** Use `deploy --force`.
 - **Compose and proxy saves do not restart.** `--restart` applies them.
 - **Lost answers.** A mutation whose HTTP answer was lost is not replayed; reads and idempotent
-  writes are retried with backoff. Every request has a 30 s timeout.
+  writes are retried with backoff. Every request has a 30 s timeout. A mutation Coolify accepted
+  is never reported as failed because its acknowledgement or the confirmation read went wrong.
+- **Skipped deploys.** Coolify answers "already queued for this commit" without a deployment id;
+  `deploy --wait` then follows the deployment in progress instead of returning at once.
+- **Trimmed values.** Coolify trims a value when it saves it; values are compared the same way.
+- **The public port of a database** only opens when `is_public` and `public_port` arrive in one
+  request; `database set` always sends both.
 
 ## Library
 

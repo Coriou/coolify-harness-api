@@ -77,8 +77,9 @@ export function parseRegistry(raw: unknown): { ok: true; registry: ProjectRegist
         ok = false;
       }
       if (typeof tokenEnv !== 'string') { issues.push(`${at}.tokenEnv: expected a string, received ${typeName(tokenEnv)}`); ok = false; }
-      // A Coolify token looks like `12|AbC…`: refuse it here so it never lands in a committed config.
-      else if (tokenEnv === '' || /[|\s]/.test(tokenEnv)) {
+      // It must be a variable NAME. A pasted token (`12|AbC…`, or a bare 40-character string) is
+      // refused here, unquoted, so it never lands in a committed config or in an error message.
+      else if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(tokenEnv) || /^[A-Za-z0-9]{32,}$/.test(tokenEnv)) {
         issues.push(`${at}.tokenEnv: must be the NAME of an environment variable, never the token itself`);
         ok = false;
       }

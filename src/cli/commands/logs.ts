@@ -1,6 +1,6 @@
 import type { ParsedArgs } from '../args.js';
 import type { CmdDeps } from '../deps.js';
-import { print, printJson, usageFail } from '../deps.js';
+import { print, printJson, usageFail, warn } from '../deps.js';
 import { withScope } from '../scope.js';
 import { EXIT } from '../exit.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
@@ -38,8 +38,11 @@ export async function logsCmd(args: ParsedArgs, deps: CmdDeps): Promise<number> 
         commit: dep.commit,
         logs: dep.logs ?? '',
       };
+      // Coolify hides the log (no 403) from a token without read:sensitive: say so, an empty
+      // log would otherwise look like a build that printed nothing.
+      if (dep.logs == null && !args.json) warn('logs: Coolify returned no build log (the token needs read:sensitive and a team admin/owner user, or the build has not written one yet).');
       if (args.json) {
-        printJson(out);
+        printJson({ ...out, logs_available: dep.logs != null });
       } else {
         print(`build logs for ${depUuid} [${dep.status}]`);
         print('---');

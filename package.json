@@ -48,7 +48,7 @@
   "publishConfig": { "access": "public", "provenance": true },
   "scripts": {
     "dev": "tsc --watch",
-    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli/main.js",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
@@ -56,9 +56,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "check": "eslint . && tsc --noEmit && vitest run",
-    "check:dist": "rm -rf dist && tsc -p tsconfig.json && git diff --exit-code -- dist",
+    "check:dist": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli/main.js && git diff --exit-code -- dist",
     "clean": "rm -rf dist node_modules/.cache",
-    "prepublishOnly": "eslint . && tsc --noEmit && vitest run && rm -rf dist && tsc -p tsconfig.json && git diff --exit-code -- dist"
+    "prepublishOnly": "eslint . && tsc --noEmit && vitest run && rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli/main.js && git diff --exit-code -- dist"
   },
   "dependencies": { "zod": "^4.0.0" },
   "devDependencies": {
