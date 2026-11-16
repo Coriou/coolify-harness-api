@@ -45,12 +45,13 @@ export const EnvVarSchema = EnvVarReadSchema.transform((row) => ({
     is_build_time: row.is_build_time ?? row.is_buildtime ?? false,
 }));
 /**
- * Fields Coolify's bulk env endpoint (`PATCH …/envs/bulk`) accepts. The handler keeps only these
- * and silently drops anything else, so the request is validated here: a typo must fail loudly
- * instead of being ignored. Applications take all of them; services and databases have no preview
- * rows and no build-time/runtime flags (`is_preview`, `is_buildtime`, `is_runtime` are dropped
- * server-side). The legacy spelling `is_build_time` was never accepted on writes and stays absent.
- * Verified against Coolify 4.5.0 and 4.7.5 (`create_bulk_envs` in the three API controllers).
+ * Fields Coolify's bulk env endpoint (`PATCH …/envs/bulk`) reads. Unknown keys are stripped here
+ * (Coolify would ignore them); a malformed item (empty key, wrong type) fails before the wire.
+ * Applications take all of these. Services and databases have no preview rows and no
+ * build-time / runtime flags: 4.7 drops `is_preview`, `is_buildtime` and `is_runtime` there, 4.5
+ * wrote whatever fillable field it was given — so the client refuses a preview item for them.
+ * The legacy spelling `is_build_time` was never accepted on writes and stays absent.
+ * Checked against `create_bulk_envs` of the three API controllers on 4.5.0 and 4.7.5.
  */
 export const EnvWriteItemSchema = z.object({
     key: z.string().min(1),
@@ -59,8 +60,7 @@ export const EnvWriteItemSchema = z.object({
     is_literal: z.boolean().optional(),
     is_multiline: z.boolean().optional(),
     is_shown_once: z.boolean().optional(),
-    // Accepted by the bulk endpoint since Coolify 4.5 (applications only for the two flags; services
-    // and databases silently ignore them). Never sent unless the caller sets them.
+    // Read by the applications' bulk endpoint since Coolify 4.5. Never sent unless the caller sets them.
     is_buildtime: z.boolean().optional(),
     is_runtime: z.boolean().optional(),
     comment: z.string().max(256).nullable().optional(),
@@ -216,7 +216,7 @@ export const DatabaseUpdateSchema = z.strictObject({
     image: z.string().optional(),
     is_public: z.boolean().optional(),
     public_port: z.number().int().min(1024).max(65535).optional(),
-    public_port_timeout: z.number().int().optional(),
+    public_port_timeout: z.number().int().min(1).optional(),
     limits_memory: z.string().optional(),
     limits_cpus: z.string().optional(),
     instant_deploy: z.boolean().optional(),

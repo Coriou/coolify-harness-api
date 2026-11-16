@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 export { EXIT, errorToExitCode } from './exit.js';
 export declare function main(argv: string[]): Promise<number>;
 /**

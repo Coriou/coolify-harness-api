@@ -22,8 +22,9 @@ export interface CmdDeps {
     writeFile?: (path: string, content: string) => Promise<void>;
 }
 /**
- * Write an unredacted document for `--out`, readable by the owner only. `mode` on writeFile only
- * applies when the file is created, so an existing world-readable file is chmod-ed as well.
+ * Write an unredacted document for `--out`, readable by the owner only. The file is opened
+ * without following a symlink and its mode is forced to 0600 BEFORE the content is written, so an
+ * existing world-readable file (or a planted link) never receives the secrets.
  */
 export declare const defaultWriteFile: (path: string, content: string) => Promise<void>;
 export declare function requireInstance(args: ParsedArgs, deps: CmdDeps): {
@@ -33,9 +34,12 @@ export declare function requireInstance(args: ParsedArgs, deps: CmdDeps): {
 export declare const print: (line?: string) => void;
 export declare const warn: (line: string) => void;
 /**
- * Report a usage problem the way the rest of the CLI reports errors — prose on stderr, or with
- * `--json` the `{ "error": { code, message, exitCode } }` document — and return exit code 2.
+ * Report a failure that is returned as an exit code rather than thrown, the way thrown errors are
+ * reported: prose on stderr, or with `--json` the `{ "error": { code, message, exitCode, … } }`
+ * document. Returns the exit code.
  */
+export declare function emitError(args: Pick<ParsedArgs, 'json'>, code: string, message: string, exitCode: number, extra?: Record<string, unknown>): number;
+/** A usage problem (exit 2). */
 export declare function usageFail(args: Pick<ParsedArgs, 'json'>, message: string): number;
 /** JSON output for agents: always redacted, never prose. */
 export declare function printJson(value: unknown): void;

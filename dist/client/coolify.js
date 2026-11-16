@@ -1,4 +1,4 @@
-import { CoolifyApi, withQuery } from './base.js';
+import { CoolifyApi, ackAfterWrite, documentSecrets, rawMessage, withQuery } from './base.js';
 import { CoolifyInstanceClient } from './instance.js';
 import { loadSchemas } from './lazy-schemas.js';
 import { CoolifyFeatureNotSupportedError } from '../errors/index.js';
@@ -60,7 +60,9 @@ export class CoolifyClient {
             idempotent: true,
             secrets: body.data.map((i) => i.value),
         });
-        return s.parseOrContractError(s.BulkResponseSchema, res.body, 'upsertEnvs');
+        // Services and databases answer a CREATED row without its flag columns, which is not an env
+        // row by our schema: the write landed all the same, and callers confirm by re-reading.
+        return ackAfterWrite(this.deps, 'upsertEnvs', () => s.parseOrContractError(s.BulkResponseSchema, res.body, 'upsertEnvs'), () => []);
     }
     /**
      * Delete one env row by its uuid (from `listEnvs()`). Applications, services and databases.
@@ -68,8 +70,10 @@ export class CoolifyClient {
      */
     async deleteEnv(envUuid) {
         const res = await this.api.request(`${this.base()}/envs/${encodeURIComponent(envUuid)}`, 'DELETE');
-        const s = await loadSchemas();
-        return s.parseOrContractError(s.MessageAckSchema, res.body, 'deleteEnv');
+        return ackAfterWrite(this.deps, 'deleteEnv', async () => {
+            const s = await loadSchemas();
+            return s.parseOrContractError(s.MessageAckSchema, res.body, 'deleteEnv');
+        }, () => ({ message: rawMessage(res.body) }));
     }
     /**
      * Deploy (applications: queue a build; services/databases: start). `force` rebuilds without the
@@ -89,16 +93,24 @@ export class CoolifyClient {
         const path = withQuery(`${this.base()}/restart`, { latest: opts.latest ? true : undefined });
         return this.ackFor(await this.api.request(path, 'POST'), 'restart');
     }
-    async ackFor(res, ctx) {
-        const s = await loadSchemas();
-        if (this.target.kind === 'application') {
-            const parsed = s.parseOrContractError(s.DeployAckApplicationSchema, res.body, ctx);
-            return parsed.deployment_uuid == null
-                ? { message: parsed.message }
-                : { message: parsed.message, deploymentUuid: parsed.deployment_uuid };
-        }
-        const parsed = s.parseOrContractError(s.DeployAckServiceSchema, res.body, ctx);
-        return { message: parsed.message };
+    ackFor(res, ctx) {
+        // Coolify accepted the request: an acknowledgement we cannot read must not look like a failed
+        // deploy (the agent would queue another one).
+        return ackAfterWrite(this.deps, ctx, async () => {
+            const s = await loadSchemas();
+            if (this.target.kind === 'application') {
+                const parsed = s.parseOrContractError(s.DeployAckApplicationSchema, res.body, ctx);
+                return parsed.deployment_uuid == null
+                    ? { message: parsed.message }
+                    : { message: parsed.message, deploymentUuid: parsed.deployment_uuid };
+            }
+            const parsed = s.parseOrContractError(s.DeployAckServiceSchema, res.body, ctx);
+            return { message: parsed.message };
+        }, () => {
+            const uuid = res.body && typeof res.body === 'object' ? res.body.deployment_uuid : undefined; // reason: narrowed by the object guard; read defensively
+            const message = rawMessage(res.body) || 'accepted';
+            return typeof uuid === 'string' && uuid !== '' ? { message, deploymentUuid: uuid } : { message };
+        });
     }
     /**
      * Fetch full details for the target resource (application, service or database).
@@ -131,13 +143,16 @@ export class CoolifyClient {
      */
     async updateServiceCompose(composeRaw) {
         this.requireKind('service', 'updateServiceCompose');
-        // Replacing the document with the same document is idempotent; never echo it in an error.
+        // Replacing the document with the same document is idempotent. A parse error from Coolify
+        // quotes the offending line, so every line of the document is scrubbed from its message.
         const res = await this.api.request(this.base(), 'PATCH', { docker_compose_raw: toBase64(composeRaw) }, {
             idempotent: true,
-            secrets: [composeRaw, toBase64(composeRaw)],
+            secrets: [...documentSecrets(composeRaw), toBase64(composeRaw)],
         });
-        const s = await loadSchemas();
-        return s.parseOrContractError(s.ServiceUpdateResponseSchema, res.body, 'updateServiceCompose');
+        return ackAfterWrite(this.deps, 'updateServiceCompose', async () => {
+            const s = await loadSchemas();
+            return s.parseOrContractError(s.ServiceUpdateResponseSchema, res.body, 'updateServiceCompose');
+        }, () => ({}));
     }
     /**
      * Fetch runtime / container logs for the target. Requires read:sensitive.

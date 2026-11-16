@@ -31,7 +31,8 @@ export async function instanceInfo(args, deps) {
             ? `  within the tested range (${TESTED_COOLIFY.min}–${TESTED_COOLIFY.max})`
             : `  OUTSIDE the tested range (${TESTED_COOLIFY.min}–${TESTED_COOLIFY.max})`);
     }
-    if (warning !== undefined)
+    // With --json the warning is in the document; stderr stays empty on success.
+    if (warning !== undefined && !args.json)
         warn(`WARNING: ${warning}`);
     return EXIT.ok;
 }
@@ -66,8 +67,10 @@ export async function serverGet(args, deps) {
         printJson({ server, resources, proxy: { ...proxy, images: proxyImages } });
         return EXIT.ok;
     }
+    // GET /servers/{uuid} carries the reachability flags under `settings`; the list has them at the top.
+    const flagOf = (k) => String(server[k] ?? server.settings?.[k] ?? '?');
     print(`server ${server.name} (${server.uuid}) ${server.ip ?? ''}`);
-    print(`  reachable=${String(server.is_reachable ?? '?')} usable=${String(server.is_usable ?? '?')}`);
+    print(`  reachable=${flagOf('is_reachable')} usable=${flagOf('is_usable')}`);
     print(`  proxy: ${proxy.proxy_type ?? '?'} ${proxy.status ?? '?'}${proxyImages.length ? `  image ${proxyImages.map((i) => i.image).join(', ')}` : '  (image unknown: needs read:sensitive)'}`);
     print(`  resources: ${resources.length}`);
     for (const r of resources)

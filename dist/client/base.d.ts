@@ -27,6 +27,12 @@ export interface RequestOptions {
     secrets?: readonly string[];
 }
 /**
+ * The strings of a document (compose, proxy configuration) that a server error must not quote
+ * back: the document itself, each of its lines, and each assigned value. A parse error typically
+ * cites the offending line, which is where the literal secrets are.
+ */
+export declare function documentSecrets(document: string): string[];
+/**
  * Make a server-supplied message safe to print and audit: drop anything that repeats a secret we
  * sent, strip credentials inside URLs, collapse whitespace and bound the length.
  */
@@ -45,3 +51,12 @@ export declare class CoolifyApi {
     request(path: string, method: string, jsonBody?: unknown, opts?: RequestOptions): Promise<HttpResult>;
     private assertOk;
 }
+/** `message` of a JSON acknowledgement, read without a schema. */
+export declare function rawMessage(body: unknown): string;
+/**
+ * Parse the acknowledgement of a mutation Coolify has ALREADY accepted (2xx). If the body does
+ * not match the schema — or the validators cannot even be loaded — the write still happened:
+ * reporting it as a failure would make an agent repeat it (a second deployment, a second delete).
+ * So an unreadable acknowledgement is logged and replaced by a best-effort one.
+ */
+export declare function ackAfterWrite<T>(deps: CoolifyClientDeps, ctx: string, parse: () => Promise<T> | T, fallback: () => T): Promise<T>;

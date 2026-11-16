@@ -1,4 +1,4 @@
-import { CoolifyBulkUnmarshalError, CoolifyNetworkError } from '../errors/index.js';
+import { CoolifyAuthError, CoolifyBulkUnmarshalError, CoolifyNetworkError } from '../errors/index.js';
 import { HARNESS_VERSION } from '../version.js';
 export class CircuitBreaker {
     opts;
@@ -86,13 +86,15 @@ function isTimeout(err) {
     const name = err && typeof err === 'object' ? err.name : undefined; // reason: probing the optional `name` of an unknown error
     return name === 'TimeoutError' || name === 'AbortError';
 }
-function networkError(url, method, err, timeoutMs) {
+function networkError(url, method, err, timeoutMs, token) {
     const origin = originOf(url);
     if (isTimeout(err)) {
         return new CoolifyNetworkError(`Coolify did not answer ${method} ${url} within ${Math.round(timeoutMs / 1000)}s`, { reason: 'timeout' });
     }
     const code = causeCode(err);
-    const detail = err instanceof Error ? err.message : String(err);
+    // The runtime's own message may quote what it was given (an invalid header value is the token).
+    const raw = err instanceof Error ? err.message : String(err);
+    const detail = (token.length >= 4 ? raw.split(token).join('[REDACTED]') : raw).slice(0, 300);
     return new CoolifyNetworkError(`Cannot reach Coolify at ${origin} (${method}): ${code ? `${code} — ` : ''}${detail}`, { reason: code ?? 'network' });
 }
 /** Seconds form only (`Retry-After: 2`); an HTTP-date or garbage yields undefined. */
@@ -110,6 +112,11 @@ export async function httpRequest(url, init, opts) {
     const maxRetryDelayMs = opts.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
     const idempotent = init.idempotent ?? /^(GET|HEAD)$/i.test(init.method);
     const backoff = (attempt) => Math.min(maxRetryDelayMs, backoffBaseMs * 2 ** attempt);
+    // A token with whitespace or control characters (a pasted newline, a quote left in a .env) cannot
+    // be sent as a header. Say so here, without ever echoing it: the runtime's error would quote it.
+    if (!/^[\x21-\x7e]+$/.test(init.token)) {
+        throw new CoolifyAuthError('The API token contains whitespace or non-printable characters and cannot be sent. Check the env var that holds it (stray quotes or a line break?).');
+    }
     if (!breaker.canRequest()) {
         throw new CoolifyNetworkError(`Circuit open for ${originOf(url)} after repeated failures; refusing ${init.method} ${url}`, { reason: 'circuit-open' });
     }
@@ -119,7 +126,10 @@ export async function httpRequest(url, init, opts) {
             Accept: 'application/json',
             'User-Agent': USER_AGENT,
         };
-        let requestInit = { method: init.method, headers };
+        // Redirects are never followed: a redirect to another origin would carry the request body
+        // there, and one to https drops the Authorization header and fails confusingly. The instance
+        // URL in the config must be the final one.
+        let requestInit = { method: init.method, headers, redirect: 'manual' };
         if (init.jsonBody !== undefined) {
             headers['content-type'] = 'application/json';
             requestInit = { ...requestInit, body: JSON.stringify(init.jsonBody) };
@@ -147,10 +157,15 @@ export async function httpRequest(url, init, opts) {
                 await sleep(backoff(attempt));
                 continue;
             }
-            throw networkError(url, init.method, err, timeoutMs);
+            throw networkError(url, init.method, err, timeoutMs, init.token);
         }
         const status = response.status;
         const body = parseBody(text);
+        if (status >= 300 && status < 400) {
+            breaker.recordSuccess();
+            const location = response.headers.get('location');
+            return location === null ? { status, body } : { status, body, location };
+        }
         if (status >= 200 && status < 300) {
             breaker.recordSuccess();
             return { status, body };

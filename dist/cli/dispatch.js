@@ -3,19 +3,29 @@ import { CoolifyInstanceClient } from '../client/instance.js';
 import { createLogger } from '../logging/index.js';
 import { loadConfigModule, resolveInstance, resolveTarget } from '../config/load.js';
 import { configPathFor } from './config-path.js';
-import { ConfigError } from '../errors/index.js';
+import { ConfigError, UsageError } from '../errors/index.js';
+import { readEnvFiles } from './dotenv.js';
 import { makeAuditSink } from './audit-sink.js';
 import { printJson } from './deps.js';
 import { EXIT } from './exit.js';
-export function buildDepsFrom(mod) {
+/**
+ * Where API tokens are looked up: the real environment, then the `--env-file` files. A file never
+ * overrides the environment and is never copied into `process.env`.
+ */
+export async function tokenEnv(args) {
+    if (!args.envFiles || args.envFiles.length === 0)
+        return process.env;
+    return { ...(await readEnvFiles(args.envFiles)), ...process.env };
+}
+export function buildDepsFrom(mod, env = process.env) {
     const logger = createLogger({ sink: () => { } });
     const clientDeps = { fetchImpl: (url, init) => globalThis.fetch(url, init), logger };
     return {
         resolveTargetFor: (a) => {
             if (!a.app) {
-                throw new ConfigError(`--app <target> is required for this command (known targets: ${Object.keys(mod.registry.targets).join(', ') || 'none'})`);
+                throw new UsageError(`--app <target> is required for this command (known targets: ${Object.keys(mod.registry.targets).join(', ') || 'none'})`);
             }
-            return resolveTarget(mod.registry, a.app, process.env);
+            return resolveTarget(mod.registry, a.app, env);
         },
         clientFactory: (target) => new CoolifyClient(target, clientDeps),
         instanceFor: (a) => {
@@ -24,9 +34,9 @@ export function buildDepsFrom(mod) {
             }
             const name = a.instance ?? (a.app ? mod.registry.targets[a.app]?.instance : undefined);
             if (!name) {
-                throw new ConfigError(`--instance <name> is required (known instances: ${Object.keys(mod.registry.instances).join(', ')})`);
+                throw new UsageError(`--instance <name> is required (known instances: ${Object.keys(mod.registry.instances).join(', ')})`);
             }
-            return { name, client: new CoolifyInstanceClient(resolveInstance(mod.registry, name, process.env), clientDeps) };
+            return { name, client: new CoolifyInstanceClient(resolveInstance(mod.registry, name, env), clientDeps) };
         },
         actor: process.env['USER'] ?? process.env['GITHUB_ACTOR'] ?? 'unknown',
         auditSink: makeAuditSink('.coolify-harness/audit.jsonl'),
@@ -41,7 +51,7 @@ export async function dispatch(args) {
         case 'help': return (await import('./commands/help.js')).helpCmd(args);
         case 'catalog-gen': return (await import('./commands/catalog.js')).catalogGen(args);
         case 'catalog-check': return (await import('./commands/catalog.js')).catalogCheck(args);
-        case 'config-doctor': return (await import('./commands/config-doctor.js')).configDoctor(args);
+        case 'config-doctor': return (await import('./commands/config-doctor.js')).configDoctor(args, { env: await tokenEnv(args) });
         case 'server-patch':
         case 'server-reboot':
         case 'instance-upgrade':
@@ -49,7 +59,7 @@ export async function dispatch(args) {
         default:
             break;
     }
-    const deps = buildDepsFrom(await loadConfigModule(configPathFor(args)));
+    const deps = buildDepsFrom(await loadConfigModule(configPathFor(args)), await tokenEnv(args));
     switch (args.command) {
         case 'env-diff': return (await import('./commands/env.js')).envDiff(args, deps);
         case 'env-apply': return (await import('./commands/env.js')).envApply(args, deps);
@@ -81,9 +91,11 @@ export async function dispatch(args) {
     }
 }
 /**
- * `flag set`: `env apply` and, with `--redeploy`, a deploy — but ONLY after a real write.
+ * `flag set`: `env apply` and, with `--redeploy`, a deploy — but ONLY with `--apply`.
  * Without `--apply` the env step is a dry-run, and redeploying then would be a mutation behind a
- * dry-run (it used to do exactly that). With `--json` both steps share one document.
+ * dry-run (it used to do exactly that). With `--apply --redeploy` the deploy runs even when the
+ * value was already set: the caller asked for a redeploy. With `--json` both steps share one
+ * document.
  */
 export async function flagSet(args, deps) {
     const { runEnvApply } = await import('./commands/env.js');
@@ -100,15 +112,16 @@ export async function flagSet(args, deps) {
             process.stdout.write('--redeploy skipped: this was a dry-run. Re-run with --apply to write and redeploy.\n');
         return EXIT.ok;
     }
-    const { runDeploy } = await import('./commands/deploy.js');
+    const { runDeploy, partialDocOf } = await import('./commands/deploy.js');
     let deploy;
     try {
         deploy = await runDeploy(args, deps);
     }
     catch (err) {
-        // The env write already happened: its document must not be lost with the deploy error.
+        // The env write already happened (and maybe the deploy was queued): that must not be lost
+        // with the error.
         if (args.json)
-            printJson({ ...env.doc, deploy: null });
+            printJson({ ...env.doc, deploy: partialDocOf(err) ?? null });
         throw err;
     }
     if (args.json)

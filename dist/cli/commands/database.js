@@ -1,7 +1,8 @@
 import { isValidImageRef } from '../../client/compose.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
-import { audited, print, printJson, requireInstance, usageFail } from '../deps.js';
+import { audited, print, printJson, requireInstance, warn, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
+import { sanitizeErrorMessage } from '../errors-out.js';
 import { EXIT } from '../exit.js';
 /**
  * Standalone databases are addressed either by a configured target of kind `database` (`--app`)
@@ -94,19 +95,39 @@ export async function databaseSet(args, deps) {
         return EXIT.ok;
     }
     const effective = Object.fromEntries(changes.map((c) => [c.field, c.to]));
+    // Coolify starts (or moves) the public-port proxy only when ONE request carries both
+    // `is_public: true` and `public_port`. Sending just the field that changed flipped the column
+    // and left the proxy as it was.
+    const willBePublic = effective.is_public ?? before.is_public === true;
+    if (willBePublic && ('is_public' in effective || 'public_port' in effective)) {
+        const port = effective.public_port ?? before.public_port ?? undefined;
+        if (port === undefined) {
+            return usageFail(args, 'database set: making a database public needs a port: add --public-port <n> (1024-65535).');
+        }
+        effective.is_public = true;
+        effective.public_port = port;
+    }
     const scope = 'is_public' in effective ? 'write+deploy' : 'write';
     await audited(deps, {
         instanceUrl: db.client.instanceUrl, kind: 'database', uuid: db.uuid, action: 'database.update',
         keysAffected: changes.map((c) => c.field),
         options: Object.fromEntries(changes.filter((c) => c.field !== 'image').map((c) => [c.field, c.to])),
     }, () => withScope(scope, () => db.client.updateDatabase(db.uuid, effective)));
-    const after = await withScope('read', () => db.client.getDatabase(db.uuid));
-    const confirmed = changes.every((c) => after[c.field] === c.to);
+    // The update is done. A failing confirmation read must not turn it into a failure.
+    let confirmed = null;
+    try {
+        const after = await withScope('read', () => db.client.getDatabase(db.uuid));
+        confirmed = changes.every((c) => after[c.field] === c.to);
+    }
+    catch (err) {
+        report['confirmError'] = sanitizeErrorMessage(err);
+        warn(`WARNING: the database was updated but could not be re-read: ${sanitizeErrorMessage(err)}`);
+    }
     report['confirmed'] = confirmed;
     if (args.json)
         printJson(report);
     else {
-        print(confirmed ? 'Updated and confirmed.' : 'Updated, but the re-read does not match yet — re-check with `database get`.');
+        print(confirmed === true ? 'Updated and confirmed.' : confirmed === false ? 'Updated, but the re-read does not match yet — re-check with `database get`.' : 'Updated; not confirmed.');
         if ('image' in effective)
             print('NOTE: a new image takes effect on the next restart: coolify-harness deploy --app <db target> --restart');
     }

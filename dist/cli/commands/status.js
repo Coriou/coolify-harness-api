@@ -1,4 +1,3 @@
-import { CoolifyAuthError, CoolifyAuthScopeError } from '../../errors/index.js';
 import { print, printJson, warn, usageFail } from '../deps.js';
 import { sanitizeErrorMessage } from '../errors-out.js';
 import { withScope } from '../scope.js';
@@ -21,13 +20,12 @@ export async function statusCmd(args, deps) {
     const [app, latest] = await Promise.all([
         withScope('read', () => client.get()),
         withScope('read', () => client.getLatestDeployment()).catch((err) => {
-            if (err instanceof CoolifyAuthError || err instanceof CoolifyAuthScopeError)
-                throw err;
             latestError = sanitizeErrorMessage(err);
             return undefined;
         }),
     ]);
-    if (latestError !== undefined)
+    // With --json the reason is in the document (latestDeploymentError); stderr stays empty on success.
+    if (latestError !== undefined && !args.json)
         warn(`status: could not read the latest deployment: ${latestError}`);
     if (args.json) {
         // The raw resource carries webhook secrets, basic-auth fields and compose documents: redacted.

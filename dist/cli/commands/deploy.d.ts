@@ -13,4 +13,6 @@ export interface DeployOutcome {
  * status and exits 7 if it failed or was cancelled. `--dry-run` sends nothing.
  */
 export declare function runDeploy(args: ParsedArgs, deps: CmdDeps): Promise<DeployOutcome>;
+/** What a failed step had already achieved (attached to the error it threw), if anything. */
+export declare function partialDocOf(err: unknown): Record<string, unknown> | undefined;
 export declare function deployCmd(args: ParsedArgs, deps: CmdDeps): Promise<number>;

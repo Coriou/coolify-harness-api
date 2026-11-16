@@ -1,18 +1,8 @@
 import type { ParsedArgs } from '../args.js';
 import { type CmdDeps } from '../deps.js';
+export { parseDotenv } from '../dotenv.js';
 /** Kept for backwards compatibility; every command now shares CmdDeps. */
 export type EnvCmdDeps = CmdDeps;
-/**
- * Parse dotenv-style text into a record.
- * - blank lines and `#` comment lines are ignored; an optional `export ` prefix is dropped;
- * - a value wrapped in matching quotes loses them (`KEY="a b"` → `a b`), as every dotenv loader
- *   does; a double-quoted value also expands `\n`, `\r`, `\t`, `\"` and `\\`, and a quoted value
- *   may span several lines (PEM keys);
- * - an UNQUOTED value is taken verbatim up to the end of the line (no trimming, no inline-comment
- *   stripping: a secret containing ` #` must not be silently cut).
- * A line that is not `KEY=VALUE` is a usage error; its content is never echoed.
- */
-export declare function parseDotenv(text: string): Record<string, string>;
 /**
  * `env diff`: read-only plan. JSON: the plan, with every value redacted (creates/updates keep
  * their keys and flags; `value` becomes `[REDACTED] (N chars)`).
@@ -25,8 +15,6 @@ export interface EnvApplyOutcome {
     code: number;
     /** The single JSON document of the run (plan + dryRun/applied/confirmed). Values are redacted on print. */
     doc: Record<string, unknown>;
-    /** True when something was written to Coolify. */
-    wrote: boolean;
 }
 export declare function runEnvApply(args: ParsedArgs, deps: EnvCmdDeps): Promise<EnvApplyOutcome>;
 /**

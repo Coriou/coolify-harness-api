@@ -39,14 +39,16 @@ export const COMMAND_NAMES = Object.keys(COMMANDS);
 const VALUE_FLAGS = new Set([
     '--config', '--app', '--from-file', '--set', '--lines', '--deployment', '--take', '--skip',
     '--instance', '--server', '--database', '--backup', '--timeout', '--key', '--out', '--image',
-    '--service', '--public', '--public-port',
+    '--service', '--public', '--public-port', '--env-file',
 ]);
 const usage = (message) => new UsageError(message);
 /**
- * A stray word is echoed back only when it looks like a command word. Anything else may be a
- * secret that slipped out of its flag (`--set KEY= value`), and error text ends up in logs.
+ * A word the user typed is echoed back only when it is part of the command vocabulary. Anything
+ * else may be a secret that slipped out of its flag (`--set KEY= value`): error text ends up in
+ * logs and transcripts, so it is described, never quoted.
  */
-const show = (words) => words.map((w) => (/^[A-Za-z][A-Za-z:-]{0,24}$/.test(w) ? w : `<${w.length} chars>`)).join(' ');
+const VOCABULARY = new Set(Object.keys(COMMANDS).flatMap((c) => c.split(' ')));
+const show = (words) => words.map((w) => (VOCABULARY.has(w.toLowerCase().replace(/[-:].*$/, '')) || VOCABULARY.has(w.toLowerCase()) ? w : `<${w.length}-character word>`)).join(' ');
 /** Marks a value that came from `--flag=value`, so `--set K=--x` is not mistaken for a missing value. */
 const EQ = '\u0000=';
 /**
@@ -93,7 +95,8 @@ function normalize(argv) {
         }
         words.push(t.startsWith(EQ) ? t.slice(EQ.length) : t);
     }
-    return help ? { words: ['help'], flags: [] } : { words, flags };
+    // `--help` wins over everything else on the line, but `--json` still decides its format.
+    return help ? { words: ['help'], flags: flags.filter((f) => f === '--json') } : { words, flags };
 }
 function resolveCommand(words) {
     if (words[0] === 'help')
@@ -175,7 +178,7 @@ export function parseArgs(argv) {
             out.deployment = positionals[0];
         }
         else {
-            throw usage(`Unexpected argument: ${show(positionals)}. Values belong to a flag (e.g. --app NAME, --set KEY=VALUE).`);
+            throw usage(`${positionals.length} unexpected argument(s) after the command (not echoed: they may be secret). Values belong to a flag, e.g. --app NAME, --set KEY=VALUE.`);
         }
     }
     for (let i = 0; i < flags.length; i += 1) {
@@ -243,7 +246,7 @@ export function parseArgs(argv) {
                 out.wait = true;
                 break;
             case '--take':
-                out.take = parseNumber(tok, next(), 0);
+                out.take = parseNumber(tok, next(), 1);
                 break;
             case '--skip':
                 out.skip = parseNumber(tok, next(), 0);
@@ -310,6 +313,9 @@ export function parseArgs(argv) {
                 break;
             case '--offline':
                 out.offline = true;
+                break;
+            case '--env-file':
+                (out.envFiles ??= []).push(next());
                 break;
             default:
                 throw usage(`Unknown flag: ${tok}`);

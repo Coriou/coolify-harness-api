@@ -3,6 +3,7 @@ import { redactDocument } from '../../client/redact.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
 import { audited, defaultWriteFile, print, printJson, requireInstance, warn, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
+import { sanitizeErrorMessage } from '../errors-out.js';
 import { EXIT } from '../exit.js';
 import { asUsageError, imageChanges, readInputFile } from './compose.js';
 function requireServer(args) {
@@ -116,16 +117,37 @@ export async function proxySet(args, deps) {
         keysAffected: changes.length > 0 ? changes.map((c) => c.service) : ['configuration'],
         ...(imageOpt ? { options: { images: imageOpt } } : {}),
     }, () => withScope('write+deploy', () => client.saveServerProxyConfiguration(uuid, after)));
-    const stored = (await withScope('read:sensitive', () => client.getServerProxy(uuid))).configuration ?? '';
-    report['confirmed'] = stored === after;
+    // The configuration is saved. A failing confirmation read must not hide that, nor skip --restart.
+    try {
+        const stored = (await withScope('read:sensitive', () => client.getServerProxy(uuid))).configuration;
+        report['confirmed'] = stored == null ? null : stored === after;
+    }
+    catch (err) {
+        report['confirmed'] = null;
+        report['confirmError'] = sanitizeErrorMessage(err);
+        warn(`WARNING: the proxy configuration was saved but could not be re-read: ${sanitizeErrorMessage(err)}`);
+    }
     if (!args.json) {
-        print(stored === after ? 'Saved and confirmed (stored configuration matches).' : 'Saved, but the stored configuration differs from what was sent — review with `proxy get`.');
+        print(report['confirmed'] === true
+            ? 'Saved and confirmed (stored configuration matches).'
+            : report['confirmed'] === false
+                ? 'Saved, but the stored configuration differs from what was sent — review with `proxy get`.'
+                : 'Saved; not confirmed.');
     }
     if (args.restart) {
-        const ack = await audited(deps, { instanceUrl: client.instanceUrl, kind: 'server', uuid, action: 'proxy.restart' }, () => withScope('deploy', () => client.restartServerProxy(uuid)));
-        report['restart'] = ack.message;
-        if (!args.json)
-            print(`${ack.message} Check it with: coolify-harness proxy get --instance ${args.instance ?? '<name>'} --server ${uuid}`);
+        try {
+            const ack = await audited(deps, { instanceUrl: client.instanceUrl, kind: 'server', uuid, action: 'proxy.restart' }, () => withScope('deploy', () => client.restartServerProxy(uuid)));
+            report['restart'] = ack.message;
+            if (!args.json)
+                print(`${ack.message} Check it with: coolify-harness proxy get --instance ${args.instance ?? '<name>'} --server ${uuid}`);
+        }
+        catch (err) {
+            if (args.json)
+                printJson({ ...report, restart: null, restartFailed: true });
+            else
+                warn('The proxy configuration was saved, but the restart failed (below).');
+            throw err;
+        }
     }
     else if (!args.json) {
         print(`NOTE: not running yet. Restart to apply: coolify-harness proxy restart --instance ${args.instance ?? '<name>'} --server ${uuid} --apply`);

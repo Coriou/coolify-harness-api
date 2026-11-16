@@ -1,3 +1,4 @@
+import { ConfigError } from '../errors/index.js';
 const PEM_KEY_RE = /_KEY$|_PEM$|PRIVATE_KEY/i;
 /**
  * The only zod 3 wrappers the walker has ever looked through. Kept exactly as they were so a
@@ -65,7 +66,11 @@ function unwrapField(schema) {
     let transformed = false;
     let description;
     for (let depth = 0; depth < 64; depth += 1) {
-        description ??= descriptionOf(current);
+        // zod 3 copies a description onto the wrappers created after `.describe()`, so only the
+        // outermost node (and the base, below) is read there — exactly what 0.4 did. zod 4 does not
+        // copy it, so every level is looked at.
+        if (!current.legacy || depth === 0)
+            description ??= descriptionOf(current);
         const d = current.def;
         if (current.legacy && !ZOD3_FIELD_WRAPPERS.has(current.kind))
             break;
@@ -74,7 +79,11 @@ function unwrapField(schema) {
             case 'prefault':
                 if (!requiredForced)
                     required = false;
-                defaultValue ??= defaultValueOf(d);
+                // zod 4: the outermost default is the effective one. zod 3 keeps 0.4's reading (innermost).
+                if (current.legacy)
+                    defaultValue = defaultValueOf(d);
+                else
+                    defaultValue ??= defaultValueOf(d);
                 current = nodeOf(d['innerType']);
                 continue;
             case 'optional':
@@ -207,7 +216,7 @@ function unwrapToObject(schema) {
     const what = current.kind === 'unknown'
         ? 'not a Zod schema (expected a zod 3 or zod 4 object schema)'
         : `a Zod ${current.kind}, not an object schema`;
-    throw new Error(`walkEnvSchema: top-level schema is ${what}`);
+    throw new ConfigError(`walkEnvSchema: top-level schema is ${what}`);
 }
 export function walkEnvSchema(schema, opts) {
     const shape = unwrapToObject(schema);

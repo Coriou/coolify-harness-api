@@ -48,6 +48,8 @@ export interface HttpRequestInit {
 export interface HttpResult {
     status: number;
     body: unknown;
+    /** `Location` of a 3xx answer. Redirects are never followed (see httpRequest). */
+    location?: string;
 }
 export declare const DEFAULT_TIMEOUT_MS = 30000;
 export declare function httpRequest(url: string, init: HttpRequestInit, opts: HttpRequestOptions): Promise<HttpResult>;

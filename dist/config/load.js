@@ -59,19 +59,23 @@ export function findConfigFile(explicit, cwd = process.cwd()) {
         if (existsSync(path))
             return path;
     }
-    throw new ConfigError(`No coolify-harness config found in ${cwd} (looked for ${DEFAULT_CONFIG_NAMES.join(', ')}). Create one (see the README "Config file" section) or pass --config <path>.`);
+    throw new ConfigError(`No coolify-harness config found in ${cwd} (looked for ${DEFAULT_CONFIG_NAMES.join(', ')}). Create one (README, "Quick start") or pass --config <path>.`);
 }
 async function importConfig(configPath) {
     const path = isAbsolute(configPath) ? configPath : resolve(configPath);
     if (!existsSync(path)) {
-        throw new ConfigError(`Config file not found: ${path}. Create it (see the README "Config file" section) or pass --config <path>.`);
+        throw new ConfigError(`Config file not found: ${path}. Create it (README, "Quick start") or pass --config <path>.`);
     }
     try {
         // A file URL, not a bare path: an absolute Windows path is not a valid import specifier.
         return (await import(pathToFileURL(path).href)); // reason: dynamic import() is untyped; only the documented exports are read
     }
     catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
+        // A ReferenceError names the unknown identifier — which is a fragment of the token when one
+        // was pasted unquoted (`tokenEnv: 12|AbC…`). Describe it instead of quoting it.
+        const detail = err instanceof ReferenceError
+            ? 'ReferenceError: an identifier is not defined (an unquoted value?)'
+            : err instanceof Error ? err.message : String(err);
         const hint = /\.[cm]?ts$/.test(path)
             ? ' A TypeScript config is loaded by the runtime itself: Node >= 24 strips types natively (imports must then use real file extensions); otherwise run the CLI through bun or tsx.'
             : '';

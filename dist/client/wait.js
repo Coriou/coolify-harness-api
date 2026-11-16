@@ -1,15 +1,29 @@
 import { isTerminalDeploymentStatus } from './deployment-status.js';
-import { CoolifyAuthError, CoolifyAuthScopeError, CoolifyContractError, CoolifyNotFoundError, CoolifyRequestError, CoolifyWaitTimeoutError, } from '../errors/index.js';
+import { CoolifyAuthError, CoolifyAuthScopeError, CoolifyContractError, CoolifyNetworkError, CoolifyNotFoundError, CoolifyRequestError, CoolifyWaitTimeoutError, } from '../errors/index.js';
 const DEFAULT_INTERVAL_MS = 2000;
 const DEFAULT_MAX_INTERVAL_MS = 5000;
 const INTERVAL_GROWTH = 1.25;
-function isFatal(err) {
+function isFatal(err, seen) {
     if (err instanceof CoolifyAuthError || err instanceof CoolifyAuthScopeError)
         return true;
-    if (err instanceof CoolifyNotFoundError || err instanceof CoolifyContractError)
+    if (err instanceof CoolifyContractError)
         return true;
+    // Unknown from the first poll: it was never queued. After it has been seen, a 404 is what a
+    // reverse proxy answers while Coolify restarts.
+    if (err instanceof CoolifyNotFoundError)
+        return !seen;
     // A 4xx answer will not fix itself; a 5xx or 429 may.
     return err instanceof CoolifyRequestError && err.status < 500 && err.status !== 429;
+}
+/** Refused locally because the circuit breaker is open: no request was made. */
+const isCircuitOpen = (err) => err instanceof CoolifyNetworkError && err.reason === 'circuit-open';
+/** `promise`, or a rejection with `timeoutError()` once `ms` have passed. The timer never holds the process. */
+function withDeadline(promise, ms, timeoutError) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { reject(timeoutError()); }, Math.max(0, ms));
+        timer.unref?.();
+        promise.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); });
+    });
 }
 function abortError(signal) {
     const reason = signal.reason;
@@ -32,7 +46,8 @@ function sleepOrAbort(sleep, ms, signal) {
  * - Does not know about the client; you pass a getter (enables easy injection in tests).
  * - Sleep and clock are injectable.
  * - Resolves with the terminal deployment whatever its outcome; callers decide what `failed` means.
- * - Never sleeps past the deadline: the last poll happens at the timeout, not one interval later.
+ * - Never sleeps past the deadline: the last poll happens at the timeout, not one interval later,
+ *   and a poll that is still in flight at the deadline is abandoned.
  */
 export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}) {
     const fixed = opts.intervalMs !== undefined && opts.maxIntervalMs === undefined;
@@ -51,7 +66,8 @@ export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}
         if (signal?.aborted)
             throw abortError(signal);
         try {
-            const d = await getDeployment(deploymentUuid);
+            const left = timeoutMs - (now() - start);
+            const d = await withDeadline(getDeployment(deploymentUuid), left, () => new CoolifyWaitTimeoutError(deploymentUuid, timeoutMs, lastStatus));
             consecutiveErrors = 0;
             if (d.status !== lastStatus) {
                 lastStatus = d.status;
@@ -62,15 +78,20 @@ export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}
             }
         }
         catch (err) {
-            consecutiveErrors += 1;
-            if (isFatal(err) || consecutiveErrors > maxErrors)
+            if (err instanceof CoolifyWaitTimeoutError)
+                throw err;
+            if (!isCircuitOpen(err))
+                consecutiveErrors += 1;
+            if (isFatal(err, lastStatus !== undefined) || consecutiveErrors > maxErrors)
                 throw err;
         }
+        if (signal?.aborted)
+            throw abortError(signal);
         const remaining = timeoutMs - (now() - start);
         if (remaining <= 0) {
             throw new CoolifyWaitTimeoutError(deploymentUuid, timeoutMs, lastStatus);
         }
         await sleepOrAbort(sleep, Math.min(interval, remaining), signal);
-        interval = Math.min(maxInterval, Math.round(interval * INTERVAL_GROWTH));
+        interval = Math.min(maxInterval, Math.max(interval + 1, Math.round(interval * INTERVAL_GROWTH)));
     }
 }

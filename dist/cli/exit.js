@@ -1,4 +1,4 @@
-import { CatalogStaleError, DuplicateKeyDriftError, CoolifyAuthError, CoolifyAuthScopeError, LockedVarError, CoolifyFeatureNotSupportedError, CoolifyWaitTimeoutError, ConfigError, MissingTokenError, UsageError, InvalidInputError, CoolifyHarnessError, } from '../errors/index.js';
+import { CatalogStaleError, DuplicateKeyDriftError, CoolifyAuthError, CoolifyAuthScopeError, LockedVarError, CoolifyFeatureNotSupportedError, CoolifyWaitTimeoutError, ConfigError, MissingTokenError, UsageError, InvalidInputError, CoolifyHarnessError, EnvChangesPendingError, } from '../errors/index.js';
 /**
  * Process exit codes. Part of the CLI contract: values are never reused or renumbered.
  * 1 covers everything not listed (Coolify 4xx/5xx answers, network failures, contract errors);
@@ -11,7 +11,7 @@ export const EXIT = {
 export function errorToExitCode(err) {
     if (err instanceof CatalogStaleError)
         return EXIT.catalogStale;
-    if (err instanceof DuplicateKeyDriftError)
+    if (err instanceof DuplicateKeyDriftError || err instanceof EnvChangesPendingError)
         return EXIT.drift;
     if (err instanceof CoolifyAuthScopeError || err instanceof CoolifyAuthError || err instanceof MissingTokenError)
         return EXIT.authScope;

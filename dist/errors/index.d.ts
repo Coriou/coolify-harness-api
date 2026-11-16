@@ -106,3 +106,10 @@ export declare class CoolifyRequestError extends CoolifyHarnessError {
         fields?: string[];
     });
 }
+/** `env diff --fail-on-changes`: the live env differs from the desired values. CLI exit 4. */
+export declare class EnvChangesPendingError extends CoolifyHarnessError {
+    readonly keys: string[];
+    constructor(message: string, opts: {
+        keys: string[];
+    });
+}

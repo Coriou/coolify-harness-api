@@ -35,12 +35,13 @@ export declare const EnvVarSchema: z.ZodPipe<z.ZodObject<{
 }>>;
 export type EnvVar = z.infer<typeof EnvVarSchema>;
 /**
- * Fields Coolify's bulk env endpoint (`PATCH …/envs/bulk`) accepts. The handler keeps only these
- * and silently drops anything else, so the request is validated here: a typo must fail loudly
- * instead of being ignored. Applications take all of them; services and databases have no preview
- * rows and no build-time/runtime flags (`is_preview`, `is_buildtime`, `is_runtime` are dropped
- * server-side). The legacy spelling `is_build_time` was never accepted on writes and stays absent.
- * Verified against Coolify 4.5.0 and 4.7.5 (`create_bulk_envs` in the three API controllers).
+ * Fields Coolify's bulk env endpoint (`PATCH …/envs/bulk`) reads. Unknown keys are stripped here
+ * (Coolify would ignore them); a malformed item (empty key, wrong type) fails before the wire.
+ * Applications take all of these. Services and databases have no preview rows and no
+ * build-time / runtime flags: 4.7 drops `is_preview`, `is_buildtime` and `is_runtime` there, 4.5
+ * wrote whatever fillable field it was given — so the client refuses a preview item for them.
+ * The legacy spelling `is_build_time` was never accepted on writes and stays absent.
+ * Checked against `create_bulk_envs` of the three API controllers on 4.5.0 and 4.7.5.
  */
 export declare const EnvWriteItemSchema: z.ZodObject<{
     key: z.ZodString;

@@ -1,7 +1,8 @@
 import { readFile as nodeReadFile } from 'node:fs/promises';
 import { formatRedactedDiff, isValidImageRef, listServiceImages, setServiceImage, sha256, } from '../../client/compose.js';
 import { redactDocument } from '../../client/redact.js';
-import { CoolifyFeatureNotSupportedError, UsageError } from '../../errors/index.js';
+import { CoolifyAuthScopeError, CoolifyFeatureNotSupportedError, UsageError } from '../../errors/index.js';
+import { sanitizeErrorMessage } from '../errors-out.js';
 import { audited, defaultWriteFile, print, printJson, warn, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
 import { EXIT } from '../exit.js';
@@ -47,16 +48,32 @@ export function imageChanges(before, after) {
     }))
         .filter((c) => c.from !== c.to);
 }
+/**
+ * Coolify hides `docker_compose_raw` (no 403, the field is just missing) from a token without
+ * read:sensitive, or whose user is not a team admin/owner. Treating that as an EMPTY compose made
+ * `compose get` print nothing, `compose set` produce a whole-file diff and the env-delete lock
+ * check pass silently.
+ */
+function requireCompose(raw) {
+    if (raw == null) {
+        throw new CoolifyAuthScopeError("Coolify did not return the docker-compose document: it needs a token with 'read:sensitive' whose user is a team admin/owner.", { requiredScope: 'read:sensitive' });
+    }
+    return raw;
+}
 async function currentCompose(args, deps) {
     const target = deps.resolveTargetFor(args);
     const client = deps.clientFactory(target);
     if (target.kind === 'service') {
-        const svc = await withScope('read', () => client.getService());
-        return { compose: svc.docker_compose_raw ?? '' };
+        const svc = await withScope('read:sensitive', () => client.getService());
+        return { compose: requireCompose(svc.docker_compose_raw) };
     }
     if (target.kind === 'application') {
-        const app = await withScope('read', () => client.get());
-        return { compose: app.docker_compose_raw ?? '', buildPack: app.build_pack ?? null };
+        const app = await withScope('read:sensitive', () => client.get());
+        // Only a docker-compose application has a compose; the others legitimately have none.
+        return {
+            compose: app.build_pack === 'dockercompose' ? requireCompose(app.docker_compose_raw) : (app.docker_compose_raw ?? ''),
+            buildPack: app.build_pack ?? null,
+        };
     }
     throw new CoolifyFeatureNotSupportedError('Standalone databases have no docker-compose document.');
 }
@@ -127,20 +144,40 @@ export async function composeSet(args, deps) {
         instanceUrl: target.instanceUrl, kind: 'service', uuid: target.uuid, action: 'compose.update', keysAffected,
         ...(imagesOpt ? { options: { images: imagesOpt } } : {}),
     }, () => withScope('write', () => client.updateServiceCompose(after)));
-    const stored = (await withScope('read', () => client.getService())).docker_compose_raw ?? '';
-    report['confirmed'] = stored === after;
+    // The compose is saved. A failing confirmation read must not hide that, nor skip --restart.
+    try {
+        const stored = (await withScope('read:sensitive', () => client.getService())).docker_compose_raw;
+        report['confirmed'] = stored == null ? null : stored === after;
+    }
+    catch (err) {
+        report['confirmed'] = null;
+        report['confirmError'] = sanitizeErrorMessage(err);
+        warn(`WARNING: the compose was saved but could not be re-read: ${sanitizeErrorMessage(err)}`);
+    }
     if (!args.json) {
-        print(stored === after
+        print(report['confirmed'] === true
             ? 'Saved and confirmed (stored compose matches what was sent).'
-            : 'Saved, but the stored compose differs from what was sent (Coolify normalises on parse) — review with `compose get`.');
+            : report['confirmed'] === false
+                ? 'Saved, but the stored compose differs from what was sent (Coolify normalises on parse) — review with `compose get`.'
+                : 'Saved; not confirmed.');
     }
     if (args.restart) {
-        const ack = await audited(deps, {
-            instanceUrl: target.instanceUrl, kind: 'service', uuid: target.uuid, action: 'restart', options: { latest: true },
-        }, () => withScope('deploy', () => client.restart({ latest: true })));
-        report['restart'] = ack.message;
-        if (!args.json)
-            print(`restart: ${ack.message}`);
+        try {
+            const ack = await audited(deps, {
+                instanceUrl: target.instanceUrl, kind: 'service', uuid: target.uuid, action: 'restart', options: { latest: true },
+            }, () => withScope('deploy', () => client.restart({ latest: true })));
+            report['restart'] = ack.message;
+            if (!args.json)
+                print(`restart: ${ack.message}`);
+        }
+        catch (err) {
+            // The save happened: its report must reach the caller along with the restart error.
+            if (args.json)
+                printJson({ ...report, restart: null, restartFailed: true });
+            else
+                warn('The compose was saved, but the restart failed (below).');
+            throw err;
+        }
     }
     else if (!args.json) {
         print(`NOTE: Coolify does not restart on a compose change. Run: coolify-harness deploy --app ${args.app ?? '<target>'} --restart --latest`);

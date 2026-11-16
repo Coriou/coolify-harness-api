@@ -1,7 +1,8 @@
-import { audited, print, printJson, warn, usageFail } from '../deps.js';
+import { audited, emitError, print, printJson, warn, usageFail } from '../deps.js';
 import { EXIT } from '../exit.js';
 import { withScope } from '../scope.js';
 import { CoolifyNotFoundError } from '../../errors/index.js';
+import { isTerminalDeploymentStatus } from '../../client/deployment-status.js';
 import { withoutLogs } from './deployments.js';
 /**
  * `deploy`: explicit redeploy (applications) / start (services, databases), or `--restart`.
@@ -46,13 +47,28 @@ export async function runDeploy(args, deps) {
     if (!args.json) {
         print(`${action}: ${ack.message}${ack.deploymentUuid ? ` (${ack.deploymentUuid})` : ''}`);
     }
-    if (args.wait && !ack.deploymentUuid) {
-        warn(target.kind === 'application'
-            ? '--wait: Coolify returned no deployment uuid (the deploy may have been skipped); nothing to wait for.'
-            : `--wait: a ${target.kind} ${action} creates no deployment record; check \`status\` instead.`);
+    // Coolify answers without a deployment uuid when it SKIPPED the request because the same commit
+    // is already queued or building. `--wait` then follows that deployment: reporting success here
+    // would say "deployed" while the build is still running.
+    let waitUuid = ack.deploymentUuid;
+    let followed = false;
+    if (args.wait && !waitUuid && target.kind === 'application') {
+        const latest = await withScope('read', () => client.getLatestDeployment()).catch(() => undefined);
+        if (latest && !isTerminalDeploymentStatus(latest.status)) {
+            waitUuid = latest.deployment_uuid;
+            followed = true;
+            warn(`--wait: Coolify queued nothing new (${ack.message}); following the deployment already in progress: ${waitUuid}`);
+        }
+        else {
+            warn('--wait: Coolify returned no deployment uuid and nothing is queued or building; nothing to wait for.');
+        }
     }
-    if (args.wait && ack.deploymentUuid) {
-        const uuid = ack.deploymentUuid;
+    else if (args.wait && !waitUuid) {
+        warn(`--wait: a ${target.kind} ${action} creates no deployment record; check \`status\` instead.`);
+    }
+    if (args.wait && waitUuid) {
+        const uuid = waitUuid;
+        const info = followed ? { ...ackInfo, deploymentUuid: uuid, followedExisting: true } : ackInfo;
         if (!args.json)
             print(`--wait: polling deployment ${uuid} until terminal status...`);
         // Ctrl-C stops the WAIT, not the deployment: say so, and how to pick it up again.
@@ -70,32 +86,59 @@ export async function runDeploy(args, deps) {
         }
         catch (err) {
             if (abort.signal.aborted) {
-                warn(`--wait interrupted. Deployment ${uuid} keeps running in Coolify. Follow it: coolify-harness deployment ${uuid} --app ${app} — or stop it: coolify-harness deployment cancel ${uuid} --app ${app} --apply`);
-                return { code: 130, doc: { ...ackInfo, finalStatus: null, interrupted: true } };
+                const message = `--wait interrupted. Deployment ${uuid} keeps running in Coolify. Follow it: coolify-harness deployment ${uuid} --app ${app} — or stop it: coolify-harness deployment cancel ${uuid} --app ${app} --apply`;
+                return { code: emitError(args, 'INTERRUPTED', message, 130, { deploymentUuid: uuid }), doc: { ...info, finalStatus: null, interrupted: true } };
             }
-            if (err instanceof CoolifyNotFoundError) {
-                throw new CoolifyNotFoundError(`${err.message}. Coolify acknowledged the ${action} but has no deployment ${uuid}: it was not queued (queue full, or skipped). Check \`coolify-harness deployments --app ${app}\`.`);
+            // Whatever went wrong while waiting, the deployment was queued: the error must carry its uuid.
+            const failure = err instanceof CoolifyNotFoundError
+                ? new CoolifyNotFoundError(`${err.message}. Coolify acknowledged the ${action} but has no deployment ${uuid}: it was not queued (queue full, or skipped). Check \`coolify-harness deployments --app ${app}\`.`)
+                : err;
+            // `partialDoc` is what did happen; the caller prints it before reporting the error.
+            if (failure && typeof failure === 'object') {
+                Object.assign(failure, { deploymentUuid: uuid, partialDoc: { ...info, finalStatus: null, waitFailed: true } });
             }
-            throw err;
+            if (!args.json)
+                warn(`--wait failed; deployment ${uuid} may still be running: coolify-harness deployment ${uuid} --app ${app}`);
+            throw failure;
         }
         finally {
             process.removeListener('SIGINT', onSigint);
         }
         const ok = final.status === 'finished';
+        const doc = { ...info, finalStatus: final.status, finalDeployment: args.noLogs ? withoutLogs(final) : final };
         if (!args.json) {
             print(`${action} ${ok ? 'finished' : 'did NOT finish'}: status=${final.status}`);
             if (!ok)
                 print(`build logs: coolify-harness logs --app ${app} --build --deployment ${uuid}`);
         }
-        return {
-            code: ok ? EXIT.ok : EXIT.deployFailed,
-            doc: { ...ackInfo, finalStatus: final.status, finalDeployment: args.noLogs ? withoutLogs(final) : final },
-        };
+        if (ok)
+            return { code: EXIT.ok, doc };
+        // The document on stdout has the detail; the error document on stderr states the failure.
+        if (args.json)
+            emitError(args, 'DEPLOY_FAILED', `Deployment ${uuid} ended with status ${final.status}`, EXIT.deployFailed, { deploymentUuid: uuid, finalStatus: final.status });
+        return { code: EXIT.deployFailed, doc };
     }
+    if (args.wait && target.kind === 'application')
+        return { code: EXIT.ok, doc: { ...ackInfo, skipped: true } };
     return { code: EXIT.ok, doc: ackInfo };
 }
+/** What a failed step had already achieved (attached to the error it threw), if anything. */
+export function partialDocOf(err) {
+    const doc = err && typeof err === 'object' ? err.partialDoc : undefined; // reason: probing an optional property set by runDeploy
+    return doc && typeof doc === 'object' ? doc : undefined; // reason: narrowed to a non-null object just above
+}
 export async function deployCmd(args, deps) {
-    const outcome = await runDeploy(args, deps);
+    let outcome;
+    try {
+        outcome = await runDeploy(args, deps);
+    }
+    catch (err) {
+        // A deployment that was queued before the failure must still be reported.
+        const partial = partialDocOf(err);
+        if (args.json && partial)
+            printJson(partial);
+        throw err;
+    }
     if (args.json && Object.keys(outcome.doc).length > 0)
         printJson(outcome.doc);
     return outcome.code;

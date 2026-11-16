@@ -1,4 +1,4 @@
-import { CoolifyApi } from './base.js';
+import { CoolifyApi, ackAfterWrite, documentSecrets, rawMessage } from './base.js';
 import { loadSchemas } from './lazy-schemas.js';
 import { toBase64 } from './compose.js';
 const asText = (body) => (typeof body === 'string' ? body : JSON.stringify(body ?? '')).trim();
@@ -62,8 +62,10 @@ export class CoolifyInstanceClient {
     /** `POST /deployments/{uuid}/cancel` (scope `deploy`). 400 if the deployment already ended. */
     async cancelDeployment(deploymentUuid) {
         const res = await this.api.request(`/deployments/${seg(deploymentUuid)}/cancel`, 'POST');
-        const s = await loadSchemas();
-        return s.parseOrContractError(s.DeploymentCancelSchema, res.body, 'cancelDeployment');
+        return ackAfterWrite(this.api.deps, 'cancelDeployment', async () => {
+            const s = await loadSchemas();
+            return s.parseOrContractError(s.DeploymentCancelSchema, res.body, 'cancelDeployment');
+        }, () => ({ message: rawMessage(res.body) }));
     }
     // ── servers ──────────────────────────────────────────────────────────────
     /** Server payloads include `settings.sentinel_token` and the stored proxy compose — redact before printing. */
@@ -103,7 +105,7 @@ export class CoolifyInstanceClient {
         const s = await loadSchemas();
         const body = s.parseInput(s.ServerProxyUpdateSchema, patch, 'proxy update');
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy`, 'PATCH', body);
-        return s.parseOrContractError(s.ServerProxySchema, res.body, 'updateServerProxy');
+        return ackAfterWrite(this.api.deps, 'updateServerProxy', () => s.parseOrContractError(s.ServerProxySchema, res.body, 'updateServerProxy'), () => ({}));
     }
     /**
      * Replace the proxy docker-compose (`PUT /servers/{uuid}/proxy/configuration`, scopes
@@ -112,17 +114,23 @@ export class CoolifyInstanceClient {
      * keeps up to 10 timestamped backups of the previous compose next to it, but does not restart.
      */
     async saveServerProxyConfiguration(serverUuid, composeYaml) {
+        // Not marked idempotent: Coolify records the new configuration before it writes the file, so
+        // a replay after a lost answer finds "nothing changed" and skips the backup of the old file.
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy/configuration`, 'PUT', {
             configuration: toBase64(composeYaml),
-        }, { idempotent: true, secrets: [composeYaml, toBase64(composeYaml)] });
-        const s = await loadSchemas();
-        return s.parseOrContractError(s.ServerProxySchema, res.body, 'saveServerProxyConfiguration');
+        }, { secrets: [...documentSecrets(composeYaml), toBase64(composeYaml)] });
+        return ackAfterWrite(this.api.deps, 'saveServerProxyConfiguration', async () => {
+            const s = await loadSchemas();
+            return s.parseOrContractError(s.ServerProxySchema, res.body, 'saveServerProxyConfiguration');
+        }, () => ({}));
     }
     /** Queue a proxy restart (scope `deploy`). Coolify pulls the image from the stored compose first. */
     async restartServerProxy(serverUuid) {
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy/restart`, 'POST');
-        const s = await loadSchemas();
-        return s.parseOrContractError(s.MessageAckSchema, res.body, 'restartServerProxy');
+        return ackAfterWrite(this.api.deps, 'restartServerProxy', async () => {
+            const s = await loadSchemas();
+            return s.parseOrContractError(s.MessageAckSchema, res.body, 'restartServerProxy');
+        }, () => ({ message: rawMessage(res.body) }));
     }
     // ── standalone databases ─────────────────────────────────────────────────
     /** Database payloads include connection URLs with passwords — redact before printing. */
