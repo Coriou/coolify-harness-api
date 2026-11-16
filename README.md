@@ -88,13 +88,14 @@ export default defineConfig({
 ```json
 {
   "scripts": {
-    "coolify": "coolify-harness --env-file .env"
+    "coolify": "coolify-harness --token-file .env"
   }
 }
 ```
 
-`--env-file` reads the token from the file without touching your environment (a variable that is
-already set wins). On a machine with Bun and no Node, use
+`--token-file` reads the token from that dotenv file (only `KEY=VALUE` lines matter; a variable
+already set in your environment wins; a missing file is fine when the token comes from the
+environment, as in CI). On a machine with Bun and no Node, use
 `"coolify": "bun node_modules/coolify-harness/dist/cli/main.js"` instead: Bun loads `.env` itself.
 
 **4. Check the wiring, then look around:**
@@ -120,7 +121,8 @@ process.exitCode = await main(process.argv.slice(2));
 ```
 
 Run it with `bun scripts/coolify.ts status --app my-app` (Bun loads `.env`), or
-`node --env-file=.env scripts/coolify.ts status --app my-app` (Node ≥ 24 runs TypeScript natively).
+`node --env-file=.env scripts/coolify.ts status --app my-app` (Node ≥ 24 runs TypeScript natively;
+`--env-file` is Node's own flag here, placed before the script).
 
 </details>
 
@@ -162,7 +164,7 @@ coolify-harness logs --app my-app --build              #    on failure: the buil
 **Output contract**
 
 - `--json`: stdout is exactly one JSON document (redacted), on every command including `help`.
-  On success stderr is empty.
+  On success stderr is empty: warnings and notes are fields of the document.
 - On failure (any non-zero exit) with `--json`, stderr is one JSON document:
   `{ "error": { "code": "COOLIFY_AUTH_SCOPE", "message": "…", "exitCode": 5 } }`.
   When part of the work was done before the failure (a deployment queued, rows deleted, a compose
@@ -203,8 +205,9 @@ git-ignored `.env`). Run it as `pnpm --silent coolify <command>`; `pnpm --silent
 - Never print, log or commit a token or an env value. Put secret values in a file and use
   `--from-file`, never `--set`. Never write `compose get --out` / `proxy get --out` files inside
   the repository.
-- Exit codes: 0 ok, 1 Coolify/network error, 2 usage/config, 4 drift, 5 auth, 6 locked env var,
-  7 deploy failed, 8 wait timeout. With `--json`, errors are `{ "error": { "code", "message" } }` on stderr.
+- Exit codes: 0 ok, 1 Coolify/network error, 2 usage/config, 3 catalog stale, 4 drift, 5 auth,
+  6 locked env var, 7 deploy failed, 8 wait timeout, 130 wait interrupted. With `--json`, errors
+  are `{ "error": { "code", "message" } }` on stderr.
 ```
 
 ## Commands
@@ -340,7 +343,8 @@ coolify-harness catalog check   # exit 3 when they are stale: a CI gate
 
 The walker reads your schema objects directly, so it works with **zod 4, zod mini and zod 3**,
 whatever zod the harness itself uses. It follows defaults, optionals, coercion, enums, transforms,
-pipes, refinements and intersections, and takes descriptions from `.describe()` / `.meta()`.
+refinements and intersections (and, on zod 4, pipes and `z.stringbool()`), and takes descriptions
+from `.describe()` / `.meta()`. Output for zod 3 schemas is unchanged from 0.4.
 The config is loaded by your runtime: if it imports TypeScript sources with `.js` specifiers, run
 the CLI through Bun or `tsx`.
 
@@ -351,7 +355,7 @@ the CLI through Bun or `tsx`.
 | `config doctor`, `instance info`, `status`, `deployments`, `deployment`, `servers`, `server get`, `databases`, `database get/backups` | `read` |
 | `env list` | `read` (`read:sensitive` to see value lengths) |
 | `env diff`, `logs` (runtime or build) | `read` + `read:sensitive` |
-| `env apply` | `read` + `read:sensitive` + `write` |
+| `env apply`, `flag set` | `read` + `read:sensitive` + `write` (`flag set --redeploy`: + `deploy`) |
 | `env delete` | `read` + `delete` (Coolify ≥ 4.7; `write` on older versions); `read:sensitive` too on a service or a docker-compose application (the compose is read to check the key is not referenced) |
 | `deploy`, `deploy --restart` | `deploy` (+ `read` for `--wait`) |
 | `deployment cancel` | `read` + `deploy` |
@@ -376,7 +380,8 @@ limited to some projects cannot use server-level commands (`servers`, `server ge
 | Exit 5, `Coolify refused the request (403) … Missing required permissions: delete` | Coolify ≥ 4.7 needs the `delete` ability for `env delete` | Create a token that has `delete` |
 | Exit 5, `… lacks 'read:sensitive'` although the token has it | `read:sensitive` needs an admin/owner user | Create the token as a team admin/owner |
 | Exit 5, `This API token is limited to selected projects…` | Scoped token on a server-level command | Use a team-wide token for `servers` / `proxy` |
-| Exit 5, `Env var 'X' … is not set` | The token is not in the environment | Load `.env` (`node --env-file=.env`, Bun does it itself) |
+| Exit 5, `Env var 'X' … is not set` | The token is not in the environment | `--token-file .env` (see the quick start), or export the variable |
+| `Unknown flag: --env-file` | Node reserves `--env-file` for itself, anywhere on the command line | Use `--token-file` |
 | Exit 6 on `env delete` | Coolify manages the key or the compose still references it | Remove the reference (`compose set` or git), or `--force` |
 | Exit 5, `Coolify did not return the docker-compose document` | Coolify hides the compose from a token without `read:sensitive` (or a non-admin user) | Use such a token |
 | `… answered … with a redirect (301)` | The instance `url` in the config is not the final address (http → https, another host) | Put the final URL in the config. Redirects are never followed: the token would travel |
@@ -415,7 +420,10 @@ Set `COOLIFY_HARNESS_DEBUG=1` to print a stack trace with an error.
   `deploy --wait` then follows the deployment in progress instead of returning at once.
 - **Trimmed values.** Coolify trims a value when it saves it; values are compared the same way.
 - **The public port of a database** only opens when `is_public` and `public_port` arrive in one
-  request; `database set` always sends both.
+  request, and only for a database that was not public: `database set` sends both, and tells you
+  when a port change needs an off/on cycle.
+- **A 2xx that is not JSON** (a login or maintenance page in front of Coolify) is not treated as
+  an acknowledgement.
 
 ## Library
 

@@ -17,13 +17,17 @@ No config change is needed, and no command or flag was removed. Check these:
 
 - **`env delete` on Coolify ≥ 4.7 needs a token with the `delete` ability** (a Coolify change).
 - **`config doctor` now calls Coolify** (`GET /version`) and exits non-zero when a token is set
-  but rejected (5), the instance cannot be reached (1), or no token is set at all (5). Add
-  `--offline` for the old local-only check.
+  but rejected (5), the instance cannot be reached or is not a Coolify (1), or no token is set at
+  all (5). `--offline` keeps the old local-only check and its exit codes.
 - **`--from-file` strips the quotes around a value.** The first `env diff --from-file` after
   upgrading lists the keys 0.4 wrote *with* their quotes as updates; applying fixes them.
 - **Variable names are validated** (letters, digits, `_`, `.`): a bad name is exit 2 before any
   request, instead of a half-applied write.
-- `compose get` / `compose set` need `read:sensitive` (they printed an empty document without it).
+- `compose get` / `compose set` need `read:sensitive` (they printed an empty document without it),
+  and so does `env delete` on a service or a docker-compose application (it reads the compose to
+  check the key is not referenced; `--force` skips the check).
+- `database set --public true` on a database that has no port stored is exit 2: add `--public-port`.
+- `compose set`, `proxy set`, `database set` `--json`: `confirmed` may be `null` (the re-read failed).
 - `env diff --json` / `env apply --json`: every `value` is redacted (they were printed in clear).
 - If you parse `env apply --json` / `flag set --json`: it is now ONE document (plan + `dryRun`,
   `applied`, `confirmed`); it used to be JSON followed by prose.
@@ -62,11 +66,14 @@ No config change is needed, and no command or flag was removed. Check these:
   second deployment. Only reads, the env bulk upsert, the service compose save and 429 answers are
   retried now.
 - **A mutation that landed could be reported as failed**: an acknowledgement in an unexpected
-  shape (creating a key on a service or database answers a row without its flags), or a failing
-  confirmation read after `compose set` / `proxy set` / `database set`. The write is now reported
-  as done, "not confirmed" when the re-read failed, and `--restart` still runs.
+  JSON shape (creating a key on a service or database answers a row without its flags), an
+  acknowledgement whose body was lost, or a failing confirmation read after `compose set` /
+  `proxy set` / `database set`. The write is now reported as done, "not confirmed" when the
+  re-read failed, and `--restart` still runs. A 2xx that is not JSON at all (a login page) stays
+  an error.
 - **`deploy --wait` returned at once (exit 0) when Coolify skipped the request** because the same
-  commit was already queued or building. It now follows that deployment.
+  commit was already queued or building. It now follows that production deployment (preview
+  deployments are ignored), and fails if it cannot look.
 - **`deploy --wait` gave up after ~6 s of Coolify being unreachable** (and again after 20 s once
   the circuit breaker opened). It rides out 5 failed polls, does not count polls refused by the
   open breaker, treats a 404 as fatal only before the deployment was first seen, stops at once on
@@ -84,18 +91,19 @@ No config change is needed, and no command or flag was removed. Check these:
 - **A locked ("shown once") variable made `env diff` / `env apply` fail** with a misleading
   "token lacks read:sensitive". Locked rows are listed as `len=locked` and rewritten with a warning.
 - `env diff` never came back clean for a key with duplicate rows that all held the desired value,
-  nor for a value with leading or trailing whitespace (Coolify trims on save).
+  nor for a single-line value with leading or trailing whitespace (Coolify trims it on save).
 - An env update on Coolify 4.5 reset `is_literal` / `is_multiline` / the lock; the flags a row has
   set are now sent back with the update.
 - One invalid variable name in a bulk write left the keys before it written and the command
   reported as failed. Names are validated before anything is sent.
 - A dotenv value in quotes was written to Coolify **with its quotes**. `--from-file` now removes
-  matching quotes, expands `\n` in double quotes and reads multi-line quoted values. Unquoted
-  values are unchanged; an unterminated quote is an error.
+  matching quotes (also after `KEY = `), expands `\n` / `\r` in double quotes and reads multi-line
+  quoted values. Unquoted values are unchanged; an unterminated quote is an error.
 - `compose get` / `compose set` / the `env delete` lock check treated a compose Coolify withheld
   (no `read:sensitive`) as an empty one; they now fail with exit 5.
 - `database set --public true` flipped the column without opening the port: Coolify needs
-  `is_public` and `public_port` in one request.
+  `is_public` and `public_port` in one request. A port change on an already-public database now
+  comes with a note (Coolify does not move the proxy).
 - `env delete` with several keys said nothing about the rows deleted before a failure.
 - A failing audit log (read-only checkout, full disk) turned a successful mutation into an error;
   a closed pipe (`… | head`) killed a command mid-mutation with exit 0.
@@ -120,8 +128,9 @@ No config change is needed, and no command or flag was removed. Check these:
 - With `--json`, a failure is one JSON document on stderr:
   `{ "error": { "code", "message", "exitCode", … } }`, for every non-zero exit; `help` and
   `catalog gen` / `catalog check` honour `--json` too.
-- `--env-file FILE`: read the API token(s) from a dotenv file (the real environment wins), so
-  `"coolify": "coolify-harness --env-file .env"` is the whole wrapper script.
+- `--token-file FILE`: read the API token(s) from a dotenv file (a variable set in the
+  environment wins; a missing file is not an error), so
+  `"coolify": "coolify-harness --token-file .env"` is the whole wrapper script.
 - `deploy --dry-run`; `env diff --fail-on-changes` (exit 4 when anything would be written);
   `--no-logs` on `status`, `deployments`, `deployment`, `deploy --wait` (`logs_length` instead of
   the build log).
