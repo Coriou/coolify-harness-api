@@ -100,14 +100,14 @@ already set wins). On a machine with Bun and no Node, use
 **4. Check the wiring, then look around:**
 
 ```bash
-pnpm -s coolify config doctor          # config valid? token set? instance reachable? version tested?
-pnpm -s coolify status --app my-app    # state + latest deployment
-pnpm -s coolify env list --app my-app  # keys, flags and value LENGTHS — never values
-pnpm -s coolify help
+pnpm --silent coolify config doctor          # config valid? token set? instance reachable? version tested?
+pnpm --silent coolify status --app my-app    # state + latest deployment
+pnpm --silent coolify env list --app my-app  # keys, flags and value LENGTHS — never values
+pnpm --silent coolify help
 ```
 
-With Bun: `bun run --silent coolify config doctor`, and so on. Keep `-s` / `--silent`: without it
-the script runner prints its own banner around the output (and echoes the command line).
+With Bun: `bun run --silent coolify config doctor`, and so on. Keep `--silent`: without it the
+script runner prints the command line (and, on older pnpm, a banner) around the tool's output.
 
 <details>
 <summary>Alternative: a tiny entry script (handy when you want to load env your own way)</summary>
@@ -127,7 +127,7 @@ Run it with `bun scripts/coolify.ts status --app my-app` (Bun loads `.env`), or
 ## For AI agents
 
 Everything an agent needs to drive a deployment safely. The examples write `coolify-harness`; use
-the script from the quick start (`pnpm -s coolify …`) so the token is loaded and nothing but the
+the script from the quick start (`pnpm --silent coolify …`) so the token is loaded and nothing but the
 tool's own output reaches stdout.
 
 **The loop**
@@ -191,13 +191,13 @@ coolify-harness logs --app my-app --build              #    on failure: the buil
 ## Deploys (Coolify)
 
 This project is operated with `coolify-harness` (config: `coolify-harness.config.ts`, token in the
-git-ignored `.env`). Run it as `pnpm -s coolify <command>`; `pnpm -s coolify help` lists everything.
+git-ignored `.env`). Run it as `pnpm --silent coolify <command>`; `pnpm --silent coolify help` lists everything.
 
-- Look first: `pnpm -s coolify config doctor`, `pnpm -s coolify status --app <target> --json --no-logs`.
+- Look first: `pnpm --silent coolify config doctor`, `pnpm --silent coolify status --app <target> --json --no-logs`.
 - Env: `env list` shows keys and lengths only. `env diff --from-file <file>` shows what would
   change; `env apply --from-file <file> --apply` writes it. Env changes are inert until a redeploy.
-- Deploy: `pnpm -s coolify deploy --app <target> --wait` (exit 0 finished, 7 failed, 8 timed out;
-  `--force` rebuilds without the Docker cache). On failure: `pnpm -s coolify logs --app <target> --build`.
+- Deploy: `pnpm --silent coolify deploy --app <target> --wait` (exit 0 finished, 7 failed, 8 timed out;
+  `--force` rebuilds without the Docker cache). On failure: `pnpm --silent coolify logs --app <target> --build`.
 - Commands that change Coolify are a dry-run without `--apply`. `deploy` is the exception: it acts
   immediately. Ask before deploying to production unless told otherwise.
 - Never print, log or commit a token or an env value. Put secret values in a file and use
@@ -381,7 +381,7 @@ limited to some projects cannot use server-level commands (`servers`, `server ge
 | Exit 5, `Coolify did not return the docker-compose document` | Coolify hides the compose from a token without `read:sensitive` (or a non-admin user) | Use such a token |
 | `… answered … with a redirect (301)` | The instance `url` in the config is not the final address (http → https, another host) | Put the final URL in the config. Redirects are never followed: the token would travel |
 | Exit 2, `variable name(s) are not valid` | A name with a dash or a space, or a multi-line value that is not quoted in the dotenv file | Quote multi-line values (`KEY="line1\nline2"`), fix the name |
-| JSON on stdout is preceded by `> pkg@1.0.0 coolify …` | The script runner's banner | `pnpm -s coolify …` / `bun run --silent coolify …` |
+| JSON on stdout is preceded by `> pkg@1.0.0 coolify …` | The script runner's banner | `pnpm --silent coolify …` / `bun run --silent coolify …` |
 | `env apply` says "confirmation mismatch" | Two rows of the same key in one scope: Coolify updates only one | `env list`, then `env delete` the extra row |
 | `env diff` keeps listing a key as an update | The key is locked (`len=locked`): Coolify never returns its value, so it cannot be compared | Expected; it is rewritten each time |
 | Env changed but the app did not | Coolify never redeploys on an env change | `deploy --app … --wait` |
