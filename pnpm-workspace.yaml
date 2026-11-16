@@ -1,0 +1,5 @@
+# pnpm settings for developing coolify-harness itself (pnpm 12 fails on unknown keys).
+#
+# No dependency may run an install script: the dev toolchain (TypeScript, vitest, ESLint) needs
+# none, and the published package has no install or prepare script either.
+allowBuilds: {}

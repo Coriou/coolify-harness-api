@@ -1,20 +1,87 @@
 name: CI
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
+    name: verify (node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [24, 26]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      # Reads the pnpm version from "packageManager" in package.json.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
-      - run: corepack enable pnpm
+          node-version: ${{ matrix.node }}
+          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test:coverage
-      - run: pnpm build
-      - name: Smoke - subpath exports import cleanly
+      - name: dist/ is committed and up to date
+        run: pnpm check:dist
+      - name: Smoke - the built CLI and every subpath export load
         run: |
-          node --input-type=module -e "import('./dist/config/load.js').then(m => { if (typeof m.defineConfig !== 'function' || typeof m.loadConfigModule !== 'function') { throw new Error('config export surface missing'); } console.log('config imports OK'); })"
-          node --input-type=module -e "import('./dist/index.js').then(m => { if (typeof m.CoolifyClient !== 'function' || typeof m.walkEnvSchema !== 'function' || typeof m.planEnvWrite !== 'function') { throw new Error('public surface missing'); } console.log('index imports OK'); })"
+          node dist/cli/main.js --version
+          node dist/cli/main.js help > /dev/null
+          node --input-type=module -e "
+            const root = await import('./dist/index.js');
+            for (const name of ['CoolifyClient', 'CoolifyInstanceClient', 'planEnvWrite', 'walkEnvSchema', 'TESTED_COOLIFY']) {
+              if (root[name] === undefined) throw new Error('missing export: ' + name);
+            }
+            const config = await import('./dist/config/load.js');
+            if (typeof config.defineConfig !== 'function' || typeof config.loadConfigModule !== 'function') throw new Error('config surface missing');
+            if (typeof (await import('./dist/client/coolify.js')).CoolifyClient !== 'function') throw new Error('client surface missing');
+            if (typeof (await import('./dist/catalog/generate.js')).generateCatalog !== 'function') throw new Error('catalog surface missing');
+            if (typeof (await import('./dist/cli/main.js')).main !== 'function') throw new Error('cli surface missing');
+            console.log('exports OK');
+          "
+
+  typescript-next:
+    name: typecheck with TypeScript 7
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # The repo builds with TypeScript 6 because typescript-eslint does not run on the native
+      # TypeScript 7 compiler yet. This keeps the source ready for the switch.
+      - run: pnpm --package=typescript@7 dlx tsc --noEmit -p tsconfig.json
+
+  install-from-git:
+    name: installs like a consumer (no build scripts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Pack what a git install would get and install it in an empty project
+        run: |
+          set -euo pipefail
+          src="$PWD"
+          git archive --format=tar.gz --prefix=package/ -o /tmp/harness.tgz HEAD
+          mkdir /tmp/consumer && cd /tmp/consumer
+          printf '{"name":"consumer","private":true,"type":"module"}\n' > package.json
+          pnpm add "coolify-harness@file:/tmp/harness.tgz"
+          node node_modules/coolify-harness/dist/cli/main.js --version
+          printf "import { defineConfig } from 'coolify-harness/config';\nexport default defineConfig({ instances: { prod: { url: 'https://coolify.example.com', tokenEnv: 'COOLIFY_TOKEN' } }, targets: { app: { instance: 'prod', kind: 'application', uuid: 'abc' } } });\n" > coolify-harness.config.ts
+          node node_modules/coolify-harness/dist/cli/main.js config doctor --offline
+          test "$(cd "$src" && node -p "require('./package.json').version")" = "$(node -p "require('coolify-harness/package.json').version")"
