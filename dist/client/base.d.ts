@@ -27,6 +27,8 @@ export interface RequestOptions {
     secrets?: readonly string[];
     /** The endpoint answers plain text (`/version`, `/health`): do not read it as JSON. */
     rawText?: boolean;
+    /** Abandon the request when this aborts. */
+    signal?: AbortSignal;
 }
 /**
  * The strings of a document (compose, proxy configuration) that a server error must not quote

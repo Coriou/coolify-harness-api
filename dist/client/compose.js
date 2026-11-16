@@ -178,6 +178,9 @@ export function formatRedactedDiff(before, after) {
         for (let i = 0; i < Math.max(dels.length, adds.length); i += 1) {
             const d = i < dels.length ? ra[dels[i]] ?? '' : undefined;
             const p = i < adds.length ? rb[adds[i]] ?? '' : undefined;
+            // The same line on both sides (a hunk too large to align pairs lines by position): no change.
+            if (i < paired && a[dels[i]] === b[adds[i]])
+                continue; // reason: i < paired ≤ both lengths
             if (i < paired && d === p) {
                 // Same line once redacted: only the secret changed. Say so instead of printing a no-op pair.
                 plus.push(`~ ${(p ?? '').trim()}   (redacted value changed)`);
@@ -188,7 +191,11 @@ export function formatRedactedDiff(before, after) {
             if (p !== undefined)
                 plus.push(`+ ${p}`);
         }
-        out.push(...minus, ...plus);
+        // Not `push(...minus, ...plus)`: a spread of 65k+ lines overflows the call stack.
+        for (const line of minus)
+            out.push(line);
+        for (const line of plus)
+            out.push(line);
     }
     return out;
 }

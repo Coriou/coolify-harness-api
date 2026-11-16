@@ -33,6 +33,8 @@ export async function logsCmd(args, deps) {
                 status: dep.status,
                 commit: dep.commit,
                 logs: dep.logs ?? '',
+                // Set when no production deployment was among the newest ten: this is a preview build.
+                ...((dep.pull_request_id ?? 0) !== 0 ? { pull_request_id: dep.pull_request_id } : {}),
             };
             // Coolify hides the log (no 403) from a token without read:sensitive: say so, an empty
             // log would otherwise look like a build that printed nothing.
@@ -42,7 +44,7 @@ export async function logsCmd(args, deps) {
                 printJson({ ...out, logs_available: dep.logs != null });
             }
             else {
-                print(`build logs for ${depUuid} [${dep.status}]`);
+                print(`build logs for ${depUuid} [${dep.status}]${(dep.pull_request_id ?? 0) !== 0 ? ` (a preview build of pull request #${dep.pull_request_id})` : ''}`);
                 print('---');
                 process.stdout.write((dep.logs ?? '') + (dep.logs ? '\n' : ''));
                 print('---');

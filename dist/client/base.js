@@ -12,7 +12,7 @@ export function withQuery(path, query = {}) {
     return qs ? `${path}?${qs}` : path;
 }
 const MAX_SERVER_MESSAGE = 400;
-const MAX_SCANNED_MESSAGE = 8000;
+const MAX_SCANNED_MESSAGE = 64_000;
 /**
  * The strings of a document (compose, proxy configuration) that a server error must not quote
  * back: the document itself, each of its lines, and each assigned value. A parse error typically
@@ -47,22 +47,29 @@ export function documentSecrets(document) {
  * sent, strip credentials inside URLs, collapse whitespace and bound the length.
  */
 export function sanitizeServerMessage(message, secrets = []) {
-    // Bounded before it is scanned: the answer is the server's, and may be megabytes of anything.
-    let out = message.length > MAX_SCANNED_MESSAGE ? message.slice(0, MAX_SCANNED_MESSAGE) : message;
     // Longest first so a secret that contains another is removed whole.
-    for (const secret of [...secrets].filter((s) => s.length >= 4).sort((a, b) => b.length - a.length)) {
-        out = out.split(secret).join(REDACTED);
+    const known = [...secrets].filter((s) => s.length >= 4).sort((a, b) => b.length - a.length);
+    let out = message;
+    // Bounded before it is scanned: the answer is the server's, and may be megabytes of anything.
+    // A cut can go through a secret, whose first part would then match nothing: what could be the
+    // beginning of one is dropped with the tail (a 9 kB compose echoed whole is itself "a secret").
+    if (out.length > MAX_SCANNED_MESSAGE) {
+        out = out.slice(0, Math.max(0, MAX_SCANNED_MESSAGE - Math.max(0, (known[0]?.length ?? 0) - 1)));
     }
+    for (const secret of known)
+        out = out.split(secret).join(REDACTED);
     out = redactUrlCredentials(out).replace(/\s+/g, ' ').trim();
     return out.length > MAX_SERVER_MESSAGE ? `${out.slice(0, MAX_SERVER_MESSAGE)}…` : out;
 }
-function serverMessage(body, secrets) {
+function serverMessage(body, secrets, token) {
     if (!body || typeof body !== 'object')
         return { fields: [] };
     const b = body; // reason: narrowed by the object guard above; fields read defensively
-    // Field NAMES come from the server too: scrubbed like its message, and bounded.
+    // Field NAMES come from the server too: bounded, and scrubbed of the token. Not of the values
+    // sent: a value such as `data` would blank the path that says which item was refused
+    // (`data.0.value`), and a name is not where a value comes back.
     const fields = b.errors && typeof b.errors === 'object'
-        ? Object.keys(b.errors).slice(0, 20).map((f) => sanitizeServerMessage(f.slice(0, 120), secrets))
+        ? Object.keys(b.errors).slice(0, 20).map((f) => sanitizeServerMessage(f.slice(0, 120), token))
         : [];
     return typeof b.message === 'string' ? { message: sanitizeServerMessage(b.message, secrets), fields } : { fields };
 }
@@ -96,6 +103,7 @@ export class CoolifyApi {
             ...(jsonBody !== undefined ? { jsonBody } : {}),
             ...(opts.idempotent !== undefined ? { idempotent: opts.idempotent } : {}),
             ...(opts.rawText ? { rawText: true } : {}),
+            ...(opts.signal ? { signal: opts.signal } : {}),
         }, {
             fetchImpl: d.fetchImpl,
             logger: d.logger,
@@ -107,11 +115,11 @@ export class CoolifyApi {
             ...(d.maxRetryDelayMs !== undefined ? { maxRetryDelayMs: d.maxRetryDelayMs } : {}),
         });
         // The token itself must never come back in an error message (an echoing proxy, a debug page).
-        const secrets = [...(opts.secrets ?? []), this.token, this.token.slice(this.token.indexOf('|') + 1)];
-        this.assertOk(res, `${method} ${fullUrl}`, secrets, !/^(GET|HEAD)$/i.test(method));
+        const token = [this.token, this.token.slice(this.token.indexOf('|') + 1)];
+        this.assertOk(res, `${method} ${fullUrl}`, [...(opts.secrets ?? []), ...token], token, !/^(GET|HEAD)$/i.test(method));
         return res;
     }
-    assertOk(res, ctx, secrets, isWrite) {
+    assertOk(res, ctx, secrets, token, isWrite) {
         if (res.status >= 200 && res.status < 300)
             return;
         if (res.status < 200) {
@@ -126,14 +134,14 @@ export class CoolifyApi {
             catch { /* unparseable Location */ }
             throw new CoolifyRequestError(`Coolify answered ${ctx} with a redirect (${res.status})${to}. Redirects are not followed: set the instance url in the config to the final address (https, no trailing path).`, { status: res.status });
         }
-        const { message, fields } = serverMessage(res.body, secrets);
+        const { message, fields } = serverMessage(res.body, secrets, token);
         if (res.status === 401 || res.status === 403) {
             // Coolify says WHY: `Unauthenticated.`, `Missing required permissions: delete`, or that the
             // token is limited to some projects. That sentence is the actionable part.
             throw new CoolifyAuthError(`Coolify auth failed (${res.status}) on ${ctx}${message ? ` — ${message}` : ''}`, { status: res.status, ...(message !== undefined ? { serverMessage: message } : {}) });
         }
         if (res.status === 404) {
-            throw new CoolifyNotFoundError(`Coolify resource not found (404) on ${ctx}${message ? ` — ${message}` : ''}`);
+            throw new CoolifyNotFoundError(`Coolify resource not found (404) on ${ctx}${message ? ` — ${message}` : ''}`, message !== undefined ? { serverMessage: message } : {});
         }
         const detail = [message, fields.length ? `fields: ${fields.join(', ')}` : ''].filter(Boolean).join('; ');
         // A 5xx to a write settles nothing: Coolify may have done part or all of it before failing.

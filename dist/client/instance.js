@@ -61,8 +61,8 @@ export class CoolifyInstanceClient {
         const s = await loadSchemas();
         return items.map((d, i) => s.parseOrContractError(s.DeploymentSchema, d, `listRunningDeployments[${i}]`));
     }
-    async getDeployment(deploymentUuid) {
-        const res = await this.api.request(`/deployments/${seg(deploymentUuid)}`, 'GET');
+    async getDeployment(deploymentUuid, opts = {}) {
+        const res = await this.api.request(`/deployments/${seg(deploymentUuid)}`, 'GET', undefined, opts.signal ? { signal: opts.signal } : {});
         const s = await loadSchemas();
         return s.parseOrContractError(s.DeploymentSchema, res.body, 'getDeployment');
     }

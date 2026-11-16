@@ -66,14 +66,19 @@ const EQ = '\u0000=';
  * the command (`--app x status`). `-h` / `--help` anywhere selects `help`.
  */
 function normalize(argv) {
-    // `--help` and `--version` win over everything else on the line — also over a flag that is
-    // missing its value, and over a command: `deploy --app x --version` must never deploy.
+    // `--help` wins over everything else on the line, also over a flag that is missing its value.
     // `--json` still decides the format.
     const json = argv.includes('--json') ? ['--json'] : [];
     if (argv.some((t) => t === '-h' || t === '--help'))
         return { words: ['help'], flags: json };
-    if (argv.some((t) => t === '-v' || t === '--version'))
-        return { words: [], flags: ['--version', ...json] };
+    // `--version` / `-v` stand alone. Beside a command they are refused, and nothing runs:
+    // `deploy --app x --version` used to deploy, and answering it with a version line and exit 0
+    // would let `env apply … --apply -v` ("verbose"?) pass for a write that never happened.
+    if (argv.some((t) => t === '-v' || t === '--version')) {
+        if (argv.every((t) => t === '-v' || t === '--version' || t === '--json'))
+            return { words: [], flags: ['--version', ...json] };
+        throw usage('--version (-v) stands alone: `coolify-harness --version`. Nothing was run. (There is no verbose flag.)');
+    }
     const tokens = [];
     for (const t of argv) {
         const eq = t.startsWith('--') ? t.indexOf('=') : -1;

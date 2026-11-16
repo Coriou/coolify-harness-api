@@ -22,7 +22,9 @@ export declare class CoolifyInstanceClient {
     listServices(): Promise<Service[]>;
     /** Queued + in-progress deployments across the team (`GET /deployments`). */
     listRunningDeployments(): Promise<Deployment[]>;
-    getDeployment(deploymentUuid: string): Promise<Deployment>;
+    getDeployment(deploymentUuid: string, opts?: {
+        signal?: AbortSignal;
+    }): Promise<Deployment>;
     /** `POST /deployments/{uuid}/cancel` (scope `deploy`). 400 if the deployment already ended. */
     cancelDeployment(deploymentUuid: string): Promise<DeploymentCancel>;
     /** Server payloads include `settings.sentinel_token` and the stored proxy compose — redact before printing. */

@@ -68,7 +68,16 @@ export class InvalidInputError extends CoolifyHarnessError {
     }
 }
 export class CoolifyNotFoundError extends CoolifyHarnessError {
-    constructor(message) { super(message, 'COOLIFY_NOT_FOUND'); }
+    /**
+     * Coolify's own `message`, when the 404 came with one. Absent for a 404 that is not Coolify's
+     * JSON answer — the proxy in front of it answers a bare 404 while Coolify restarts.
+     */
+    serverMessage;
+    constructor(message, opts = {}) {
+        super(message, 'COOLIFY_NOT_FOUND');
+        if (opts.serverMessage !== undefined)
+            this.serverMessage = opts.serverMessage;
+    }
 }
 /**
  * Coolify acknowledged a deploy or restart with a deployment uuid, but created no such deployment:

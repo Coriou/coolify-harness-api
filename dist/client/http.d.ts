@@ -44,8 +44,13 @@ export interface HttpRequestInit {
      * quirk only for a write marked idempotent (the bulk env write it belongs to).
      */
     idempotent?: boolean;
-    /** Return the answer's body as the text it is, without trying JSON (`/version`, `/health`). */
+    /** Return a 2xx answer's body as the text it is, without trying JSON (`/version`, `/health`). */
     rawText?: boolean;
+    /**
+     * Abandon the request when this aborts (a wait that ended, Ctrl-C). An aborted request is not
+     * retried; it rejects with a CoolifyNetworkError whose reason is `aborted`.
+     */
+    signal?: AbortSignal;
 }
 export interface HttpResult {
     status: number;

@@ -6,4 +6,6 @@ export type StoredState = 'new' | 'old' | 'changed' | 'unknown';
  * document already stored. Re-read once and put the answer on the error (`stored`, and a sentence
  * in the message), so nobody re-sends or rolls back blindly. A 4xx is a refusal: nothing to check.
  */
-export declare function noteStoredState(err: unknown, read: () => Promise<string | null | undefined>, before: string, after: string, review: string): Promise<void>;
+export declare function noteStoredState(err: unknown, read: () => Promise<string | null | undefined>, before: string, after: string, review: string, 
+/** What "stored: new" means for this document (Coolify does different things after recording it). */
+whenNew?: string): Promise<void>;

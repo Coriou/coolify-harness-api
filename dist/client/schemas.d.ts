@@ -113,6 +113,12 @@ export declare const DeployAckServiceSchema: z.ZodObject<{
 export interface DeployAck {
     message: string;
     deploymentUuid?: string;
+    /**
+     * True when Coolify accepted the request (2xx) but its acknowledgement could not be read as
+     * the usual one (an unexpected shape, a body lost on the way). Without a `deploymentUuid` it
+     * is then unknown whether a deployment was queued.
+     */
+    unrecognised?: boolean;
 }
 export declare const ApplicationSchema: z.ZodObject<{
     uuid: z.ZodString;

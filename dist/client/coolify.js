@@ -59,7 +59,8 @@ export class CoolifyClient {
         const res = await this.api.request(`${this.base()}/envs/bulk`, 'PATCH', body, {
             idempotent: true,
             // Coolify trims a value before it validates it: an error may quote the trimmed form.
-            secrets: body.data.flatMap((i) => [i.value, i.value.trim()]),
+            // (`true`, `8080`: not secrets, and scrubbing them garbles Coolify's own sentence.)
+            secrets: body.data.flatMap((i) => [i.value, i.value.trim()]).filter((v) => !/^(true|false|yes|no|on|off|null|\d+)$/i.test(v)),
         });
         // Services and databases answer a CREATED row without its flag columns, which is not an env
         // row by our schema: the write landed all the same, and callers confirm by re-reading.
@@ -110,7 +111,8 @@ export class CoolifyClient {
         }, () => {
             const uuid = res.body && typeof res.body === 'object' ? res.body.deployment_uuid : undefined; // reason: narrowed by the object guard; read defensively
             const message = rawMessage(res.body) || 'accepted';
-            return typeof uuid === 'string' && uuid !== '' ? { message, deploymentUuid: uuid } : { message };
+            // Not Coolify's usual answer: callers must not read "no uuid" here as "Coolify skipped it".
+            return typeof uuid === 'string' && uuid !== '' ? { message, deploymentUuid: uuid, unrecognised: true } : { message, unrecognised: true };
         });
     }
     /**
@@ -211,8 +213,8 @@ export class CoolifyClient {
         return items.map((d, i) => s.parseOrContractError(s.DeploymentSchema, d, `listDeployments[${i}]`));
     }
     /** Fetch a single deployment by its uuid (includes embedded build logs with read:sensitive). */
-    async getDeployment(deploymentUuid) {
-        return this.instance().getDeployment(deploymentUuid);
+    async getDeployment(deploymentUuid, opts = {}) {
+        return this.instance().getDeployment(deploymentUuid, opts);
     }
     /** Cancel a queued / in-progress deployment. Coolify answers 400 if it already finished. */
     async cancelDeployment(deploymentUuid) {
@@ -266,7 +268,7 @@ export class CoolifyClient {
      * Throws on timeout. Uses injected sleep when provided in deps.
      */
     async waitForDeployment(deploymentUuid, opts) {
-        return waitForDeployment((uuid) => this.getDeployment(uuid), deploymentUuid, {
+        return waitForDeployment((uuid, poll) => this.getDeployment(uuid, poll), deploymentUuid, {
             ...opts,
             ...(this.deps.sleep ? { sleep: this.deps.sleep } : {}),
         });

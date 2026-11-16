@@ -94,7 +94,9 @@ export declare class CoolifyClient {
         take?: number;
     }): Promise<Deployment[]>;
     /** Fetch a single deployment by its uuid (includes embedded build logs with read:sensitive). */
-    getDeployment(deploymentUuid: string): Promise<Deployment>;
+    getDeployment(deploymentUuid: string, opts?: {
+        signal?: AbortSignal;
+    }): Promise<Deployment>;
     /** Cancel a queued / in-progress deployment. Coolify answers 400 if it already finished. */
     cancelDeployment(deploymentUuid: string): Promise<DeploymentCancel>;
     /**

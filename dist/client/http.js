@@ -87,7 +87,20 @@ function isTimeout(err) {
     return name === 'TimeoutError' || name === 'AbortError';
 }
 /** Failures that happen before a request can leave: nothing reached Coolify. */
-const NOT_SENT = /^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EHOSTDOWN|UND_ERR_CONNECT_TIMEOUT|ERR_INVALID_URL|ERR_TLS_|CERT_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_)/;
+const NOT_SENT = /^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|UND_ERR_CONNECT_TIMEOUT|ERR_INVALID_URL|ERR_TLS_|CERT_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_)/;
+/** These mean "nothing left" only while connecting: on a reused socket the request may be gone. */
+const NOT_SENT_WHILE_CONNECTING = /^(ENETUNREACH|EHOSTUNREACH|EHOSTDOWN)$/;
+/** The system call behind a failed `fetch` (`connect`, `read`, `write`), if the runtime says. */
+function causeSyscall(err) {
+    let cur = err;
+    for (let depth = 0; depth < 4 && cur && typeof cur === 'object'; depth += 1) {
+        const syscall = cur.syscall; // reason: probing the optional `syscall` of an unknown error
+        if (typeof syscall === 'string')
+            return syscall;
+        cur = cur.cause; // reason: walking the optional `cause` chain of an unknown error
+    }
+    return undefined;
+}
 const MAYBE_PROCESSED = ' The request may have reached Coolify: check what it did before sending it again.';
 function networkError(url, method, err, timeoutMs, token, attempts, isRead) {
     const origin = originOf(url);
@@ -96,7 +109,8 @@ function networkError(url, method, err, timeoutMs, token, attempts, isRead) {
     }
     const code = causeCode(err);
     // A write whose connection broke AFTER it could have been sent is not "nothing happened".
-    const unknown = !isRead && !NOT_SENT.test(code ?? '');
+    const neverLeft = NOT_SENT.test(code ?? '') || (NOT_SENT_WHILE_CONNECTING.test(code ?? '') && causeSyscall(err) === 'connect');
+    const unknown = !isRead && !neverLeft;
     // The runtime's own message may quote what it was given (an invalid header value is the token).
     const raw = err instanceof Error ? err.message : String(err);
     const detail = (token.length >= 4 ? raw.split(token).join('[REDACTED]') : raw).slice(0, 300);
@@ -141,8 +155,11 @@ export async function httpRequest(url, init, opts) {
             headers['content-type'] = 'application/json';
             requestInit = { ...requestInit, body: JSON.stringify(init.jsonBody) };
         }
-        if (timeoutMs > 0)
-            requestInit = { ...requestInit, signal: AbortSignal.timeout(timeoutMs) };
+        if (init.signal?.aborted)
+            throw new CoolifyNetworkError(`Request ${init.method} ${url} was abandoned`, { reason: 'aborted' });
+        const signals = [...(timeoutMs > 0 ? [AbortSignal.timeout(timeoutMs)] : []), ...(init.signal ? [init.signal] : [])];
+        if (signals.length > 0)
+            requestInit = { ...requestInit, signal: signals.length === 1 ? signals[0] : AbortSignal.any(signals) }; // reason: length checked
         logger.debug('coolify.request', {
             url,
             method: init.method,
@@ -159,6 +176,9 @@ export async function httpRequest(url, init, opts) {
             text = await response.text();
         }
         catch (err) {
+            // The caller gave up on this request: no retry, no breaker penalty, and not a timeout.
+            if (init.signal?.aborted)
+                throw new CoolifyNetworkError(`Request ${init.method} ${url} was abandoned`, { reason: 'aborted' });
             // …except for a write Coolify already answered 2xx: it was carried out, only the
             // acknowledgement is lost. Reporting a network error would get the mutation repeated. (A
             // write that may be replayed is replayed first; a read without its body is no answer.)
@@ -179,7 +199,8 @@ export async function httpRequest(url, init, opts) {
             throw networkError(url, init.method, err, timeoutMs, init.token, attempt + 1, isRead);
         }
         const status = response.status;
-        const body = init.rawText ? text : parseBody(text);
+        // Only a success is plain text: an error to `/version` is Coolify's JSON, with its reason.
+        const body = init.rawText && status >= 200 && status < 300 ? text : parseBody(text);
         if (status >= 300 && status < 400) {
             breaker.recordSuccess();
             const location = response.headers.get('location');

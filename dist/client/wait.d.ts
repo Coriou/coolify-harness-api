@@ -17,7 +17,7 @@ export interface WaitOptions {
     /**
      * The least time one poll gets to answer, deadline or not. The last sleep ends AT the deadline:
      * without it the final poll had no time at all, and a deployment that finished during that last
-     * sleep was reported as timed out. Default: 10000.
+     * sleep was reported as timed out. Default: 10000, and never more than `timeoutMs`.
      */
     pollGraceMs?: number;
     /** Injected sleep for test determinism. */
@@ -41,7 +41,9 @@ export interface WaitOptions {
  * Pure-ish polling helper. Repeatedly calls getDeployment until a terminal status
  * (finished | failed | cancelled-by-user) or timeout.
  *
- * - Does not know about the client; you pass a getter (enables easy injection in tests).
+ * - Does not know about the client; you pass a getter (enables easy injection in tests). It is
+ *   handed an AbortSignal that fires when the poll is given up on (deadline, abort): pass it to
+ *   the request so nothing is left running behind the wait.
  * - Sleep and clock are injectable.
  * - Resolves with the terminal deployment whatever its outcome; callers decide what `failed` means.
  * - Never sleeps past the deadline: the last poll happens at the timeout, not one interval later.
@@ -49,4 +51,6 @@ export interface WaitOptions {
  *   the timeout.
  * - An abort ends the wait at once, also while a poll is in flight.
  */
-export declare function waitForDeployment(getDeployment: (deploymentUuid: string) => Promise<Deployment>, deploymentUuid: string, opts?: WaitOptions): Promise<Deployment>;
+export declare function waitForDeployment(getDeployment: (deploymentUuid: string, poll: {
+    signal: AbortSignal;
+}) => Promise<Deployment>, deploymentUuid: string, opts?: WaitOptions): Promise<Deployment>;

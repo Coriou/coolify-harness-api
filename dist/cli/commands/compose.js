@@ -6,6 +6,7 @@ import { sanitizeErrorMessage } from '../errors-out.js';
 import { audited, defaultWriteFile, print, printJson, warn, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
 import { noteStoredState } from '../write-outcome.js';
+import { describePath } from '../dotenv.js';
 import { EXIT } from '../exit.js';
 /** Re-throw a helper's input error (unknown service, bad ref) as a usage error (exit 2). */
 export function asUsageError(fn) {
@@ -23,7 +24,7 @@ export async function readInputFile(path, deps) {
     }
     catch (err) {
         const code = err.code; // reason: probing the optional errno code of an unknown error
-        throw new UsageError(`Cannot read --from-file ${path}${typeof code === 'string' ? ` (${code})` : ''}`);
+        throw new UsageError(`Cannot read --from-file ${describePath(path)}${typeof code === 'string' ? ` (${code})` : ''}`);
     }
 }
 /** Parse repeated `--image name=ref` into pairs (a bare ref is rejected: services have several images). */

@@ -66,7 +66,9 @@ function sleepOrAbort(sleep, ms, signal) {
  * Pure-ish polling helper. Repeatedly calls getDeployment until a terminal status
  * (finished | failed | cancelled-by-user) or timeout.
  *
- * - Does not know about the client; you pass a getter (enables easy injection in tests).
+ * - Does not know about the client; you pass a getter (enables easy injection in tests). It is
+ *   handed an AbortSignal that fires when the poll is given up on (deadline, abort): pass it to
+ *   the request so nothing is left running behind the wait.
  * - Sleep and clock are injectable.
  * - Resolves with the terminal deployment whatever its outcome; callers decide what `failed` means.
  * - Never sleeps past the deadline: the last poll happens at the timeout, not one interval later.
@@ -83,10 +85,15 @@ export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}
     const now = opts.now ?? (() => Date.now());
     const maxErrors = opts.maxConsecutiveErrors ?? 5;
     const signal = opts.signal;
-    const pollGraceMs = Math.max(0, opts.pollGraceMs ?? DEFAULT_POLL_GRACE_MS) || 0;
     // NaN compares false with everything: the loop would never time out, or spin without sleeping.
     if (Number.isNaN(timeoutMs) || timeoutMs < 0)
         throw new RangeError('waitForDeployment: timeoutMs must be a number >= 0 (Infinity waits for ever)');
+    for (const [name, value] of [['pollGraceMs', opts.pollGraceMs], ['maxConsecutiveErrors', opts.maxConsecutiveErrors]]) {
+        if (value !== undefined && !(value >= 0))
+            throw new RangeError(`waitForDeployment: ${name} must be a number >= 0`);
+    }
+    // A short wait must not be stretched by a long grace: `--timeout 2` ends within a few seconds.
+    const pollGraceMs = opts.pollGraceMs ?? Math.min(DEFAULT_POLL_GRACE_MS, timeoutMs);
     if (!Number.isFinite(firstInterval) || firstInterval < 0 || !Number.isFinite(maxInterval)) {
         throw new RangeError('waitForDeployment: intervalMs and maxIntervalMs must be finite numbers >= 0');
     }
@@ -98,12 +105,15 @@ export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}
         if (signal?.aborted)
             throw abortError(signal);
         let seen;
+        const poll = new AbortController();
         try {
             const left = Math.max(pollGraceMs, timeoutMs - (now() - start));
-            seen = await withDeadline(getDeployment(deploymentUuid), left, () => new CoolifyWaitTimeoutError(deploymentUuid, timeoutMs, lastStatus), signal);
+            seen = await withDeadline(getDeployment(deploymentUuid, { signal: poll.signal }), left, () => new CoolifyWaitTimeoutError(deploymentUuid, timeoutMs, lastStatus), signal);
             consecutiveErrors = 0;
         }
         catch (err) {
+            // Given up on (deadline, abort) or failed: either way nothing must keep running behind us.
+            poll.abort();
             if (err instanceof CoolifyWaitTimeoutError)
                 throw err;
             if (signal?.aborted)

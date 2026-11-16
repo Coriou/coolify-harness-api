@@ -5,7 +5,7 @@ import { CoolifyAuthScopeError, CoolifyFeatureNotSupportedError, DuplicateKeyDri
 import { EXIT } from '../exit.js';
 import { withScope } from '../scope.js';
 import { audited, print, printJson, warn, writeAuditSafely, usageFail } from '../deps.js';
-import { parseDotenv } from '../dotenv.js';
+import { describePath, parseDotenv } from '../dotenv.js';
 export { parseDotenv } from '../dotenv.js';
 const defaultReadFile = (path) => nodeReadFile(path, 'utf8');
 /** Coolify 4.7's own rule for env keys (ValidationPatterns::environmentVariableKeyRules). */
@@ -21,7 +21,7 @@ async function resolveValues(args, deps) {
     }
     catch (err) {
         const code = err.code; // reason: probing the optional errno code of an unknown error
-        throw new UsageError(`Cannot read --from-file ${args.fromFile}${typeof code === 'string' ? ` (${code})` : ''}`);
+        throw new UsageError(`Cannot read --from-file ${describePath(args.fromFile)}${typeof code === 'string' ? ` (${code})` : ''}`);
     }
     const fileValues = parseDotenv(fileText);
     requireValidKeys(args, fileValues);
@@ -243,10 +243,12 @@ export async function envDelete(args, deps) {
     if (args.keys.length === 0) {
         return usageFail(args, 'env delete: at least one --key <KEY> is required');
     }
-    // `--key NAME=value` (or a value pasted after --key) would be echoed back as "not found".
-    const invalid = args.keys.filter((k) => !COOLIFY_KEY_RE.test(k) || k.length > 255).length;
-    if (invalid > 0) {
-        return usageFail(args, `env delete: ${invalid} --key value(s) are not variable names (a name starts with a letter or _ and holds only letters, digits, _ and .; no \`=value\`). Not echoed: they may be secret.`);
+    // `--key NAME=value` cannot be a key, and would be echoed back as "not found". A key that
+    // merely breaks today's naming rule may still exist (rows created by older Coolify versions):
+    // it is looked up like any other.
+    const impossible = args.keys.filter((k) => k.includes('=') || /\s/.test(k) || k.length > 255).length;
+    if (impossible > 0) {
+        return usageFail(args, `env delete: ${impossible} --key value(s) cannot be variable names (they hold \`=\` or a blank, or exceed 255 characters). Pass the name only. Not echoed: they may be secret.`);
     }
     const target = deps.resolveTargetFor(args);
     scopeFor(args, target);
@@ -254,7 +256,10 @@ export async function envDelete(args, deps) {
     const rows = await withScope('read', () => client.listEnvs());
     const wantScope = args.preview ? 'preview' : 'prod';
     const matches = rows.filter((e) => args.keys.includes(e.key) && scopeOf(e) === wantScope);
-    const missing = args.keys.filter((k) => !matches.some((e) => e.key === k));
+    // A key that was not found is echoed only when it reads like a name: it is what the caller
+    // typed, and a secret pasted after --key must not come back in the output.
+    const missing = args.keys.filter((k) => !matches.some((e) => e.key === k))
+        .map((k) => (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(k) ? k : `<${k.length}-character key>`));
     // The compose is only needed to decide whether a MATCHED row would be re-created.
     let compose;
     let composeExpected = false;
@@ -291,7 +296,7 @@ export async function envDelete(args, deps) {
         printJson({ dryRun: !args.apply, ...plan });
     }
     if (matches.length === 0) {
-        return usageFail(args, `env delete: no ${wantScope} rows match ${args.keys.join(', ')}`);
+        return usageFail(args, `env delete: no ${wantScope} rows match ${missing.join(', ')}`);
     }
     if (locked.length > 0 && !args.force) {
         throw new LockedVarError(`Refusing to delete ${locked.join(', ')}: Coolify would re-create ${locked.length > 1 ? 'them' : 'it'} on the next compose parse. Remove the reference from the compose first (compose set), or pass --force.`, { key: locked[0] });
