@@ -1,14 +1,13 @@
-import { readFile as nodeReadFile } from 'node:fs/promises';
 import { formatRedactedDiff, isValidImageRef, listServiceImages, setServiceImage, sha256, splitImageRef, } from '../../client/compose.js';
 import { redactDocument } from '../../client/redact.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
-import { audited, defaultWriteFile, print, printJson, requireInstance, warn } from '../deps.js';
+import { audited, defaultWriteFile, print, printJson, requireInstance, warn, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
-import { EXIT } from '../main.js';
-import { asUsageError, imageChanges } from './compose.js';
+import { EXIT } from '../exit.js';
+import { asUsageError, imageChanges, readInputFile } from './compose.js';
 function requireServer(args) {
     if (!args.server)
-        warn(`${args.command.replace('-', ' ')}: --server <uuid> is required (list them with \`servers --instance <name>\`)`);
+        usageFail(args, `${args.command.replace('-', ' ')}: --server <uuid> is required (list them with \`servers --instance <name>\`)`);
     return args.server;
 }
 function requireConfiguration(proxy) {
@@ -65,15 +64,14 @@ export async function proxySet(args, deps) {
     if (!uuid)
         return EXIT.usage;
     if (!args.fromFile && args.images.length !== 1) {
-        warn('proxy set: pass exactly one --image <ref> (e.g. traefik:v3.6.4) or --from-file <compose.yml>');
-        return EXIT.usage;
+        return usageFail(args, 'proxy set: pass exactly one --image <ref> (e.g. traefik:v3.6.4) or --from-file <compose.yml>');
     }
     const { client } = requireInstance(args, deps);
     const proxy = await withScope('read:sensitive', () => client.getServerProxy(uuid));
     const before = requireConfiguration(proxy);
     let after;
     if (args.fromFile) {
-        after = await (deps.readFile ?? ((p) => nodeReadFile(p, 'utf8')))(args.fromFile);
+        after = await readInputFile(args.fromFile, deps);
     }
     else {
         const image = args.images[0];

@@ -22,17 +22,33 @@ export interface HttpRequestOptions {
     fetchImpl: FetchLike;
     breaker: CircuitBreaker;
     logger: Logger;
+    /** Extra attempts after the first one, for requests that may be retried. Default 3. */
     maxRetries?: number;
+    /** First backoff delay; doubles per attempt. Default 250 ms. */
     backoffBaseMs?: number;
     sleep?: (ms: number) => Promise<void>;
+    /** Per-attempt timeout. Default 30 s. 0 disables it. */
+    timeoutMs?: number;
+    /** Longest single wait between attempts, including a server `Retry-After`. Default 30 s. */
+    maxRetryDelayMs?: number;
+}
+export interface HttpRequestInit {
+    method: string;
+    token: string;
+    jsonBody?: unknown;
+    /**
+     * Whether repeating the request is harmless. Default: only GET / HEAD. A network error, a
+     * timeout or a 5xx is retried ONLY for idempotent requests: the server may have processed a
+     * mutation whose answer was lost, and replaying `POST …/start` would queue a second deployment.
+     * A 429 (rate limited, not processed) and Coolify's bulk-unmarshal quirk are retried for every
+     * method.
+     */
+    idempotent?: boolean;
 }
 export interface HttpResult {
     status: number;
     body: unknown;
 }
-export declare function httpRequest(url: string, init: {
-    method: string;
-    token: string;
-    jsonBody?: unknown;
-}, opts: HttpRequestOptions): Promise<HttpResult>;
+export declare const DEFAULT_TIMEOUT_MS = 30000;
+export declare function httpRequest(url: string, init: HttpRequestInit, opts: HttpRequestOptions): Promise<HttpResult>;
 export {};

@@ -1,15 +1,4 @@
-export declare const EXIT: {
-    readonly ok: 0;
-    readonly internal: 1;
-    readonly usage: 2;
-    readonly catalogStale: 3;
-    readonly drift: 4;
-    readonly authScope: 5;
-    readonly lockedVar: 6;
-    readonly deployFailed: 7;
-    readonly waitTimeout: 8;
-};
-export declare function errorToExitCode(err: unknown): number;
+export { EXIT, errorToExitCode } from './exit.js';
 export declare function main(argv: string[]): Promise<number>;
 /**
  * True when this module is the process entry point (run as the CLI), false when imported.

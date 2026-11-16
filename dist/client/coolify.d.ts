@@ -4,8 +4,12 @@ import { CoolifyInstanceClient } from './instance.js';
 import { type DeployAck, type EnvVar, type EnvWriteItem, type Application, type Deployment, type DeploymentCancel, type MessageAck, type Service, type Database, type ServiceUpdateResponse } from './schemas.js';
 import { type WaitOptions } from './wait.js';
 export type { CoolifyClientDeps } from './base.js';
-/** Default page size used for fetching recent deployments when determining "latest". */
-export declare const DEFAULT_LATEST_TAKE = 20;
+/**
+ * Page size used to find the latest deployment. Coolify returns an application's deployments
+ * newest first and embeds the full build log in every row (hundreds of kB each), so asking for
+ * more than the first row made `status` download megabytes it then threw away. Was 20 until 0.4.x.
+ */
+export declare const DEFAULT_LATEST_TAKE = 1;
 export interface DeployOptions {
     /** Rebuild without the Docker cache (applications only) — needed to pick up a patched base image. */
     force?: boolean;
@@ -37,8 +41,16 @@ export declare class CoolifyClient {
     private base;
     private requireKind;
     listEnvs(): Promise<EnvVar[]>;
+    /**
+     * Bulk upsert by key (`PATCH …/envs/bulk`). An item without `is_preview` touches the production
+     * row only. Services and databases have no preview rows: Coolify drops `is_preview` there and
+     * would write the production row, so a preview item is refused for them before anything is sent.
+     */
     upsertEnvs(items: EnvWriteItem[]): Promise<EnvVar[]>;
-    /** Delete one env row by its uuid (from `listEnvs()`). Applications, services and databases. */
+    /**
+     * Delete one env row by its uuid (from `listEnvs()`). Applications, services and databases.
+     * Needs the `delete` token ability from Coolify 4.7 (`write` before).
+     */
     deleteEnv(envUuid: string): Promise<MessageAck>;
     /**
      * Deploy (applications: queue a build; services/databases: start). `force` rebuilds without the
@@ -86,10 +98,13 @@ export declare class CoolifyClient {
     /** Cancel a queued / in-progress deployment. Coolify answers 400 if it already finished. */
     cancelDeployment(deploymentUuid: string): Promise<DeploymentCancel>;
     /**
-     * Convenience: return the most recent deployment for this target (client-side sort).
-     * Sort key: updated_at desc, then created_at desc, then deployment_uuid desc.
+     * Convenience: the most recent deployment of this target — the first row of Coolify's
+     * newest-first list (one request, one row). Its `logs` are present when the token has
+     * read:sensitive. `take` widens the window; the newest by created_at (then updated_at) wins.
      */
-    getLatestDeployment(): Promise<Deployment | undefined>;
+    getLatestDeployment(opts?: {
+        take?: number;
+    }): Promise<Deployment | undefined>;
     /**
      * Convenience: return the logs from the latest deployment (build/deploy logs).
      * Fetches the full deployment record when the list entry lacks detailed logs.

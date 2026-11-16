@@ -21,6 +21,10 @@ export interface CmdDeps {
     /** Writes an unredacted document for --out (mode 0600). */
     writeFile?: (path: string, content: string) => Promise<void>;
 }
+/**
+ * Write an unredacted document for `--out`, readable by the owner only. `mode` on writeFile only
+ * applies when the file is created, so an existing world-readable file is chmod-ed as well.
+ */
 export declare const defaultWriteFile: (path: string, content: string) => Promise<void>;
 export declare function requireInstance(args: ParsedArgs, deps: CmdDeps): {
     name: string;
@@ -28,6 +32,11 @@ export declare function requireInstance(args: ParsedArgs, deps: CmdDeps): {
 };
 export declare const print: (line?: string) => void;
 export declare const warn: (line: string) => void;
+/**
+ * Report a usage problem the way the rest of the CLI reports errors — prose on stderr, or with
+ * `--json` the `{ "error": { code, message, exitCode } }` document — and return exit code 2.
+ */
+export declare function usageFail(args: Pick<ParsedArgs, 'json'>, message: string): number;
 /** JSON output for agents: always redacted, never prose. */
 export declare function printJson(value: unknown): void;
 export declare function audit(deps: CmdDeps, record: {
@@ -40,6 +49,13 @@ export declare function audit(deps: CmdDeps, record: {
     outcome?: AuditRecord['outcome'];
     error?: string;
 }): Promise<void>;
+/**
+ * Append an audit record without ever letting the audit log decide the command's outcome: by the
+ * time it is written the mutation has happened (or failed) in Coolify. A read-only checkout or a
+ * full disk is reported loudly on stderr instead of turning a successful deploy into exit 1 —
+ * which an agent would answer by deploying again.
+ */
+export declare function writeAuditSafely(deps: Pick<CmdDeps, 'auditSink'>, record: AuditRecord): Promise<void>;
 /**
  * Run a mutation and audit it whatever happens (keys/options only). A failed mutation is recorded
  * with outcome=failure and the error message, then rethrown.

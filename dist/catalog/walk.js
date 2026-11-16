@@ -1,55 +1,154 @@
-import { z } from 'zod';
 const PEM_KEY_RE = /_KEY$|_PEM$|PRIVATE_KEY/i;
-function def(schema) {
-    // reason: accessing the documented Zod runtime `_def` shape requires an unknown cast.
-    return schema._def;
+/**
+ * The only zod 3 wrappers the walker has ever looked through. Kept exactly as they were so a
+ * catalog generated from zod 3 schemas stays byte-identical across harness versions (anything
+ * else, e.g. `ZodPipeline`, is reported by its own type name: `pipeline`).
+ */
+const ZOD3_FIELD_WRAPPERS = new Set(['default', 'optional', 'nullable', 'effects', 'catch']);
+const ZOD3_OBJECT_WRAPPERS = new Set(['object', 'effects', 'default', 'optional', 'catch', 'intersection']);
+function isRecord(value) {
+    return value !== null && (typeof value === 'object' || typeof value === 'function');
 }
-function typeNameOf(schema) {
-    return def(schema).typeName;
+function nodeOf(schema) {
+    if (isRecord(schema)) {
+        // zod 4 / zod mini: every schema carries `_zod.def` with a string `type`.
+        const core = schema['_zod'];
+        if (isRecord(core) && isRecord(core['def']) && typeof core['def']['type'] === 'string') {
+            return { kind: core['def']['type'], def: core['def'], schema };
+        }
+        // zod 3: `_def.typeName` is `ZodString`, `ZodObject`, … → `string`, `object`, … flagged legacy.
+        const def = schema['_def'];
+        if (isRecord(def) && typeof def['typeName'] === 'string') {
+            const name = def['typeName'].replace(/^Zod/, '').toLowerCase();
+            return { kind: name, def, schema, legacy: true };
+        }
+    }
+    return { kind: 'unknown', def: {}, schema };
+}
+/** `.describe()` text of this exact node (zod 3: `_def.description`; zod 4: the global registry). */
+function descriptionOf(node) {
+    const own = node.def['description'];
+    if (typeof own === 'string')
+        return own;
+    if (isRecord(node.schema)) {
+        try {
+            const viaGetter = node.schema['description']; // zod 4 classic getter → registry lookup
+            if (typeof viaGetter === 'string')
+                return viaGetter;
+        }
+        catch {
+            // a getter on an exotic schema must not break catalog generation
+        }
+    }
+    if (node.legacy)
+        return undefined;
+    // zod mini has no `.description` getter: metadata lives only in the shared global registry.
+    try {
+        const registry = globalThis.__zod_globalRegistry; // reason: zod 4 publishes its registry on globalThis so that every zod copy shares it
+        const meta = registry?.get?.(node.schema);
+        return isRecord(meta) && typeof meta['description'] === 'string' ? meta['description'] : undefined;
+    }
+    catch {
+        return undefined; // a registry from another zod build must not break catalog generation
+    }
+}
+/** A default is a thunk in zod 3 and a plain (getter-backed) value in zod 4. */
+function defaultValueOf(def) {
+    const dv = def['defaultValue'];
+    return typeof dv === 'function' ? dv() : dv; // reason: zod 3 stores the default as a zero-argument function
 }
 function unwrapField(schema) {
-    let current = schema;
+    let current = nodeOf(schema);
     let required = true;
+    let requiredForced = false; // an outer `.nonoptional()` wins over whatever it wraps
     let defaultValue;
     let transformed = false;
-    for (;;) {
-        const tn = typeNameOf(current);
-        const d = def(current);
-        if (tn === 'ZodDefault') {
-            required = false;
-            defaultValue = d.defaultValue ? d.defaultValue() : undefined;
-            current = d.innerType;
-            continue;
-        }
-        if (tn === 'ZodOptional' || tn === 'ZodNullable') {
-            required = false;
-            current = d.innerType;
-            continue;
-        }
-        if (tn === 'ZodEffects') {
-            if (d.effect?.type === 'transform')
-                transformed = true;
-            current = d.schema;
-            continue;
-        }
-        if (tn === 'ZodCatch') {
-            current = d.innerType;
-            continue;
+    let description;
+    for (let depth = 0; depth < 64; depth += 1) {
+        description ??= descriptionOf(current);
+        const d = current.def;
+        if (current.legacy && !ZOD3_FIELD_WRAPPERS.has(current.kind))
+            break;
+        switch (current.kind) {
+            case 'default':
+            case 'prefault':
+                if (!requiredForced)
+                    required = false;
+                defaultValue ??= defaultValueOf(d);
+                current = nodeOf(d['innerType']);
+                continue;
+            case 'optional':
+            case 'nullable':
+                if (!requiredForced)
+                    required = false;
+                current = nodeOf(d['innerType']);
+                continue;
+            case 'nonoptional':
+                requiredForced = true;
+                current = nodeOf(d['innerType']);
+                continue;
+            case 'catch':
+            case 'readonly':
+                current = nodeOf(d['innerType']);
+                continue;
+            case 'lazy': {
+                const getter = d['getter'];
+                if (typeof getter !== 'function')
+                    break;
+                current = nodeOf(getter()); // reason: zod stores the lazy schema as a zero-argument getter
+                continue;
+            }
+            case 'effects': { // zod 3: refine / superRefine / transform / preprocess all wrap
+                const effect = d['effect'];
+                if (isRecord(effect) && effect['type'] === 'transform')
+                    transformed = true;
+                current = nodeOf(d['schema']);
+                continue;
+            }
+            case 'pipe': {
+                const input = nodeOf(d['in']);
+                const output = nodeOf(d['out']);
+                if (output.kind === 'transform') { // zod 4 `.transform(fn)`: the env value is the input side
+                    transformed = true;
+                    current = input;
+                }
+                else if (input.kind === 'transform') { // zod 4 `z.preprocess(fn, schema)`
+                    current = output;
+                }
+                else { // a real pipe / codec (`z.stringbool()`, `.pipe(z.coerce.number())`): document the result
+                    transformed = true;
+                    current = output;
+                }
+                continue;
+            }
+            default:
+                break;
         }
         break;
     }
-    const coerced = def(current).coerce === true;
+    const coerced = current.def['coerce'] === true;
     const result = { base: current, required, transformed, coerced };
-    return defaultValue === undefined ? result : { ...result, defaultValue };
+    return {
+        ...result,
+        ...(defaultValue !== undefined ? { defaultValue } : {}),
+        ...(description !== undefined ? { description } : {}),
+    };
 }
-function baseType(schema) {
-    const tn = typeNameOf(schema);
-    switch (tn) {
-        case 'ZodNumber': return { type: 'number' };
-        case 'ZodBoolean': return { type: 'boolean' };
-        case 'ZodEnum': return { type: 'enum', enumValues: [...(def(schema).values ?? [])] };
-        case 'ZodString': return { type: 'string' };
-        default: return { type: tn ? tn.replace(/^Zod/, '').toLowerCase() : 'unknown' };
+function enumValuesOf(node) {
+    const values = node.def['values']; // zod 3 ZodEnum: string[]
+    if (Array.isArray(values))
+        return values.map(String);
+    const entries = node.def['entries']; // zod 4: { KEY: value } for z.enum([...]) and for TS enums
+    if (!isRecord(entries))
+        return [];
+    // A numeric TS enum also maps value → name; keep only the real values, as zod does.
+    const numeric = new Set(Object.values(entries).filter((v) => typeof v === 'number').map(String));
+    return Object.entries(entries).filter(([k]) => !numeric.has(k)).map(([, v]) => String(v));
+}
+function baseType(node) {
+    switch (node.kind) {
+        case 'enum': return { type: 'enum', enumValues: enumValuesOf(node) };
+        default: return { type: node.kind };
     }
 }
 function serializeDefault(value) {
@@ -61,47 +160,63 @@ function serializeDefault(value) {
         return String(value);
     return JSON.stringify(value);
 }
-function descriptionOf(schema) {
-    // reason: `.describe()` writes to `_def.description`, untyped in the runtime def.
-    const d = schema._def;
-    return d.description;
-}
 function unwrapToObject(schema) {
-    let current = schema;
-    for (;;) {
-        const tn = typeNameOf(current);
-        if (tn === 'ZodObject') {
-            const shapeFn = def(current).shape;
-            return shapeFn ? shapeFn() : {};
+    let current = nodeOf(schema);
+    for (let depth = 0; depth < 64; depth += 1) {
+        const d = current.def;
+        if (current.legacy && !ZOD3_OBJECT_WRAPPERS.has(current.kind))
+            break;
+        switch (current.kind) {
+            case 'object': {
+                const shape = d['shape']; // zod 3: a thunk; zod 4: the shape object itself
+                const resolved = typeof shape === 'function' ? shape() : shape; // reason: zod 3 stores the shape as a zero-argument function
+                return isRecord(resolved) ? { ...resolved } : {};
+            }
+            case 'effects':
+                current = nodeOf(d['schema']);
+                continue;
+            case 'default':
+            case 'prefault':
+            case 'optional':
+            case 'nullable':
+            case 'nonoptional':
+            case 'catch':
+            case 'readonly':
+                current = nodeOf(d['innerType']);
+                continue;
+            case 'pipe': {
+                const input = nodeOf(d['in']);
+                current = input.kind === 'transform' ? nodeOf(d['out']) : input;
+                continue;
+            }
+            case 'lazy': {
+                const getter = d['getter'];
+                if (typeof getter !== 'function')
+                    break;
+                current = nodeOf(getter()); // reason: zod stores the lazy schema as a zero-argument getter
+                continue;
+            }
+            case 'intersection':
+                // Merge the shapes from both sides of the intersection. Right-side keys win on collision.
+                return { ...unwrapToObject(d['left']), ...unwrapToObject(d['right']) };
+            default:
+                break;
         }
-        if (tn === 'ZodEffects') {
-            current = def(current).schema;
-            continue;
-        }
-        if (tn === 'ZodDefault' || tn === 'ZodOptional' || tn === 'ZodCatch') {
-            current = def(current).innerType;
-            continue;
-        }
-        if (tn === 'ZodIntersection') {
-            // Merge the shapes from both sides of the intersection. Right-side keys win on collision.
-            const d = def(current);
-            const left = unwrapToObject(d.left);
-            const right = unwrapToObject(d.right);
-            return { ...left, ...right };
-        }
-        throw new Error(`walkEnvSchema: top-level schema is not a ZodObject (got ${tn ?? 'unknown'})`);
+        break;
     }
+    const what = current.kind === 'unknown'
+        ? 'not a Zod schema (expected a zod 3 or zod 4 object schema)'
+        : `a Zod ${current.kind}, not an object schema`;
+    throw new Error(`walkEnvSchema: top-level schema is ${what}`);
 }
 export function walkEnvSchema(schema, opts) {
     const shape = unwrapToObject(schema);
     const entries = [];
     for (const [key, fieldSchema] of Object.entries(shape)) {
-        // .describe() may live on any wrapper level; check the field then its unwrapped base.
-        const topDescription = descriptionOf(fieldSchema);
         const u = unwrapField(fieldSchema);
-        const baseDescription = descriptionOf(u.base);
+        // .describe() may live on any wrapper level (found while unwrapping) or on the base itself.
+        const description = u.description ?? descriptionOf(u.base);
         const { type, enumValues } = baseType(u.base);
-        const description = topDescription ?? baseDescription;
         const entryBase = {
             key,
             services: [opts.service],

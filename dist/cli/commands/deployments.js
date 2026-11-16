@@ -1,7 +1,7 @@
 import { isTerminalDeploymentStatus } from '../../client/schemas.js';
-import { audited, print, printJson, requireInstance, warn } from '../deps.js';
+import { audited, print, printJson, requireInstance, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
-import { EXIT } from '../main.js';
+import { EXIT } from '../exit.js';
 /** Deployment lookups work with --app (its instance) or --instance; the uuid is instance-global. */
 function deploymentReader(args, deps) {
     if (args.app && !args.instance) {
@@ -12,14 +12,21 @@ function deploymentReader(args, deps) {
     const { client } = requireInstance(args, deps);
     return { instanceUrl: client.instanceUrl, get: (u) => client.getDeployment(u), cancel: (u) => client.cancelDeployment(u) };
 }
+/**
+ * A deployment without its build log, for `--no-logs`: the log is hundreds of kB per deployment
+ * and a list of ten drowns an agent's context. `logs_length` says how much was left out.
+ */
+export function withoutLogs(d) {
+    const { logs, ...rest } = d;
+    return { ...rest, logs_length: typeof logs === 'string' ? logs.length : null };
+}
 function printDeploymentLine(d) {
     print(`  ${d.deployment_uuid}  [${d.status}]  ${d.application_name ?? ''}  ${d.commit ?? ''}  ${d.updated_at ?? d.created_at ?? ''}`);
 }
 export async function deploymentsCmd(args, deps) {
     if (!args.app && !args.instance) {
         const label = args.command === 'deployment' ? 'deployment <uuid>' : 'deployments';
-        warn(`${label}: --app <name> or --instance <name> is required`);
-        return EXIT.usage;
+        return usageFail(args, `${label}: --app <name> or --instance <name> is required`);
     }
     // Single deployment: "deployment <uuid>" or --deployment
     const singleUuid = args.deployment;
@@ -27,7 +34,7 @@ export async function deploymentsCmd(args, deps) {
         const reader = deploymentReader(args, deps);
         const d = await withScope('read', () => reader.get(singleUuid));
         if (args.json) {
-            printJson(d);
+            printJson(args.noLogs ? withoutLogs(d) : d);
         }
         else {
             print(`deployment ${d.deployment_uuid} [${d.status}]`);
@@ -39,8 +46,13 @@ export async function deploymentsCmd(args, deps) {
                 print(`created: ${d.created_at}`);
             if (d.finished_at)
                 print(`finished: ${d.finished_at}`);
-            print('logs:');
-            print(d.logs ?? '(none — needs read:sensitive, or not written yet)');
+            if (args.noLogs) {
+                print(`logs: ${typeof d.logs === 'string' ? `${d.logs.length} chars (omitted by --no-logs)` : '(none)'}`);
+            }
+            else {
+                print('logs:');
+                print(d.logs ?? '(none — needs read:sensitive, or not written yet)');
+            }
             print('NOTE: use --json for full machine-readable output.');
         }
         return EXIT.ok;
@@ -50,7 +62,7 @@ export async function deploymentsCmd(args, deps) {
         const { name, client } = requireInstance(args, deps);
         const list = await withScope('read', () => client.listRunningDeployments());
         if (args.json) {
-            printJson(list);
+            printJson(args.noLogs ? list.map(withoutLogs) : list);
             return EXIT.ok;
         }
         print(`queued / in-progress deployments on ${name}: ${list.length}`);
@@ -66,7 +78,7 @@ export async function deploymentsCmd(args, deps) {
         listOpts.skip = args.skip;
     const list = await withScope('read', () => client.listDeployments(listOpts));
     if (args.json) {
-        printJson(list);
+        printJson(args.noLogs ? list.map(withoutLogs) : list);
         return EXIT.ok;
     }
     if (target.kind !== 'application') {
@@ -76,15 +88,14 @@ export async function deploymentsCmd(args, deps) {
     print(`recent deployments for ${args.app} (showing ${list.length})`);
     for (const d of list)
         printDeploymentLine(d);
-    print('NOTE: use --json for full machine-readable output. Use "deployment <UUID> --app X" for full logs.');
+    print('NOTE: use --json --no-logs for a compact machine-readable list. Use "deployment <UUID> --app X" for full logs.');
     return EXIT.ok;
 }
 /** `deployment cancel <uuid>`: dry-run unless --apply; a finished deployment is reported, not an error. */
 export async function deploymentCancelCmd(args, deps) {
     const uuid = args.deployment;
     if (!uuid || (!args.app && !args.instance)) {
-        warn('deployment cancel <uuid>: the deployment uuid and --app <name> or --instance <name> are required');
-        return EXIT.usage;
+        return usageFail(args, 'deployment cancel <uuid>: the deployment uuid and --app <name> or --instance <name> are required');
     }
     const reader = deploymentReader(args, deps);
     const current = await withScope('read', () => reader.get(uuid));

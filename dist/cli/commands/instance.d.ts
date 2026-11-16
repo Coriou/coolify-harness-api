@@ -1,6 +1,11 @@
 import type { ParsedArgs } from '../args.js';
 import { type CmdDeps } from '../deps.js';
-/** `instance info` / `version`: Coolify version + health for an instance. */
+/**
+ * `instance info` / `version`: Coolify version + health for an instance, and whether that version
+ * is inside the range this harness release is tested against. Outside the range is a WARNING
+ * (stderr, and `compatibility` / `warning` in the JSON), never a failure: most commands keep
+ * working, but a contract error becomes a likely cause to check first.
+ */
 export declare function instanceInfo(args: ParsedArgs, deps: CmdDeps): Promise<number>;
 export declare function serversCmd(args: ParsedArgs, deps: CmdDeps): Promise<number>;
 /** `server get`: server + its resources + proxy summary (type, status, image). */

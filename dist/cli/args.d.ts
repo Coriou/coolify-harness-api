@@ -32,10 +32,14 @@ declare const COMMANDS: {
     readonly 'database backup': "database-backup";
     readonly help: "help";
 };
+/** Every command as typed on the command line (`env diff`, `deploy`, …). */
+export declare const COMMAND_NAMES: readonly string[];
 export type Command = (typeof COMMANDS)[keyof typeof COMMANDS];
 export interface ParsedArgs {
     command: Command;
     config: string;
+    /** True when `--config` was passed (otherwise the default config names are looked up). */
+    configExplicit?: boolean;
     app?: string;
     apply: boolean;
     yes: boolean;
@@ -68,6 +72,16 @@ export interface ParsedArgs {
     public?: boolean;
     publicPort?: number;
     running: boolean;
+    /** `--version` / `-v`: print the harness version and the tested Coolify range. */
+    version?: boolean;
+    /** `--dry-run`: never mutate, even for `deploy` (which otherwise acts immediately). */
+    dryRun?: boolean;
+    /** `--fail-on-changes`: `env diff` exits 4 when the plan has creates or updates. */
+    failOnChanges?: boolean;
+    /** `--no-logs`: leave build logs out of deployment JSON (they are hundreds of kB each). */
+    noLogs?: boolean;
+    /** `--offline`: `config doctor` checks the config and tokens only, without calling Coolify. */
+    offline?: boolean;
 }
 export declare function parseArgs(argv: string[]): ParsedArgs;
 export {};

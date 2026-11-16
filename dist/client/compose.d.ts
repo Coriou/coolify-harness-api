@@ -30,11 +30,13 @@ export type DiffOp = {
     op: 'same' | 'del' | 'add';
     line: string;
 };
-/** LCS line diff. Compose files are small (tens to hundreds of lines), so O(n·m) is fine. */
+/** LCS line diff of the RAW documents. Never print its lines: use formatRedactedDiff. */
 export declare function diffLines(before: string, after: string): DiffOp[];
 /**
- * Human diff of two compose documents with secrets redacted on both sides. A changed line whose
- * redacted form is identical (i.e. only a secret value changed) is reported as such instead of
- * showing two identical `-`/`+` lines.
+ * Human diff of two compose documents with secrets redacted on both sides. Each document is
+ * redacted as a whole first, so a line is judged in its context (inside an `environment:` block, a
+ * block scalar or a PEM block) rather than on its own. A changed line whose redacted form is
+ * identical (i.e. only a secret value changed) is reported as such instead of showing two
+ * identical `-`/`+` lines.
  */
 export declare function formatRedactedDiff(before: string, after: string): string[];

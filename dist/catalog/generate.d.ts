@@ -1,8 +1,8 @@
-import { z } from 'zod';
-import { type CatalogModel } from './walk.js';
+import { type AnyZodSchema, type CatalogModel } from './walk.js';
 export interface SchemaInput {
     service: string;
-    schema: z.ZodTypeAny;
+    /** A zod 3, zod 4 or zod mini object schema (possibly refined, intersected or wrapped). */
+    schema: AnyZodSchema;
 }
 export interface CatalogArtifacts {
     markdown: string;

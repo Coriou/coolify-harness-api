@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { UsageError } from '../errors/index.js';
 const COMMANDS = {
     'catalog gen': 'catalog-gen',
     'catalog check': 'catalog-check',
@@ -33,13 +33,22 @@ const COMMANDS = {
     'database backup': 'database-backup',
     help: 'help',
 };
+/** Every command as typed on the command line (`env diff`, `deploy`, …). */
+export const COMMAND_NAMES = Object.keys(COMMANDS);
 /** Flags that consume the next token as their value (everything else is a boolean switch). */
 const VALUE_FLAGS = new Set([
     '--config', '--app', '--from-file', '--set', '--lines', '--deployment', '--take', '--skip',
     '--instance', '--server', '--database', '--backup', '--timeout', '--key', '--out', '--image',
     '--service', '--public', '--public-port',
 ]);
-const usage = (message) => new z.ZodError([{ code: 'custom', path: [], message }]);
+const usage = (message) => new UsageError(message);
+/**
+ * A stray word is echoed back only when it looks like a command word. Anything else may be a
+ * secret that slipped out of its flag (`--set KEY= value`), and error text ends up in logs.
+ */
+const show = (words) => words.map((w) => (/^[A-Za-z][A-Za-z:-]{0,24}$/.test(w) ? w : `<${w.length} chars>`)).join(' ');
+/** Marks a value that came from `--flag=value`, so `--set K=--x` is not mistaken for a missing value. */
+const EQ = '\u0000=';
 /**
  * Split the argv into the command words and the flags, tolerating the forms agents actually type:
  * `--flag=value`, hyphen/colon command spellings (`env-diff`, `env:diff`), and flags placed before
@@ -50,30 +59,41 @@ function normalize(argv) {
     for (const t of argv) {
         const eq = t.startsWith('--') ? t.indexOf('=') : -1;
         if (eq > 2)
-            tokens.push(t.slice(0, eq), t.slice(eq + 1));
+            tokens.push(t.slice(0, eq), `${EQ}${t.slice(eq + 1)}`);
         else
             tokens.push(t);
     }
     const words = [];
     const flags = [];
+    let help = false;
     for (let i = 0; i < tokens.length; i += 1) {
         const t = tokens[i];
         if (t === '-h' || t === '--help') {
-            words.length = 0;
-            words.push('help');
+            help = true;
+            continue;
+        }
+        if (t === '-v') {
+            flags.push('--version');
             continue;
         }
         if (t.startsWith('--')) {
             flags.push(t);
-            if (VALUE_FLAGS.has(t) && i + 1 < tokens.length) {
-                flags.push(tokens[i + 1]);
+            if (VALUE_FLAGS.has(t)) {
+                const v = tokens[i + 1];
+                // `--app --json`: the next token is another flag, so the value is missing — do not swallow it.
+                if (v === undefined || (v.startsWith('--') && v !== '--'))
+                    throw usage(`Missing value for ${t}`);
+                flags.push(v.startsWith(EQ) ? v.slice(EQ.length) : v);
                 i += 1;
+            }
+            else if (tokens[i + 1]?.startsWith(EQ)) {
+                throw usage(`${t} does not take a value`);
             }
             continue;
         }
-        words.push(t);
+        words.push(t.startsWith(EQ) ? t.slice(EQ.length) : t);
     }
-    return { words, flags };
+    return help ? { words: ['help'], flags: [] } : { words, flags };
 }
 function resolveCommand(words) {
     if (words[0] === 'help')
@@ -91,7 +111,39 @@ function resolveCommand(words) {
     if (one in COMMANDS) {
         return { command: COMMANDS[one], positionals: w.slice(1) }; // reason: key membership checked by `in COMMANDS` guard above
     }
-    throw usage(w.length === 0 ? 'No command given. Run `coolify-harness help`.' : `Unknown command: ${w.join(' ')}. Run \`coolify-harness help\`.`);
+    if (w.length === 0)
+        throw usage('No command given. Run `coolify-harness help`.');
+    const typed = w.slice(0, 2).join(' ');
+    const near = nearestCommand(typed) ?? nearestCommand(one);
+    throw usage(`Unknown command: ${show(w)}.${near ? ` Did you mean \`${near}\`?` : ''} Run \`coolify-harness help\`.`);
+}
+function editDistance(a, b) {
+    const row = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i += 1) {
+        let prev = row[0];
+        row[0] = i;
+        for (let j = 1; j <= b.length; j += 1) {
+            const cur = row[j];
+            row[j] = Math.min(row[j] + 1, row[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+            prev = cur;
+        }
+    }
+    return row[b.length];
+}
+/** Closest known command within a couple of typos, or the group's first command (`env` → `env list`). */
+function nearestCommand(typed) {
+    if (typed === '')
+        return undefined;
+    const group = COMMAND_NAMES.filter((c) => c.startsWith(`${typed} `));
+    if (group.length > 0)
+        return group.join('`, `');
+    let best;
+    for (const name of COMMAND_NAMES) {
+        const d = editDistance(typed, name);
+        if (d <= 2 && (!best || d < best.d))
+            best = { name, d };
+    }
+    return best?.name;
 }
 function parseNumber(flag, v, min) {
     const n = Number(v);
@@ -108,7 +160,9 @@ function parseBool(flag, v) {
 }
 export function parseArgs(argv) {
     const { words, flags } = normalize(argv);
-    const { command, positionals } = resolveCommand(words);
+    // `coolify-harness --version` has no command: it is its own (local) action, served by `help`.
+    const versionOnly = words.length === 0 && flags.includes('--version');
+    const { command, positionals } = versionOnly ? { command: 'help', positionals: [] } : resolveCommand(words);
     const out = {
         command, config: 'coolify-harness.config.ts',
         apply: false, yes: false, redeploy: false, restart: false, json: false, failOnDrift: false, set: {},
@@ -121,14 +175,14 @@ export function parseArgs(argv) {
             out.deployment = positionals[0];
         }
         else {
-            throw usage(`Unexpected argument: ${positionals.join(' ')}`);
+            throw usage(`Unexpected argument: ${show(positionals)}. Values belong to a flag (e.g. --app NAME, --set KEY=VALUE).`);
         }
     }
     for (let i = 0; i < flags.length; i += 1) {
         const tok = flags[i];
         const next = () => {
             const v = flags[i + 1];
-            if (v === undefined || !VALUE_FLAGS.has(tok))
+            if (v === undefined)
                 throw usage(`Missing value for ${tok}`);
             i += 1;
             return v;
@@ -136,6 +190,7 @@ export function parseArgs(argv) {
         switch (tok) {
             case '--config':
                 out.config = next();
+                out.configExplicit = true;
                 break;
             case '--app':
                 out.app = next();
@@ -164,8 +219,11 @@ export function parseArgs(argv) {
             case '--set': {
                 const pair = next();
                 const eq = pair.indexOf('=');
+                // Never echo the argument: without an `=` the whole token may be a pasted secret.
                 if (eq < 0)
-                    throw usage(`--set expects K=V, got ${pair}`);
+                    throw usage('--set expects KEY=VALUE (no `=` found)');
+                if (eq === 0)
+                    throw usage('--set expects KEY=VALUE (the key is empty)');
                 out.set[pair.slice(0, eq)] = pair.slice(eq + 1);
                 break;
             }
@@ -238,9 +296,26 @@ export function parseArgs(argv) {
             case '--running':
                 out.running = true;
                 break;
+            case '--version':
+                out.version = true;
+                break;
+            case '--dry-run':
+                out.dryRun = true;
+                break;
+            case '--fail-on-changes':
+                out.failOnChanges = true;
+                break;
+            case '--no-logs':
+                out.noLogs = true;
+                break;
+            case '--offline':
+                out.offline = true;
+                break;
             default:
                 throw usage(`Unknown flag: ${tok}`);
         }
     }
+    if (out.apply && out.dryRun)
+        throw usage('--apply and --dry-run contradict each other; pass one');
     return out;
 }

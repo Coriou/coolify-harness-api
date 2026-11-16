@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { redactDocument } from './redact.js';
-const IMAGE_REF_RE = /^[a-z0-9][a-z0-9._\-/]*(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(@sha256:[a-f0-9]{64})?$/;
+import { redactDocumentLines } from './redact.js';
+const IMAGE_REF_RE = /^([a-z0-9][a-z0-9.-]*(:\d{1,5})?\/)?[a-z0-9][a-z0-9._\-/]*(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(@sha256:[a-f0-9]{64})?$/;
 /** True for a plausible OCI image reference (`repo[:tag][@sha256:digest]`, lowercase repo). */
 export function isValidImageRef(ref) {
     return IMAGE_REF_RE.test(ref);
@@ -77,10 +77,8 @@ export function sha256(text) {
 export function toBase64(text) {
     return Buffer.from(text, 'utf8').toString('base64');
 }
-/** LCS line diff. Compose files are small (tens to hundreds of lines), so O(n·m) is fine. */
-export function diffLines(before, after) {
-    const a = before.split('\n');
-    const b = after.split('\n');
+/** LCS line diff by index. Compose files are small (tens to hundreds of lines), so O(n·m) is fine. */
+function diffIndices(a, b) {
     const dp = Array.from({ length: a.length + 1 }, () => new Array(b.length + 1).fill(0));
     for (let i = a.length - 1; i >= 0; i -= 1) {
         for (let j = b.length - 1; j >= 0; j -= 1) {
@@ -92,48 +90,82 @@ export function diffLines(before, after) {
     let j = 0;
     while (i < a.length && j < b.length) {
         if (a[i] === b[j]) {
-            out.push({ op: 'same', line: a[i] });
+            out.push({ op: 'same', a: i, b: j });
             i += 1;
             j += 1;
         }
         else if (dp[i + 1][j] >= dp[i][j + 1]) {
-            out.push({ op: 'del', line: a[i] });
+            out.push({ op: 'del', a: i, b: -1 });
             i += 1;
         }
         else {
-            out.push({ op: 'add', line: b[j] });
+            out.push({ op: 'add', a: -1, b: j });
             j += 1;
         }
     }
     while (i < a.length) {
-        out.push({ op: 'del', line: a[i] });
+        out.push({ op: 'del', a: i, b: -1 });
         i += 1;
     }
     while (j < b.length) {
-        out.push({ op: 'add', line: b[j] });
+        out.push({ op: 'add', a: -1, b: j });
         j += 1;
     }
     return out;
 }
+/** LCS line diff of the RAW documents. Never print its lines: use formatRedactedDiff. */
+export function diffLines(before, after) {
+    const a = before.split('\n');
+    const b = after.split('\n');
+    return diffIndices(a, b).map((o) => ({ op: o.op, line: o.op === 'add' ? b[o.b] : a[o.a] }));
+}
 /**
- * Human diff of two compose documents with secrets redacted on both sides. A changed line whose
- * redacted form is identical (i.e. only a secret value changed) is reported as such instead of
- * showing two identical `-`/`+` lines.
+ * Human diff of two compose documents with secrets redacted on both sides. Each document is
+ * redacted as a whole first, so a line is judged in its context (inside an `environment:` block, a
+ * block scalar or a PEM block) rather than on its own. A changed line whose redacted form is
+ * identical (i.e. only a secret value changed) is reported as such instead of showing two
+ * identical `-`/`+` lines.
  */
 export function formatRedactedDiff(before, after) {
-    const ops = diffLines(before, after);
+    const a = before.split('\n');
+    const b = after.split('\n');
+    const ra = redactDocumentLines(before);
+    const rb = redactDocumentLines(after);
+    const ops = diffIndices(a, b);
     const out = [];
-    for (let k = 0; k < ops.length; k += 1) {
-        const cur = ops[k];
-        if (cur.op === 'same')
-            continue;
-        const next = ops[k + 1];
-        if (cur.op === 'del' && next?.op === 'add' && redactDocument(cur.line) === redactDocument(next.line)) {
-            out.push(`~ ${redactDocument(next.line).trim()}   (redacted value changed)`);
+    for (let k = 0; k < ops.length;) {
+        if (ops[k].op === 'same') {
             k += 1;
             continue;
         }
-        out.push(`${cur.op === 'del' ? '-' : '+'} ${redactDocument(cur.line)}`);
+        // One hunk: the deleted lines, then the added lines that replace them.
+        const dels = [];
+        const adds = [];
+        while (k < ops.length && ops[k].op === 'del') {
+            dels.push(ops[k].a);
+            k += 1;
+        }
+        while (k < ops.length && ops[k].op === 'add') {
+            adds.push(ops[k].b);
+            k += 1;
+        }
+        const paired = Math.min(dels.length, adds.length);
+        const minus = [];
+        const plus = [];
+        for (let i = 0; i < Math.max(dels.length, adds.length); i += 1) {
+            const d = i < dels.length ? ra[dels[i]] ?? '' : undefined;
+            const p = i < adds.length ? rb[adds[i]] ?? '' : undefined;
+            if (i < paired && d === p) {
+                // Same line once redacted: only the secret changed. Say so instead of printing a no-op pair.
+                plus.push(`~ ${(p ?? '').trim()}   (redacted value changed)`);
+                continue;
+            }
+            if (d !== undefined)
+                minus.push(`- ${d}`);
+            if (p !== undefined)
+                plus.push(`+ ${p}`);
+        }
+        out.push(...minus, ...plus);
     }
     return out;
 }

@@ -1,72 +1,32 @@
 import { z } from 'zod';
 export declare const InstanceSchema: z.ZodObject<{
-    url: z.ZodString;
+    url: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
     tokenEnv: z.ZodString;
-}, "strip", z.ZodTypeAny, {
-    url: string;
-    tokenEnv: string;
-}, {
-    url: string;
-    tokenEnv: string;
-}>;
+}, z.core.$strip>;
 export declare const TargetSchema: z.ZodObject<{
     instance: z.ZodString;
-    kind: z.ZodEnum<["application", "service", "database"]>;
+    kind: z.ZodEnum<{
+        application: "application";
+        service: "service";
+        database: "database";
+    }>;
     uuid: z.ZodString;
-}, "strip", z.ZodTypeAny, {
-    instance: string;
-    kind: "application" | "service" | "database";
-    uuid: string;
-}, {
-    instance: string;
-    kind: "application" | "service" | "database";
-    uuid: string;
-}>;
+}, z.core.$strip>;
 export declare const ProjectRegistrySchema: z.ZodObject<{
     instances: z.ZodRecord<z.ZodString, z.ZodObject<{
-        url: z.ZodString;
+        url: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
         tokenEnv: z.ZodString;
-    }, "strip", z.ZodTypeAny, {
-        url: string;
-        tokenEnv: string;
-    }, {
-        url: string;
-        tokenEnv: string;
-    }>>;
+    }, z.core.$strip>>;
     targets: z.ZodRecord<z.ZodString, z.ZodObject<{
         instance: z.ZodString;
-        kind: z.ZodEnum<["application", "service", "database"]>;
+        kind: z.ZodEnum<{
+            application: "application";
+            service: "service";
+            database: "database";
+        }>;
         uuid: z.ZodString;
-    }, "strip", z.ZodTypeAny, {
-        instance: string;
-        kind: "application" | "service" | "database";
-        uuid: string;
-    }, {
-        instance: string;
-        kind: "application" | "service" | "database";
-        uuid: string;
-    }>>;
-}, "strip", z.ZodTypeAny, {
-    instances: Record<string, {
-        url: string;
-        tokenEnv: string;
-    }>;
-    targets: Record<string, {
-        instance: string;
-        kind: "application" | "service" | "database";
-        uuid: string;
-    }>;
-}, {
-    instances: Record<string, {
-        url: string;
-        tokenEnv: string;
-    }>;
-    targets: Record<string, {
-        instance: string;
-        kind: "application" | "service" | "database";
-        uuid: string;
-    }>;
-}>;
+    }, z.core.$strip>>;
+}, z.core.$strip>;
 export type ProjectRegistry = z.infer<typeof ProjectRegistrySchema>;
 export type TargetKind = 'application' | 'service' | 'database';
 export interface ResolvedTarget {

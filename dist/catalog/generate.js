@@ -1,5 +1,4 @@
 import { writeFile as fsWriteFile } from 'node:fs/promises';
-import { z } from 'zod';
 import { walkEnvSchema, mergeCatalogs } from './walk.js';
 import { emitMarkdown } from './emit-markdown.js';
 import { emitJson } from './emit-json.js';

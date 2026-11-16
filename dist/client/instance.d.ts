@@ -6,7 +6,7 @@ import { ServerDomainsSchema, type Application, type BackupConfig, type BackupEx
  * Instance-scoped Coolify client: everything that is not tied to one configured target —
  * version/health, servers + proxy, standalone databases, and deployments by uuid.
  *
- * Not exposed by the Coolify API (as of 4.5.0) and therefore NOT here: upgrading Coolify itself,
+ * Not exposed by the Coolify API (checked on 4.5.0 and 4.7.5) and therefore NOT here: upgrading Coolify itself,
  * checking/installing server OS package updates, and rebooting a server. Those exist only as
  * dashboard (Livewire) actions; see README "What the Coolify API does not expose".
  */
@@ -14,7 +14,7 @@ export declare class CoolifyInstanceClient {
     private readonly api;
     constructor(instance: ResolvedInstance | CoolifyApi, deps?: CoolifyClientDeps);
     get instanceUrl(): string;
-    /** Coolify version string, e.g. `4.5.0` (`GET /version`, scope `read`; served as text). */
+    /** Coolify version string, e.g. `4.7.5` (`GET /version`, scope `read`; served as text). */
     getVersion(): Promise<string>;
     /** `OK` when the instance is healthy (`GET /health`, no auth needed). */
     getHealth(): Promise<string>;

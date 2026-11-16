@@ -1,10 +1,10 @@
 import { readFile as nodeReadFile } from 'node:fs/promises';
 import { formatRedactedDiff, isValidImageRef, listServiceImages, setServiceImage, sha256, } from '../../client/compose.js';
 import { redactDocument } from '../../client/redact.js';
-import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
-import { audited, defaultWriteFile, print, printJson, warn } from '../deps.js';
+import { CoolifyFeatureNotSupportedError, UsageError } from '../../errors/index.js';
+import { audited, defaultWriteFile, print, printJson, warn, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
-import { EXIT } from '../main.js';
+import { EXIT } from '../exit.js';
 /** Re-throw a helper's input error (unknown service, bad ref) as a usage error (exit 2). */
 export function asUsageError(fn) {
     try {
@@ -12,6 +12,16 @@ export function asUsageError(fn) {
     }
     catch (err) {
         throw new CoolifyFeatureNotSupportedError(err instanceof Error ? err.message : String(err));
+    }
+}
+/** Read `--from-file`; a missing or unreadable file is a usage error (exit 2), not an internal one. */
+export async function readInputFile(path, deps) {
+    try {
+        return await (deps.readFile ?? ((p) => nodeReadFile(p, 'utf8')))(path);
+    }
+    catch (err) {
+        const code = err.code; // reason: probing the optional errno code of an unknown error
+        throw new UsageError(`Cannot read --from-file ${path}${typeof code === 'string' ? ` (${code})` : ''}`);
     }
 }
 /** Parse repeated `--image name=ref` into pairs (a bare ref is rejected: services have several images). */
@@ -88,12 +98,11 @@ export async function composeSet(args, deps) {
             : 'Standalone databases have no docker-compose document; use `database set --image` instead.');
     }
     if (!args.fromFile && args.images.length === 0) {
-        warn('compose set: pass --from-file <compose.yml> or one or more --image <service>=<ref>');
-        return EXIT.usage;
+        return usageFail(args, 'compose set: pass --from-file <compose.yml> or one or more --image <service>=<ref>');
     }
     const client = deps.clientFactory(target);
     const { compose: before } = await currentCompose(args, deps);
-    let after = args.fromFile ? await (deps.readFile ?? ((p) => nodeReadFile(p, 'utf8')))(args.fromFile) : before;
+    let after = args.fromFile ? await readInputFile(args.fromFile, deps) : before;
     for (const { service, image } of parseImageAssignments(args.images))
         after = asUsageError(() => setServiceImage(after, service, image));
     const changes = imageChanges(listServiceImages(before), listServiceImages(after));

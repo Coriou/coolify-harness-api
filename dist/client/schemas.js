@@ -1,20 +1,20 @@
 import { z } from 'zod';
-import { CoolifyContractError } from '../errors/index.js';
+import { CoolifyContractError, InvalidInputError } from '../errors/index.js';
 /**
  * Env-var item as returned by Coolify's READ endpoints (list/get envs).
  *
  * Coolify >= 4.0.0-beta.463 renamed the build-time flag `is_build_time` -> `is_buildtime`
  * (and added `is_runtime`); older instances still send `is_build_time`. We accept either
  * spelling and normalize onto the canonical `is_build_time` so the rest of the codebase
- * (safe-write, CLI) only ever reasons about one field name. `.passthrough()` retains whatever
+ * (safe-write, CLI) only ever reasons about one field name. `z.looseObject` retains whatever
  * raw fields the server actually sent (e.g. `is_buildtime`, `is_runtime`, `comment`).
  */
-const EnvVarReadSchema = z
-    .object({
+const EnvVarReadSchema = z.looseObject({
     uuid: z.string(),
     key: z.string(),
-    // Two different "no string" cases, kept apart downstream:
+    // Three different "no string" cases, kept apart downstream:
     // - ABSENT when the token lacks read:sensitive (Coolify hides `value` and `real_value`);
+    // - ABSENT on a locked row (`is_shown_once`): Coolify never returns a locked value, to anyone;
     // - JSON `null` for a row that has no value at all. Coolify 4.7 stores a compose-declared
     //   blank variable (`${VAR:-}`) that way, and `.optional()` rejected it: `env list` failed the
     //   contract on every resource with such a variable.
@@ -25,8 +25,7 @@ const EnvVarReadSchema = z
     is_literal: z.boolean(),
     is_multiline: z.boolean(),
     is_shown_once: z.boolean(),
-})
-    .passthrough();
+});
 /**
  * `value_null` is always set by the parser, but optional in the `EnvVar` type so rows built by hand
  * (tests, library callers of `planEnvWrite`) stay valid without it.
@@ -46,14 +45,12 @@ export const EnvVarSchema = EnvVarReadSchema.transform((row) => ({
     is_build_time: row.is_build_time ?? row.is_buildtime ?? false,
 }));
 /**
- * Fields Coolify accepts when WRITING env vars (POST/PATCH .../envs and .../envs/bulk).
- *
- * The write API accepts ONLY these fields and rejects anything else with HTTP 422
- * "This field is not allowed." There is NO build-time field on the write path in current
- * Coolify (neither `is_build_time` nor `is_buildtime`) — build-time is not settable via the
- * API — so it is deliberately absent here, and `upsertEnvs` validates the request against this
- * schema so a stray field can never reach the wire. Verified against the Coolify OpenAPI (main)
- * and coollabsio/coolify#6847. See docs/specs/design.md §3.1.
+ * Fields Coolify's bulk env endpoint (`PATCH …/envs/bulk`) accepts. The handler keeps only these
+ * and silently drops anything else, so the request is validated here: a typo must fail loudly
+ * instead of being ignored. Applications take all of them; services and databases have no preview
+ * rows and no build-time/runtime flags (`is_preview`, `is_buildtime`, `is_runtime` are dropped
+ * server-side). The legacy spelling `is_build_time` was never accepted on writes and stays absent.
+ * Verified against Coolify 4.5.0 and 4.7.5 (`create_bulk_envs` in the three API controllers).
  */
 export const EnvWriteItemSchema = z.object({
     key: z.string().min(1),
@@ -62,18 +59,20 @@ export const EnvWriteItemSchema = z.object({
     is_literal: z.boolean().optional(),
     is_multiline: z.boolean().optional(),
     is_shown_once: z.boolean().optional(),
+    // Accepted by the bulk endpoint since Coolify 4.5 (applications only for the two flags; services
+    // and databases silently ignore them). Never sent unless the caller sets them.
+    is_buildtime: z.boolean().optional(),
+    is_runtime: z.boolean().optional(),
+    comment: z.string().max(256).nullable().optional(),
 });
 export const BulkRequestSchema = z.object({ data: z.array(EnvWriteItemSchema) });
 export const BulkResponseSchema = z.array(EnvVarSchema);
-export const DeployAckApplicationSchema = z
-    .object({ message: z.string(), deployment_uuid: z.string().nullish() })
-    .passthrough();
-export const DeployAckServiceSchema = z.object({ message: z.string() }).passthrough();
+export const DeployAckApplicationSchema = z.looseObject({ message: z.string(), deployment_uuid: z.string().nullish() });
+export const DeployAckServiceSchema = z.looseObject({ message: z.string() });
 // Every optional field below is `.nullish()` (null OR absent), not `.optional()`: Coolify serializes
 // unset model columns as JSON `null` (e.g. `git_full_url`, `health_check_port` on most apps), and a
 // bare `.optional()` rejects null. That mismatch is what broke `status` from Coolify 4.3.16 on.
-export const ApplicationSchema = z
-    .object({
+export const ApplicationSchema = z.looseObject({
     uuid: z.string(),
     name: z.string(),
     status: z.string().nullish(),
@@ -91,9 +90,8 @@ export const ApplicationSchema = z
     limits_cpus: z.string().nullish(),
     created_at: z.string().nullish(),
     updated_at: z.string().nullish(),
-})
-    .passthrough();
-/** Every status Coolify's ApplicationDeploymentStatus enum defines (verified on 4.5.0). */
+});
+/** Every status Coolify's ApplicationDeploymentStatus enum defines (unchanged from 4.5.0 to 4.7.5). */
 export const DEPLOYMENT_STATUSES = ['queued', 'in_progress', 'finished', 'failed', 'cancelled-by-user'];
 /** Statuses after which a deployment never changes again. */
 export const TERMINAL_DEPLOYMENT_STATUSES = ['finished', 'failed', 'cancelled-by-user'];
@@ -106,8 +104,7 @@ export function isTerminalDeploymentStatus(status) {
 // Those nulls broke `deploy --wait` (its very first poll sees a queued row) and `deployment <uuid>`
 // for any in-flight deploy. `status` is a plain string so an enum value added upstream does not
 // turn into a contract failure; compare against DEPLOYMENT_STATUSES / isTerminalDeploymentStatus.
-export const DeploymentSchema = z
-    .object({
+export const DeploymentSchema = z.looseObject({
     deployment_uuid: z.string(),
     status: z.string(),
     logs: z.string().nullish(),
@@ -124,15 +121,15 @@ export const DeploymentSchema = z
     is_webhook: z.boolean().nullish(),
     is_api: z.boolean().nullish(),
     pull_request_id: z.number().nullish(),
-})
-    .passthrough();
+});
 /** Generic `{ message }` acknowledgement (env delete, service/proxy restart, ...). */
-export const MessageAckSchema = z.object({ message: z.string() }).passthrough();
-export const DeploymentCancelSchema = z
-    .object({ message: z.string(), deployment_uuid: z.string().nullish(), status: z.string().nullish() })
-    .passthrough();
-const ServiceSubResourceSchema = z
-    .object({
+export const MessageAckSchema = z.looseObject({ message: z.string() });
+export const DeploymentCancelSchema = z.looseObject({
+    message: z.string(),
+    deployment_uuid: z.string().nullish(),
+    status: z.string().nullish(),
+});
+const ServiceSubResourceSchema = z.looseObject({
     uuid: z.string(),
     name: z.string(),
     human_name: z.string().nullish(),
@@ -140,10 +137,8 @@ const ServiceSubResourceSchema = z
     image: z.string().nullish(),
     fqdn: z.string().nullish(),
     is_public: z.boolean().nullish(),
-})
-    .passthrough();
-export const ServiceSchema = z
-    .object({
+});
+export const ServiceSchema = z.looseObject({
     uuid: z.string(),
     name: z.string(),
     status: z.string().nullish(),
@@ -153,13 +148,9 @@ export const ServiceSchema = z
     databases: z.array(ServiceSubResourceSchema).nullish(),
     created_at: z.string().nullish(),
     updated_at: z.string().nullish(),
-})
-    .passthrough();
-export const ServiceUpdateResponseSchema = z
-    .object({ uuid: z.string().nullish(), domains: z.array(z.string()).nullish() })
-    .passthrough();
-export const ServerSchema = z
-    .object({
+});
+export const ServiceUpdateResponseSchema = z.looseObject({ uuid: z.string().nullish(), domains: z.array(z.string()).nullish() });
+export const ServerSchema = z.looseObject({
     uuid: z.string(),
     name: z.string(),
     description: z.string().nullish(),
@@ -167,21 +158,22 @@ export const ServerSchema = z
     is_reachable: z.boolean().nullish(),
     is_usable: z.boolean().nullish(),
     is_coolify_host: z.boolean().nullish(),
-    proxy: z.record(z.unknown()).nullish(),
-    settings: z.record(z.unknown()).nullish(),
-})
-    .passthrough();
-export const ServerResourceSchema = z
-    .object({ uuid: z.string(), name: z.string(), type: z.string().nullish(), status: z.string().nullish() })
-    .passthrough();
-export const ServerDomainsSchema = z.array(z.object({ ip: z.string().nullish(), domains: z.array(z.string()) }).passthrough());
+    proxy: z.record(z.string(), z.unknown()).nullish(),
+    settings: z.record(z.string(), z.unknown()).nullish(),
+});
+export const ServerResourceSchema = z.looseObject({
+    uuid: z.string(),
+    name: z.string(),
+    type: z.string().nullish(),
+    status: z.string().nullish(),
+});
+export const ServerDomainsSchema = z.array(z.looseObject({ ip: z.string().nullish(), domains: z.array(z.string()) }));
 /**
  * GET/PATCH /servers/{uuid}/proxy and PUT .../proxy/configuration. `configuration` (the raw proxy
  * docker-compose) is only present when the token has read:sensitive AND the user is a team
  * admin/owner AND Coolify has it stored — otherwise it is null or absent.
  */
-export const ServerProxySchema = z
-    .object({
+export const ServerProxySchema = z.looseObject({
     proxy_type: z.string().nullish(),
     status: z.string().nullish(),
     redirect_enabled: z.boolean().nullish(),
@@ -190,20 +182,20 @@ export const ServerProxySchema = z
     traefik_certificate_resolver: z.string().nullish(),
     configuration: z.string().nullish(),
     message: z.string().nullish(),
-})
-    .passthrough();
-/** Fields `PATCH /servers/{uuid}/proxy` accepts; anything else is a 422 "This field is not allowed.". */
-export const ServerProxyUpdateSchema = z
-    .object({
+});
+/**
+ * Fields `PATCH /servers/{uuid}/proxy` accepts; anything else is a 422 "This field is not allowed.".
+ * `proxy_error_page` exists from Coolify 4.7.
+ */
+export const ServerProxyUpdateSchema = z.strictObject({
     redirect_enabled: z.boolean().optional(),
     redirect_url: z.string().nullable().optional(),
     generate_exact_labels: z.boolean().optional(),
     traefik_certificate_resolver: z.string().nullable().optional(),
     proxy_type: z.enum(['traefik', 'caddy', 'nginx', 'none']).optional(),
-})
-    .strict();
-export const DatabaseSchema = z
-    .object({
+    proxy_error_page: z.string().nullable().optional(),
+});
+export const DatabaseSchema = z.looseObject({
     uuid: z.string(),
     name: z.string(),
     database_type: z.string().nullish(),
@@ -213,15 +205,13 @@ export const DatabaseSchema = z
     public_port: z.number().nullish(),
     created_at: z.string().nullish(),
     updated_at: z.string().nullish(),
-})
-    .passthrough();
+});
 /**
  * The subset of `PATCH /databases/{uuid}` fields the harness exposes. Changing `is_public` (or
  * `instant_deploy`) also needs the `deploy` ability — Coolify starts/stops the public-port proxy.
  * Credentials (postgres_password, ...) are deliberately not settable through the harness.
  */
-export const DatabaseUpdateSchema = z
-    .object({
+export const DatabaseUpdateSchema = z.strictObject({
     name: z.string().optional(),
     description: z.string().optional(),
     image: z.string().optional(),
@@ -231,43 +221,65 @@ export const DatabaseUpdateSchema = z
     limits_memory: z.string().optional(),
     limits_cpus: z.string().optional(),
     instant_deploy: z.boolean().optional(),
-})
-    .strict();
-export const BackupExecutionSchema = z
-    .object({
+});
+export const BackupExecutionSchema = z.looseObject({
     uuid: z.string(),
     status: z.string().nullish(),
     filename: z.string().nullish(),
     size: z.union([z.number(), z.string()]).nullish(),
     message: z.string().nullish(),
     created_at: z.string().nullish(),
-})
-    .passthrough();
-export const BackupConfigSchema = z
-    .object({
+});
+export const BackupConfigSchema = z.looseObject({
     uuid: z.string(),
     frequency: z.string().nullish(),
     enabled: z.boolean().nullish(),
     save_s3: z.boolean().nullish(),
     executions: z.array(BackupExecutionSchema).nullish(),
-})
-    .passthrough();
-export const BackupExecutionsResponseSchema = z.object({ executions: z.array(BackupExecutionSchema) }).passthrough();
-export const RuntimeLogsResponseSchema = z
-    .object({
+});
+export const BackupExecutionsResponseSchema = z.looseObject({ executions: z.array(BackupExecutionSchema) });
+export const RuntimeLogsResponseSchema = z.looseObject({
     logs: z.string().optional(),
-})
-    .passthrough();
-// The Input generic is pinned to `unknown` rather than defaulting to T. Zod's
-// ZodType<Output, Def, Input = Output> otherwise forces Input === Output, which rejects any
-// schema whose parsed output differs from its input — e.g. EnvVarSchema now `.transform()`s the
-// is_build_time/is_buildtime rename, so its input shape is not its output shape.
+});
+/** Issues shown inline in a message; the rest are counted. */
+const MAX_ISSUES = 4;
+/**
+ * `path: problem` for each schema issue. Built from the issue's path and Zod's own message, which
+ * names expected and received TYPES — never the received value — so it is safe to print for a
+ * payload full of secrets.
+ */
+export function formatIssues(error) {
+    return error.issues.map((issue) => {
+        const path = issue.path.map((seg) => (typeof seg === 'number' ? `[${seg}]` : `.${String(seg)}`)).join('').replace(/^\./, '');
+        return `${path === '' ? '(root)' : path}: ${issue.message}`;
+    });
+}
+export function summarizeIssues(issues) {
+    const shown = issues.slice(0, MAX_ISSUES).join('; ');
+    return issues.length > MAX_ISSUES ? `${shown}; +${issues.length - MAX_ISSUES} more` : shown;
+}
+/**
+ * Parse a Coolify response or throw `CoolifyContractError`. The message names the failing fields
+ * (types only): a contract failure means Coolify changed a payload, and the field path is what a
+ * maintainer needs to fix it.
+ */
 export function parseOrContractError(schema, raw, ctx) {
     const parsed = schema.safeParse(raw);
     if (!parsed.success) {
-        throw new CoolifyContractError(`Coolify response (${ctx}) failed contract validation`, {
-            zodIssues: parsed.error.message,
-        });
+        const issues = formatIssues(parsed.error);
+        throw new CoolifyContractError(`Coolify response (${ctx}) failed contract validation: ${summarizeIssues(issues)}`, { zodIssues: issues.join('\n') });
+    }
+    return parsed.data;
+}
+/**
+ * Validate a value the caller is about to send. Throws `InvalidInputError` (never a raw ZodError,
+ * whose class depends on which zod copy is loaded) listing the rejected fields.
+ */
+export function parseInput(schema, raw, what) {
+    const parsed = schema.safeParse(raw);
+    if (!parsed.success) {
+        const issues = formatIssues(parsed.error);
+        throw new InvalidInputError(`Invalid ${what}: ${summarizeIssues(issues)}`, { issues });
     }
     return parsed.data;
 }

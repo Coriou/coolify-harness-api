@@ -47,6 +47,8 @@ export interface EnvWritePlan {
     readonly lockedSkips: LockedVarSkip[];
     readonly warnings: PlanWarning[];
 }
+/** A row whose value Coolify never returns: locked (`is_shown_once`), whatever the token can read. */
+export declare const isLockedRow: (row: EnvVar) => boolean;
 export declare function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePlan;
 export type AuditResourceKind = 'application' | 'service' | 'database' | 'server' | 'deployment';
 export type AuditAction = 'env.apply' | 'env.delete' | 'deploy' | 'restart' | 'compose.update' | 'proxy.configuration' | 'proxy.restart' | 'database.update' | 'database.backup' | 'deployment.cancel';
@@ -72,8 +74,11 @@ export interface AuditRecord {
 }
 export interface EnvWriteResult {
     applied: EnvWriteItem[];
+    /** True when a re-read shows every written key holding its value in the written scope. */
     confirmed: boolean;
     audit: AuditRecord;
+    /** Set when the write succeeded but the confirmation re-read failed (then `confirmed` is false). */
+    confirmError?: string;
 }
 export interface ApplyDeps {
     client: Pick<CoolifyClient, 'upsertEnvs' | 'listEnvs'>;
