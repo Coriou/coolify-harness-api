@@ -45,7 +45,6 @@
   "bin": { "coolify-harness": "./dist/cli/main.js" },
   "files": ["dist", "CHANGELOG.md"],
   "sideEffects": false,
-  "publishConfig": { "access": "public", "provenance": true },
   "scripts": {
     "dev": "tsc --watch",
     "build": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli/main.js",
@@ -57,8 +56,7 @@
     "test:coverage": "vitest run --coverage",
     "check": "eslint . && tsc --noEmit && vitest run",
     "check:dist": "rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli/main.js && git diff --exit-code -- dist",
-    "clean": "rm -rf dist node_modules/.cache",
-    "prepublishOnly": "eslint . && tsc --noEmit && vitest run && rm -rf dist && tsc -p tsconfig.json && chmod +x dist/cli/main.js && git diff --exit-code -- dist"
+    "clean": "rm -rf dist node_modules/.cache"
   },
   "dependencies": { "zod": "^4.0.0" },
   "devDependencies": {

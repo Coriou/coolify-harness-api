@@ -85,3 +85,14 @@ jobs:
           printf "import { defineConfig } from 'coolify-harness/config';\nexport default defineConfig({ instances: { prod: { url: 'https://coolify.example.com', tokenEnv: 'COOLIFY_TOKEN' } }, targets: { app: { instance: 'prod', kind: 'application', uuid: 'abc' } } });\n" > coolify-harness.config.ts
           node node_modules/coolify-harness/dist/cli/main.js config doctor --offline
           test "$(cd "$src" && node -p "require('./package.json').version")" = "$(node -p "require('coolify-harness/package.json').version")"
+      - name: Pack the release tarball and install it in an empty project
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          pnpm pack --pack-destination /tmp/pack
+          test -f "/tmp/pack/coolify-harness-$version.tgz"
+          mkdir /tmp/from-tarball && cd /tmp/from-tarball
+          printf '{"name":"consumer","private":true,"type":"module"}\n' > package.json
+          pnpm add "/tmp/pack/coolify-harness-$version.tgz"
+          node node_modules/coolify-harness/dist/cli/main.js --version
+          node --input-type=module -e "const m = await import('coolify-harness'); const c = await import('coolify-harness/cli'); if (typeof m.CoolifyClient !== 'function' || typeof c.run !== 'function') process.exit(1)"
