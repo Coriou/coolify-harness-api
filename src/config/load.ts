@@ -38,7 +38,8 @@ export function resolveInstance(
   instanceName: string,
   env: Record<string, string | undefined>,
 ): ResolvedInstance {
-  const instance = registry.instances[instanceName];
+  // Own entries only: `constructor` is not an instance.
+  const instance = Object.hasOwn(registry.instances, instanceName) ? registry.instances[instanceName] : undefined;
   if (!instance) {
     const known = Object.keys(registry.instances).join(', ');
     throw new ConfigError(`Unknown instance '${instanceName}'. Known instances: ${known}`);
@@ -58,12 +59,12 @@ export function resolveTarget(
   targetName: string,
   env: Record<string, string | undefined>,
 ): ResolvedTarget {
-  const target = registry.targets[targetName];
+  const target = Object.hasOwn(registry.targets, targetName) ? registry.targets[targetName] : undefined;
   if (!target) {
     const known = Object.keys(registry.targets).join(', ');
     throw new ConfigError(`Unknown target '${targetName}'. Known targets: ${known}`);
   }
-  if (!registry.instances[target.instance]) {
+  if (!Object.hasOwn(registry.instances, target.instance)) {
     throw new ConfigError(`Target '${targetName}' references unknown instance '${target.instance}'`);
   }
   const { instanceUrl, token } = resolveInstance(registry, target.instance, env);

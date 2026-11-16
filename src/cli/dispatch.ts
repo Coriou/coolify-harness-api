@@ -5,7 +5,7 @@ import { createLogger } from '../logging/index.js';
 import { loadConfigModule, resolveInstance, resolveTarget, type ConfigModule } from '../config/load.js';
 import { configPathFor } from './config-path.js';
 import { ConfigError, MissingTokenError, UsageError } from '../errors/index.js';
-import { readTokenFiles } from './dotenv.js';
+import { describePath, readTokenFiles } from './dotenv.js';
 import { makeAuditSink } from './audit-sink.js';
 import { printJson, type CmdDeps } from './deps.js';
 import { EXIT } from './exit.js';
@@ -36,7 +36,7 @@ function withTokenFileHint<T>(missingFiles: readonly string[], fn: () => T): T {
     return fn();
   } catch (err) {
     if (err instanceof MissingTokenError && missingFiles.length > 0) {
-      throw new MissingTokenError(`${err.message} (and --token-file ${missingFiles.join(', ')} does not exist)`, { tokenEnv: err.tokenEnv });
+      throw new MissingTokenError(`${err.message} (and --token-file ${missingFiles.map(describePath).join(', ')} does not exist)`, { tokenEnv: err.tokenEnv });
     }
     throw err;
   }
@@ -56,10 +56,11 @@ export function buildDepsFrom(mod: ConfigModule, tokens: TokenEnv = { env: proce
     },
     clientFactory: (target) => new CoolifyClient(target, clientDeps),
     instanceFor: (a) => {
-      if (a.app && !a.instance && !mod.registry.targets[a.app]) {
+      const target = a.app && Object.hasOwn(mod.registry.targets, a.app) ? mod.registry.targets[a.app] : undefined;
+      if (a.app && !a.instance && !target) {
         throw new ConfigError(`Unknown target '${a.app}'. Known targets: ${Object.keys(mod.registry.targets).join(', ')}`);
       }
-      const name = a.instance ?? (a.app ? mod.registry.targets[a.app]?.instance : undefined);
+      const name = a.instance ?? target?.instance;
       if (!name) {
         throw new UsageError(`--instance <name> is required (known instances: ${Object.keys(mod.registry.instances).join(', ')})`);
       }
@@ -118,7 +119,8 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
     case 'database-backups': return (await import('./commands/database.js')).databaseBackups(args, deps);
     case 'database-backup': return (await import('./commands/database.js')).databaseBackup(args, deps);
     default:
-      return EXIT.usage;
+      // Unreachable through parseArgs; a caller that builds ParsedArgs by hand still gets an error.
+      throw new UsageError('Unknown command. Run `coolify-harness help`.');
   }
 }
 
@@ -131,6 +133,17 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
  */
 export async function flagSet(args: ParsedArgs, deps: CmdDeps): Promise<number> {
   const { runEnvApply } = await import('./commands/env.js');
+  // `flag set --redeploy --apply` with nothing to set used to be a bare deploy.
+  if (!args.fromFile && Object.keys(args.set).length === 0) {
+    throw new UsageError('flag set: pass --set KEY=VALUE (repeatable) or --from-file <dotenv>. To deploy without changing a variable, use `deploy`.');
+  }
+  if (args.redeploy) {
+    // Everything that could stop the deploy step is checked BEFORE the env write: a usage error
+    // after it would leave the flag written and the command reported as "wrong usage".
+    const { deployFlagProblem } = await import('./commands/deploy.js');
+    const problem = deployFlagProblem(args, deps.resolveTargetFor(args).kind);
+    if (problem !== undefined) throw new UsageError(problem);
+  }
   const env = await runEnvApply(args, deps);
   if (!args.redeploy || env.code !== EXIT.ok) {
     if (args.json) printJson(env.doc);

@@ -1,5 +1,8 @@
+import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { lstat, open, rename, unlink } from 'node:fs/promises';
+import { isJsonRun, noteAuditFailure, takeAuditFailures } from './output-state.js';
+import { UsageError } from '../errors/index.js';
 import type { ParsedArgs } from './args.js';
 import type { CoolifyClient } from '../client/coolify.js';
 import type { CoolifyInstanceClient } from '../client/instance.js';
@@ -43,17 +46,31 @@ export interface CmdDeps {
 }
 
 /**
- * Write an unredacted document for `--out`, readable by the owner only. The file is opened
- * without following a symlink and its mode is forced to 0600 BEFORE the content is written, so an
- * existing world-readable file (or a planted link) never receives the secrets.
+ * Write an unredacted document for `--out`, readable by the owner only. The content goes to a new
+ * 0600 file beside the target, which then takes the target's place: an existing world-readable
+ * file is never written into (a reader that already had it open keeps the OLD content), another
+ * hard link to it is left alone, and a symbolic link is refused rather than followed.
  */
 export const defaultWriteFile = async (path: string, content: string): Promise<void> => {
-  const handle = await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+  const tmp = `${path}.${randomBytes(6).toString('hex')}.tmp`;
   try {
-    await handle.chmod(0o600);
-    await handle.writeFile(content, 'utf8');
-  } finally {
-    await handle.close();
+    if ((await lstat(path).catch(() => undefined))?.isSymbolicLink()) {
+      throw Object.assign(new Error('symbolic link'), { code: 'ELOOP' });
+    }
+    const handle = await open(tmp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      await handle.chmod(0o600);
+      await handle.writeFile(content, 'utf8');
+    } finally {
+      await handle.close();
+    }
+    await rename(tmp, path);
+  } catch (err) {
+    await unlink(tmp).catch(() => { /* never created, or already renamed */ });
+    // The caller's path is wrong (a symlink, a missing directory, no permission): exit 2, not "internal".
+    const code = (err as { code?: unknown }).code; // reason: probing the optional errno code of an unknown error
+    const why = code === 'ELOOP' ? 'it is a symbolic link (refused: the file holds secrets)' : typeof code === 'string' ? code : 'unknown error';
+    throw new UsageError(`Cannot write the --out file: ${why}`);
   }
 };
 
@@ -83,9 +100,16 @@ export function usageFail(args: Pick<ParsedArgs, 'json'>, message: string): numb
   return emitError(args, 'USAGE', message, EXIT.usage);
 }
 
-/** JSON output for agents: always redacted, never prose. */
+/**
+ * JSON output for agents: always redacted, never prose. An audit record that could not be written
+ * is reported here (`auditError`), since with `--json` stderr stays empty on success.
+ */
 export function printJson(value: unknown): void {
-  process.stdout.write(`${JSON.stringify(redactDeep(value), null, 2)}\n`);
+  const failures = takeAuditFailures();
+  const doc = failures.length > 0 && value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? { ...value, auditError: failures.join('; ') }
+    : value;
+  process.stdout.write(`${JSON.stringify(redactDeep(doc), null, 2)}\n`);
 }
 
 export async function audit(
@@ -124,7 +148,10 @@ export async function writeAuditSafely(deps: Pick<CmdDeps, 'auditSink'>, record:
   try {
     await deps.auditSink(record);
   } catch (err) {
-    warn(`WARNING: audit record for ${record.action} (${record.outcome}) could not be written: ${sanitizeErrorMessage(err)}`);
+    const message = `audit record for ${record.action} (${record.outcome}) could not be written: ${sanitizeErrorMessage(err)}`;
+    // With --json the document (or the error document) carries it; stderr is not for prose then.
+    if (isJsonRun()) noteAuditFailure(message);
+    else warn(`WARNING: ${message}`);
   }
 }
 

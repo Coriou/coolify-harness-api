@@ -108,8 +108,11 @@ describe('a mutation Coolify accepted is never reported as failed', () => {
     await expect(odd.deploy()).resolves.toEqual({ message: 'accepted', deploymentUuid: 'dep-odd' });
     const bare = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => json(200, ['queued']))));
     await expect(bare.restart()).resolves.toEqual({ message: 'accepted' });
-    const del = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => new Response('', { status: 200 }))));
+    // A 204 is a success without a body by definition; an EMPTY 200 is not something Coolify sends.
+    const del = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => new Response(null, { status: 204 }))));
     await expect(del.deleteEnv('e1')).resolves.toEqual({ message: '' });
+    const empty = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => new Response('', { status: 200 }))));
+    await expect(empty.deleteEnv('e1')).rejects.toThrow(/an empty answer.*check before retrying/);
     const inst = new CoolifyInstanceClient({ instanceUrl: 'https://c.example', token: 't' }, clientDeps(vi.fn(async () => json(200, ['unexpected']))));
     await expect(inst.cancelDeployment('d1')).resolves.toEqual({ message: '' });
     await expect(inst.restartServerProxy('s1')).resolves.toEqual({ message: '' });
@@ -437,15 +440,27 @@ describe('deploy --wait', () => {
     expect(stderr()).toContain('following the deployment already in progress: dep-running');
   });
 
-  it('says "skipped" when no production deployment is queued or building', async () => {
+  it('when the deployment Coolify was busy with has already ended, ITS outcome is reported (never a bare "skipped")', async () => {
+    const rows = [
+      { ...dep('in_progress', 'dep-pr-42'), pull_request_id: 42 },
+      { ...dep('finished', 'dep-older'), updated_at: '2026-11-15T10:00:00.000000Z' },
+      { ...dep('failed', 'dep-just-failed'), updated_at: '2026-11-16T10:00:05.000000Z' },
+    ];
     const client = {
-      deploy: vi.fn(async () => ({ message: 'Deployment skipped.' })),
-      listDeployments: vi.fn(async () => [{ ...dep('in_progress', 'dep-pr-42'), pull_request_id: 42 }, dep('finished')]),
+      deploy: vi.fn(async () => ({ message: 'Deployment already queued for this commit.' })),
+      listDeployments: vi.fn(async () => rows),
       waitForDeployment: vi.fn(),
     };
-    expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).toBe(0);
-    expect(oneJson()).toMatchObject({ deploymentUuid: null, skipped: true });
+    expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).toBe(7);
+    expect(oneJson()).toMatchObject({ deploymentUuid: 'dep-just-failed', followedExisting: true, finalStatus: 'failed' });
+    expect(JSON.parse(stderr())).toMatchObject({ error: { code: 'DEPLOY_FAILED', exitCode: 7, deploymentUuid: 'dep-just-failed' } });
     expect(client.waitForDeployment).not.toHaveBeenCalled();
+    // …and exit 0 when that deployment finished.
+    out = []; err = [];
+    rows[2] = { ...rows[2]!, status: 'finished' };
+    expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).toBe(0);
+    expect(oneJson()).toMatchObject({ deploymentUuid: 'dep-just-failed', followedExisting: true, finalStatus: 'finished' });
+    expect(stderr()).toBe('');
   });
 
   it('does not say "nothing to wait for" when it could not look: the read error fails the command', async () => {
@@ -527,7 +542,7 @@ describe('waitForDeployment and the circuit breaker', () => {
   it('a poll still in flight at the deadline is abandoned', async () => {
     const hang = vi.fn((): Promise<Deployment> => new Promise(() => {}));
     const started = Date.now();
-    await expect(waitForDeployment(hang, 'd1', { timeoutMs: 40 })).rejects.toThrow(/timed out after 40ms/);
+    await expect(waitForDeployment(hang, 'd1', { timeoutMs: 40, pollGraceMs: 0 })).rejects.toThrow(/timed out after 40ms/);
     expect(Date.now() - started).toBeLessThan(2000);
   });
 
@@ -584,10 +599,10 @@ describe('second review round', () => {
     const client = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => html())));
     const d = cmdDeps(client as never);
     const e = await deployCmd(parseArgs(['deploy', '--app', 'web', '--json']), d.deps).catch((x: unknown) => x);
-    expect((e as Error).message).toContain('a 2xx that is not JSON');
+    expect((e as Error).message).toContain('a 2xx that is not a JSON object');
     expect(errorToExitCode(e)).toBe(1);
     expect(d.audits[0]).toMatchObject({ action: 'deploy', outcome: 'failure' });
-    await expect(new CoolifyClient(svcTarget, clientDeps(vi.fn(async () => html()))).updateServiceCompose('services: {}')).rejects.toThrow(/not JSON/);
+    await expect(new CoolifyClient(svcTarget, clientDeps(vi.fn(async () => html()))).updateServiceCompose('services: {}')).rejects.toThrow(/not a JSON object/);
     await expect(new CoolifyInstanceClient({ instanceUrl: 'https://c.example', token: 't' }, clientDeps(vi.fn(async () => html()))).getVersion()).rejects.toThrow(/did not answer with a Coolify version/);
   });
 

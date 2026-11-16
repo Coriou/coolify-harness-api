@@ -321,7 +321,7 @@ describe('safety: nothing changes behind a dry-run', () => {
     api.listEnvs.mockResolvedValueOnce([row('A', '1')]).mockRejectedValueOnce(new CoolifyNetworkError('Cannot reach Coolify', { reason: 'ECONNRESET' }));
     const d = deps(api);
     expect(await envApply(parseArgs(['env', 'apply', '--app', 'web', '--set', 'A=2', '--apply', '--json']), d.deps)).toBe(0);
-    expect(oneJson()).toMatchObject({ dryRun: false, applied: ['A'], confirmed: false, confirmError: 'Cannot reach Coolify' });
+    expect(oneJson()).toMatchObject({ dryRun: false, applied: ['A'], confirmed: null, confirmError: 'Cannot reach Coolify' });
     expect(d.audits[0]).toMatchObject({ outcome: 'success', options: { scope: 'production' } });
   });
 });

@@ -104,7 +104,17 @@ const VALUE_FLAGS = new Set([
   '--service', '--public', '--public-port', '--token-file', '--env-file',
 ]);
 
+/** Switches. Listed so `--tak=5` is an unknown flag, not "a flag that takes no value". */
+const BOOLEAN_FLAGS = new Set([
+  '--apply', '--yes', '--redeploy', '--restart', '--json', '--fail-on-drift', '--build', '--runtime',
+  '--wait', '--force', '--latest', '--preview', '--timestamps', '--running', '--version', '--dry-run',
+  '--fail-on-changes', '--no-logs', '--offline',
+]);
+
 const usage = (message: string): UsageError => new UsageError(message);
+const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
+/** A flag NAME is vocabulary, but something very long after `--` is more likely a pasted value. */
+const flagName = (tok: string): string => (/^--[a-z][a-z-]{0,30}$/.test(tok) ? tok : `<${tok.length}-character flag>`);
 
 /**
  * A word the user typed is echoed back only when it is part of the command vocabulary. Anything
@@ -124,6 +134,12 @@ const EQ = '\u0000=';
  * the command (`--app x status`). `-h` / `--help` anywhere selects `help`.
  */
 function normalize(argv: string[]): { words: string[]; flags: string[] } {
+  // `--help` and `--version` win over everything else on the line — also over a flag that is
+  // missing its value, and over a command: `deploy --app x --version` must never deploy.
+  // `--json` still decides the format.
+  const json = argv.includes('--json') ? ['--json'] : [];
+  if (argv.some((t) => t === '-h' || t === '--help')) return { words: ['help'], flags: json };
+  if (argv.some((t) => t === '-v' || t === '--version')) return { words: [], flags: ['--version', ...json] };
   const tokens: string[] = [];
   for (const t of argv) {
     const eq = t.startsWith('--') ? t.indexOf('=') : -1;
@@ -132,11 +148,8 @@ function normalize(argv: string[]): { words: string[]; flags: string[] } {
   }
   const words: string[] = [];
   const flags: string[] = [];
-  let help = false;
   for (let i = 0; i < tokens.length; i += 1) {
     const t = tokens[i]!;
-    if (t === '-h' || t === '--help') { help = true; continue; }
-    if (t === '-v') { flags.push('--version'); continue; }
     if (t.startsWith('--')) {
       flags.push(t);
       if (VALUE_FLAGS.has(t)) {
@@ -146,14 +159,13 @@ function normalize(argv: string[]): { words: string[]; flags: string[] } {
         flags.push(v.startsWith(EQ) ? v.slice(EQ.length) : v);
         i += 1;
       } else if (tokens[i + 1]?.startsWith(EQ)) {
-        throw usage(`${t} does not take a value`);
+        throw usage(BOOLEAN_FLAGS.has(t) ? `${t} does not take a value` : `Unknown flag: ${flagName(t)}`);
       }
       continue;
     }
     words.push(t.startsWith(EQ) ? t.slice(EQ.length) : t);
   }
-  // `--help` wins over everything else on the line, but `--json` still decides its format.
-  return help ? { words: ['help'], flags: flags.filter((f) => f === '--json') } : { words, flags };
+  return { words, flags };
 }
 
 function resolveCommand(words: string[]): { command: Command; positionals: string[] } {
@@ -161,15 +173,13 @@ function resolveCommand(words: string[]): { command: Command; positionals: strin
   let w = words;
   const first = w[0] ?? '';
   const split = first.replace(/[-:]/, ' ');
-  if (split !== first && split in COMMANDS) w = [...split.split(' '), ...w.slice(1)];
-  const two = w.slice(0, 2).join(' ');
-  if (two in COMMANDS) {
-    return { command: COMMANDS[two as keyof typeof COMMANDS], positionals: w.slice(2) }; // reason: key membership checked by `in COMMANDS` guard above
-  }
+  // Own properties only: `constructor` and `toString` are not commands.
+  if (split !== first && Object.hasOwn(COMMANDS, split)) w = [...split.split(' '), ...w.slice(1)];
+  const two = own<Command>(COMMANDS, w.slice(0, 2).join(' '));
+  if (two !== undefined) return { command: two, positionals: w.slice(2) };
   const one = w[0] ?? '';
-  if (one in COMMANDS) {
-    return { command: COMMANDS[one as keyof typeof COMMANDS], positionals: w.slice(1) }; // reason: key membership checked by `in COMMANDS` guard above
-  }
+  const single = own<Command>(COMMANDS, one);
+  if (single !== undefined) return { command: single, positionals: w.slice(1) };
   if (w.length === 0) throw usage('No command given. Run `coolify-harness help`.');
   const typed = w.slice(0, 2).join(' ');
   const near = nearestCommand(typed) ?? nearestCommand(one);
@@ -203,16 +213,17 @@ function nearestCommand(typed: string): string | undefined {
   return best?.name;
 }
 
-function parseNumber(flag: string, v: string, min: number): number {
-  const n = Number(v);
-  if (!Number.isInteger(n) || n < min) throw usage(`${flag} expects an integer >= ${min}, got ${v}`);
+/** Plain decimal digits only: `0x10`, `1e3` and an empty `--skip=` are not numbers here. */
+function parseNumber(flag: string, v: string, min: number, max = 2 ** 31 - 1): number {
+  const n = /^\d{1,10}$/.test(v) ? Number(v) : Number.NaN;
+  if (!(n >= min && n <= max)) throw usage(`${flag} expects a whole number from ${min} to ${max}`);
   return n;
 }
 
 function parseBool(flag: string, v: string): boolean {
   if (/^(true|yes|on|1)$/i.test(v)) return true;
   if (/^(false|no|off|0)$/i.test(v)) return false;
-  throw usage(`${flag} expects true or false, got ${v}`);
+  throw usage(`${flag} expects true or false`);
 }
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -238,7 +249,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     const tok = flags[i]!;
     const next = (): string => {
       const v = flags[i + 1];
-      if (v === undefined) throw usage(`Missing value for ${tok}`);
+      // `--app=` is a missing value too, not an empty name.
+      if (v === undefined || v === '') throw usage(`Missing value for ${tok}`);
       i += 1;
       return v;
     };
@@ -258,13 +270,21 @@ export function parseArgs(argv: string[]): ParsedArgs {
         // Never echo the argument: without an `=` the whole token may be a pasted secret.
         if (eq < 0) throw usage('--set expects KEY=VALUE (no `=` found)');
         if (eq === 0) throw usage('--set expects KEY=VALUE (the key is empty)');
+        // Assigning it would set the object's prototype and silently drop the pair.
+        if (pair.slice(0, eq) === '__proto__') throw usage('--set: __proto__ cannot be used as a variable name');
         out.set[pair.slice(0, eq)] = pair.slice(eq + 1);
         break;
       }
       case '--lines': out.lines = parseNumber(tok, next(), 1); break;
       case '--build': out.build = true; break;
       case '--runtime': out.runtime = true; break;
-      case '--deployment': out.deployment = next(); break;
+      case '--deployment': {
+        const uuid = next();
+        // `deployment cancel A --deployment B`: which one? Never guess on a mutation.
+        if (out.deployment !== undefined && out.deployment !== uuid) throw usage('Two different deployment uuids were given (one after the command, one with --deployment); pass one');
+        out.deployment = uuid;
+        break;
+      }
       case '--wait': out.wait = true; break;
       case '--take': out.take = parseNumber(tok, next(), 1); break;
       case '--skip': out.skip = parseNumber(tok, next(), 0); break;
@@ -282,7 +302,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case '--service': out.service = next(); break;
       case '--timestamps': out.timestamps = true; break;
       case '--public': out.public = parseBool(tok, next()); break;
-      case '--public-port': out.publicPort = parseNumber(tok, next(), 1024); break;
+      case '--public-port': out.publicPort = parseNumber(tok, next(), 1024, 65535); break;
       case '--running': out.running = true; break;
       case '--version': out.version = true; break;
       case '--dry-run': out.dryRun = true; break;
@@ -294,7 +314,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       // missing, before this program starts), so the harness cannot offer a flag of that name.
       case '--env-file': throw usage('Unknown flag: --env-file (Node reserves that name). Use --token-file <file>.');
       default:
-        throw usage(`Unknown flag: ${tok}`);
+        throw usage(`Unknown flag: ${flagName(tok)}`);
     }
   }
   if (out.apply && out.dryRun) throw usage('--apply and --dry-run contradict each other; pass one');

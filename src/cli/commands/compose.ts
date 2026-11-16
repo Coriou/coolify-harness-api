@@ -8,6 +8,7 @@ import { CoolifyAuthScopeError, CoolifyFeatureNotSupportedError, UsageError } fr
 import { sanitizeErrorMessage } from '../errors-out.js';
 import { audited, defaultWriteFile, print, printJson, warn, type CmdDeps, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
+import { noteStoredState } from '../write-outcome.js';
 import { EXIT } from '../exit.js';
 
 /** Re-throw a helper's input error (unknown service, bad ref) as a usage error (exit 2). */
@@ -115,6 +116,16 @@ export async function composeGet(args: ParsedArgs, deps: CmdDeps): Promise<numbe
 }
 
 /**
+ * A replacement document must at least define services. An empty file (a wrong path, a dotenv
+ * file) would otherwise be sent as the new compose — for the proxy, of every site on the server.
+ */
+export function requireServices(document: string, flag: string): void {
+  if (!/^services[ \t]*:/m.test(document)) {
+    throw new UsageError(`${flag}: the file has no top-level \`services:\` key, so it is not a docker-compose document. Nothing was sent.`);
+  }
+}
+
+/**
  * `compose set` (services): replace the stored docker-compose from `--from-file`, or bump images
  * with `--image <service>=<ref>`. Dry-run (redacted diff) unless --apply. Coolify validates and
  * re-parses the compose but does NOT restart; `--restart` restarts with latest=true so new tags
@@ -135,6 +146,7 @@ export async function composeSet(args: ParsedArgs, deps: CmdDeps): Promise<numbe
   const client = deps.clientFactory(target);
   const { compose: before } = await currentCompose(args, deps);
   let after = args.fromFile ? await readInputFile(args.fromFile, deps) : before;
+  if (args.fromFile) requireServices(after, 'compose set --from-file');
   for (const { service, image } of parseImageAssignments(args.images)) after = asUsageError(() => setServiceImage(after, service, image));
 
   const changes = imageChanges(listServiceImages(before), listServiceImages(after));
@@ -145,8 +157,12 @@ export async function composeSet(args: ParsedArgs, deps: CmdDeps): Promise<numbe
     for (const line of diff) print(line);
   }
   if (before === after || !args.apply) {
-    if (args.json) printJson(report);
-    else print(before === after ? 'No changes.' : 'Dry-run. Re-run with --apply to save (add --restart to restart with fresh images).');
+    // `--apply --restart` with nothing to save restarts nothing: say so instead of a bare exit 0.
+    const restartSkipped = before === after && args.apply && args.restart
+      ? `nothing changed, so nothing was saved and the service was not restarted. To restart it anyway: coolify-harness deploy --app ${args.app ?? '<service>'} --restart --latest`
+      : undefined;
+    if (args.json) printJson(restartSkipped ? { ...report, restart: null, note: restartSkipped } : report);
+    else print(restartSkipped ? `No changes: ${restartSkipped}` : before === after ? 'No changes.' : 'Dry-run. Re-run with --apply to save (add --restart to restart with fresh images).');
     return EXIT.ok;
   }
   const keysAffected = changes.length > 0 ? changes.map((c) => c.service) : ['docker_compose_raw'];
@@ -154,7 +170,14 @@ export async function composeSet(args: ParsedArgs, deps: CmdDeps): Promise<numbe
   await audited(deps, {
     instanceUrl: target.instanceUrl, kind: 'service', uuid: target.uuid, action: 'compose.update', keysAffected,
     ...(imagesOpt ? { options: { images: imagesOpt } } : {}),
-  }, () => withScope('write', () => client.updateServiceCompose(after)));
+  }, async () => {
+    try {
+      return await withScope('write', () => client.updateServiceCompose(after));
+    } catch (err) {
+      await noteStoredState(err, async () => (await client.getService()).docker_compose_raw, before, after, `coolify-harness compose get --app ${args.app ?? '<service>'}`);
+      throw err;
+    }
+  });
 
   // The compose is saved. A failing confirmation read must not hide that, nor skip --restart.
   try {

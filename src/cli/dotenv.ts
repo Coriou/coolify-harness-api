@@ -24,20 +24,30 @@ export function parseDotenv(text: string): Record<string, string> {
     if (eqIdx < 0 || key === '' || /\s/.test(key)) {
       throw new UsageError(`Invalid dotenv line ${n + 1}: expected KEY=VALUE${eqIdx < 0 ? " (missing '=')" : ''}`);
     }
+    // Assigning it would set the record's prototype and silently drop the line.
+    if (key === '__proto__') throw new UsageError(`Invalid dotenv line ${n + 1}: __proto__ cannot be used as a variable name`);
     let value = withoutExport.slice(eqIdx + 1);
     // `KEY = "v"` / `KEY= "v"`: blanks before a quoted value are not part of it.
     if (/^[ \t]+['"]/.test(value)) value = value.trimStart();
     const quote = value[0];
     if (quote === '"' || quote === "'") {
       // Find the closing quote, on this line or a later one (multi-line value).
-      let body = value.slice(1);
-      let close = closingQuote(body, quote);
+      const parts = [value.slice(1)];
+      let offset = 0; // length of the parts before the last one, with their newlines
+      let close = closingQuote(parts[0] ?? '', quote);
       const firstLine = n;
       while (close < 0 && n + 1 < lines.length) {
         n += 1;
-        body += `\n${(lines[n] ?? '').replace(/\r$/, '')}`;
-        close = closingQuote(body, quote);
+        offset += (parts[parts.length - 1] ?? '').length + 1;
+        const more = (lines[n] ?? '').replace(/\r$/, '');
+        parts.push(more);
+        // Only the new line is scanned: re-reading the whole value for each line made a long
+        // multi-line value (a certificate chain) quadratic. A quoted value has no escape that
+        // spans a line break, so each line can be judged by itself.
+        const at = closingQuote(more, quote);
+        close = at < 0 ? -1 : offset + at;
       }
+      const body = parts.join('\n');
       if (close < 0) {
         throw new UsageError(`Invalid dotenv value for ${key} (line ${firstLine + 1}): unterminated ${quote === '"' ? 'double' : 'single'} quote`);
       }
@@ -66,6 +76,13 @@ function unescapeDouble(body: string): string {
   return body.replace(/\\([nr])/g, (_m, c: string) => (c === 'n' ? '\n' : '\r'));
 }
 
+/**
+ * A path is echoed only when it reads like one. `--token-file` is the flag a token gets pasted
+ * after by mistake, and error text ends up in logs.
+ */
+export const describePath = (path: string): string =>
+  (/^[\w./@~+-]{1,160}$/.test(path) && /[./]/.test(path) && !/^[A-Za-z0-9+/=_-]{32,}$/.test(path) ? path : `<${path.length}-character path>`);
+
 export interface TokenFiles {
   /** Variables found in the files, later files winning. */
   vars: Record<string, string>;
@@ -89,14 +106,18 @@ export async function readTokenFiles(paths: readonly string[]): Promise<TokenFil
     } catch (err) {
       if ((err as { code?: unknown }).code === 'ENOENT') { missing.push(path); continue; } // reason: probing the optional errno code of an unknown error
       const code = (err as { code?: unknown }).code; // reason: same
-      throw new UsageError(`Cannot read --token-file ${path}${typeof code === 'string' ? ` (${code})` : ''}`);
+      throw new UsageError(`Cannot read --token-file ${describePath(path)}${typeof code === 'string' ? ` (${code})` : ''}`);
     }
     for (const raw of text.split(/\r?\n/)) {
       const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(raw);
       if (!m) continue;
+      const name = m[1] ?? '';
       const rest = (m[2] ?? '').trim();
       const quoted = /^(['"])(.*?)\1/.exec(rest);
-      vars[m[1] ?? ''] = quoted ? (quoted[2] ?? '') : rest.replace(/\s+#.*$/, '').trim();
+      const value = quoted ? (quoted[2] ?? '') : rest.replace(/\s+#.*$/, '').trim();
+      // A blank `TOKEN=` in a later file does not erase the token an earlier one gave.
+      if (name === '__proto__' || (value === '' && (vars[name] ?? '') !== '')) continue;
+      vars[name] = value;
     }
   }
   return { vars, missing };

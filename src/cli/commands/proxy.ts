@@ -7,9 +7,10 @@ import type { ServerProxy } from '../../client/schemas.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
 import { audited, defaultWriteFile, print, printJson, requireInstance, warn, type CmdDeps, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
+import { noteStoredState } from '../write-outcome.js';
 import { sanitizeErrorMessage } from '../errors-out.js';
 import { EXIT } from '../exit.js';
-import { asUsageError, imageChanges, readInputFile } from './compose.js';
+import { asUsageError, imageChanges, readInputFile, requireServices } from './compose.js';
 
 function requireServer(args: ParsedArgs): string | undefined {
   if (!args.server) usageFail(args, `${args.command.replace('-', ' ')}: --server <uuid> is required (list them with \`servers --instance <name>\`)`);
@@ -75,12 +76,17 @@ export async function proxySet(args: ParsedArgs, deps: CmdDeps): Promise<number>
   if (!args.fromFile && args.images.length !== 1) {
     return usageFail(args, 'proxy set: pass exactly one --image <ref> (e.g. traefik:v3.6.4) or --from-file <compose.yml>');
   }
+  // The file IS the whole configuration: an --image next to it used to be dropped without a word.
+  if (args.fromFile && args.images.length > 0) {
+    return usageFail(args, 'proxy set: pass --image or --from-file, not both (put the image in the file).');
+  }
   const { client } = requireInstance(args, deps);
   const proxy = await withScope('read:sensitive', () => client.getServerProxy(uuid));
   const before = requireConfiguration(proxy);
   let after: string;
   if (args.fromFile) {
     after = await readInputFile(args.fromFile, deps);
+    requireServices(after, 'proxy set --from-file');
   } else {
     const image = args.images[0]!;
     if (!isValidImageRef(image)) throw new CoolifyFeatureNotSupportedError(`Not a valid image reference: '${image}'`);
@@ -106,8 +112,11 @@ export async function proxySet(args: ParsedArgs, deps: CmdDeps): Promise<number>
     for (const line of diff) print(line);
   }
   if (before === after || !args.apply) {
-    if (args.json) printJson(report);
-    else print(before === after ? 'No changes.' : 'Dry-run. Re-run with --apply to save; add --restart to pull and run it (brief downtime for every site on this server).');
+    const restartSkipped = before === after && args.apply && args.restart
+      ? `nothing changed, so nothing was saved and the proxy was not restarted. To restart it anyway: coolify-harness proxy restart --instance ${args.instance ?? '<name>'} --server ${uuid} --apply`
+      : undefined;
+    if (args.json) printJson(restartSkipped ? { ...report, restart: null, note: restartSkipped } : report);
+    else print(restartSkipped ? `No changes: ${restartSkipped}` : before === after ? 'No changes.' : 'Dry-run. Re-run with --apply to save; add --restart to pull and run it (brief downtime for every site on this server).');
     return EXIT.ok;
   }
   const imageOpt = changes.map((c) => `${c.service}=${c.to ?? ''}`).join(',');
@@ -115,7 +124,14 @@ export async function proxySet(args: ParsedArgs, deps: CmdDeps): Promise<number>
     instanceUrl: client.instanceUrl, kind: 'server', uuid, action: 'proxy.configuration',
     keysAffected: changes.length > 0 ? changes.map((c) => c.service) : ['configuration'],
     ...(imageOpt ? { options: { images: imageOpt } } : {}),
-  }, () => withScope('write+deploy', () => client.saveServerProxyConfiguration(uuid, after)));
+  }, async () => {
+    try {
+      return await withScope('write+deploy', () => client.saveServerProxyConfiguration(uuid, after));
+    } catch (err) {
+      await noteStoredState(err, async () => (await client.getServerProxy(uuid)).configuration, before, after, `coolify-harness proxy get --instance ${args.instance ?? '<name>'} --server ${uuid}`);
+      throw err;
+    }
+  });
   // The configuration is saved. A failing confirmation read must not hide that, nor skip --restart.
   try {
     const stored = (await withScope('read:sensitive', () => client.getServerProxy(uuid))).configuration;
