@@ -1,4 +1,4 @@
-import { isTerminalDeploymentStatus } from './schemas.js';
+import { isTerminalDeploymentStatus } from './deployment-status.js';
 import { CoolifyAuthError, CoolifyAuthScopeError, CoolifyContractError, CoolifyNotFoundError, CoolifyRequestError, CoolifyWaitTimeoutError, } from '../errors/index.js';
 const DEFAULT_INTERVAL_MS = 2000;
 const DEFAULT_MAX_INTERVAL_MS = 5000;

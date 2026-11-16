@@ -1,4 +1,4 @@
-import { type Deployment } from './schemas.js';
+import type { Deployment } from './schemas.js';
 export interface WaitOptions {
     /**
      * Polling interval in milliseconds. When set, the interval is fixed (unless `maxIntervalMs` is

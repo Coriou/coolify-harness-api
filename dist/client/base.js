@@ -1,6 +1,7 @@
 import { CircuitBreaker, httpRequest } from './http.js';
 import { CoolifyAuthError, CoolifyNotFoundError, CoolifyRequestError } from '../errors/index.js';
 import { REDACTED, redactUrlCredentials } from './redact.js';
+import { preloadSchemasOnceRequestIsSent } from './lazy-schemas.js';
 export function withQuery(path, query = {}) {
     const params = new URLSearchParams();
     for (const [k, v] of Object.entries(query)) {
@@ -53,6 +54,8 @@ export class CoolifyApi {
     async request(path, method, jsonBody, opts = {}) {
         const fullUrl = this.url(path);
         const d = this.deps;
+        // Load the validators while Coolify is answering, not before the request leaves.
+        preloadSchemasOnceRequestIsSent();
         const res = await httpRequest(fullUrl, {
             method,
             token: this.token,

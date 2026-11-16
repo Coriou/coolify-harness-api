@@ -1,7 +1,6 @@
-import { z } from 'zod';
 import type { ResolvedInstance } from '../config/schema.js';
 import { CoolifyApi, type CoolifyClientDeps } from './base.js';
-import { ServerDomainsSchema, type Application, type BackupConfig, type BackupExecution, type Database, type DatabaseUpdate, type Deployment, type DeploymentCancel, type MessageAck, type Server, type ServerProxy, type ServerProxyUpdate, type ServerResource, type Service } from './schemas.js';
+import type { ServerDomains, Application, BackupConfig, BackupExecution, Database, DatabaseUpdate, Deployment, DeploymentCancel, MessageAck, Server, ServerProxy, ServerProxyUpdate, ServerResource, Service } from './schemas.js';
 /**
  * Instance-scoped Coolify client: everything that is not tied to one configured target —
  * version/health, servers + proxy, standalone databases, and deployments by uuid.
@@ -30,7 +29,7 @@ export declare class CoolifyInstanceClient {
     listServers(): Promise<Server[]>;
     getServer(serverUuid: string): Promise<Server>;
     getServerResources(serverUuid: string): Promise<ServerResource[]>;
-    getServerDomains(serverUuid: string): Promise<z.infer<typeof ServerDomainsSchema>>;
+    getServerDomains(serverUuid: string): Promise<ServerDomains>;
     /**
      * Proxy settings. `configuration` (the proxy docker-compose, where the Traefik image tag lives)
      * is only returned with `read:sensitive` + a team admin/owner token, and only when Coolify has it

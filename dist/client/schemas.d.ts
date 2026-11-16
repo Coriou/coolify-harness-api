@@ -133,12 +133,26 @@ export declare const ApplicationSchema: z.ZodObject<{
     updated_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, z.core.$loose>;
 export type Application = z.infer<typeof ApplicationSchema>;
-/** Every status Coolify's ApplicationDeploymentStatus enum defines (unchanged from 4.5.0 to 4.7.5). */
-export declare const DEPLOYMENT_STATUSES: readonly ["queued", "in_progress", "finished", "failed", "cancelled-by-user"];
-export type KnownDeploymentStatus = (typeof DEPLOYMENT_STATUSES)[number];
-/** Statuses after which a deployment never changes again. */
-export declare const TERMINAL_DEPLOYMENT_STATUSES: readonly string[];
-export declare function isTerminalDeploymentStatus(status: string): boolean;
+export declare const ApplicationListSchema: z.ZodArray<z.ZodObject<{
+    uuid: z.ZodString;
+    name: z.ZodString;
+    status: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    fqdn: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    git_repository: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    git_branch: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    git_commit_sha: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    git_full_url: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    build_pack: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    docker_compose_raw: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    health_check_enabled: z.ZodOptional<z.ZodNullable<z.ZodBoolean>>;
+    health_check_port: z.ZodOptional<z.ZodNullable<z.ZodUnion<readonly [z.ZodNumber, z.ZodString]>>>;
+    health_check_path: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    limits_memory: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    limits_cpus: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    created_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    updated_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+}, z.core.$loose>>;
+export { DEPLOYMENT_STATUSES, TERMINAL_DEPLOYMENT_STATUSES, isTerminalDeploymentStatus, type KnownDeploymentStatus, } from './deployment-status.js';
 export declare const DeploymentSchema: z.ZodObject<{
     deployment_uuid: z.ZodString;
     status: z.ZodString;
@@ -197,6 +211,33 @@ export declare const ServiceSchema: z.ZodObject<{
     updated_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, z.core.$loose>;
 export type Service = z.infer<typeof ServiceSchema>;
+export declare const ServiceListSchema: z.ZodArray<z.ZodObject<{
+    uuid: z.ZodString;
+    name: z.ZodString;
+    status: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    service_type: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    docker_compose_raw: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    applications: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodObject<{
+        uuid: z.ZodString;
+        name: z.ZodString;
+        human_name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        status: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        image: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        fqdn: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        is_public: z.ZodOptional<z.ZodNullable<z.ZodBoolean>>;
+    }, z.core.$loose>>>>;
+    databases: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodObject<{
+        uuid: z.ZodString;
+        name: z.ZodString;
+        human_name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        status: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        image: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        fqdn: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        is_public: z.ZodOptional<z.ZodNullable<z.ZodBoolean>>;
+    }, z.core.$loose>>>>;
+    created_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    updated_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+}, z.core.$loose>>;
 export declare const ServiceUpdateResponseSchema: z.ZodObject<{
     uuid: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     domains: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodString>>>;
@@ -214,6 +255,17 @@ export declare const ServerSchema: z.ZodObject<{
     settings: z.ZodOptional<z.ZodNullable<z.ZodRecord<z.ZodString, z.ZodUnknown>>>;
 }, z.core.$loose>;
 export type Server = z.infer<typeof ServerSchema>;
+export declare const ServerListSchema: z.ZodArray<z.ZodObject<{
+    uuid: z.ZodString;
+    name: z.ZodString;
+    description: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    ip: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    is_reachable: z.ZodOptional<z.ZodNullable<z.ZodBoolean>>;
+    is_usable: z.ZodOptional<z.ZodNullable<z.ZodBoolean>>;
+    is_coolify_host: z.ZodOptional<z.ZodNullable<z.ZodBoolean>>;
+    proxy: z.ZodOptional<z.ZodNullable<z.ZodRecord<z.ZodString, z.ZodUnknown>>>;
+    settings: z.ZodOptional<z.ZodNullable<z.ZodRecord<z.ZodString, z.ZodUnknown>>>;
+}, z.core.$loose>>;
 export declare const ServerResourceSchema: z.ZodObject<{
     uuid: z.ZodString;
     name: z.ZodString;
@@ -221,10 +273,17 @@ export declare const ServerResourceSchema: z.ZodObject<{
     status: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, z.core.$loose>;
 export type ServerResource = z.infer<typeof ServerResourceSchema>;
+export declare const ServerResourceListSchema: z.ZodArray<z.ZodObject<{
+    uuid: z.ZodString;
+    name: z.ZodString;
+    type: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    status: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+}, z.core.$loose>>;
 export declare const ServerDomainsSchema: z.ZodArray<z.ZodObject<{
     ip: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     domains: z.ZodArray<z.ZodString>;
 }, z.core.$loose>>;
+export type ServerDomains = z.infer<typeof ServerDomainsSchema>;
 /**
  * GET/PATCH /servers/{uuid}/proxy and PUT .../proxy/configuration. `configuration` (the raw proxy
  * docker-compose) is only present when the token has read:sensitive AND the user is a team
@@ -271,6 +330,17 @@ export declare const DatabaseSchema: z.ZodObject<{
     updated_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
 }, z.core.$loose>;
 export type Database = z.infer<typeof DatabaseSchema>;
+export declare const DatabaseListSchema: z.ZodArray<z.ZodObject<{
+    uuid: z.ZodString;
+    name: z.ZodString;
+    database_type: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    status: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    image: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    is_public: z.ZodOptional<z.ZodNullable<z.ZodBoolean>>;
+    public_port: z.ZodOptional<z.ZodNullable<z.ZodNumber>>;
+    created_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    updated_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+}, z.core.$loose>>;
 /**
  * The subset of `PATCH /databases/{uuid}` fields the harness exposes. Changing `is_public` (or
  * `instant_deploy`) also needs the `deploy` ability — Coolify starts/stops the public-port proxy.
@@ -312,6 +382,20 @@ export declare const BackupConfigSchema: z.ZodObject<{
     }, z.core.$loose>>>>;
 }, z.core.$loose>;
 export type BackupConfig = z.infer<typeof BackupConfigSchema>;
+export declare const BackupConfigListSchema: z.ZodArray<z.ZodObject<{
+    uuid: z.ZodString;
+    frequency: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    enabled: z.ZodOptional<z.ZodNullable<z.ZodBoolean>>;
+    save_s3: z.ZodOptional<z.ZodNullable<z.ZodBoolean>>;
+    executions: z.ZodOptional<z.ZodNullable<z.ZodArray<z.ZodObject<{
+        uuid: z.ZodString;
+        status: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        filename: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        size: z.ZodOptional<z.ZodNullable<z.ZodUnion<readonly [z.ZodNumber, z.ZodString]>>>;
+        message: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        created_at: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    }, z.core.$loose>>>>;
+}, z.core.$loose>>;
 export declare const BackupExecutionsResponseSchema: z.ZodObject<{
     executions: z.ZodArray<z.ZodObject<{
         uuid: z.ZodString;

@@ -13,7 +13,7 @@ export { generateCatalog, buildArtifacts, type SchemaInput } from './catalog/gen
 export { checkCatalogFresh } from './catalog/stale-check.js';
 export { walkEnvSchema, mergeCatalogs, type AnyZodSchema, type CatalogModel, type CatalogEntry } from './catalog/walk.js';
 export type { Application, Deployment, RuntimeLogsResponse, Service, Server, ServerProxy, ServerProxyUpdate, ServerResource, Database, DatabaseUpdate, BackupConfig, BackupExecution, DeploymentCancel, MessageAck, EnvVar, EnvWriteItem, } from './client/schemas.js';
-export { DEPLOYMENT_STATUSES, TERMINAL_DEPLOYMENT_STATUSES, isTerminalDeploymentStatus } from './client/schemas.js';
+export { DEPLOYMENT_STATUSES, TERMINAL_DEPLOYMENT_STATUSES, isTerminalDeploymentStatus } from './client/deployment-status.js';
 export type { WaitOptions } from './client/wait.js';
 export { waitForDeployment } from './client/wait.js';
 export { HARNESS_VERSION, TESTED_COOLIFY, compareVersions, coolifyCompatibility, compatibilityWarning, type CoolifyCompatibility, } from './version.js';

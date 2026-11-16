@@ -91,13 +91,8 @@ export const ApplicationSchema = z.looseObject({
     created_at: z.string().nullish(),
     updated_at: z.string().nullish(),
 });
-/** Every status Coolify's ApplicationDeploymentStatus enum defines (unchanged from 4.5.0 to 4.7.5). */
-export const DEPLOYMENT_STATUSES = ['queued', 'in_progress', 'finished', 'failed', 'cancelled-by-user'];
-/** Statuses after which a deployment never changes again. */
-export const TERMINAL_DEPLOYMENT_STATUSES = ['finished', 'failed', 'cancelled-by-user'];
-export function isTerminalDeploymentStatus(status) {
-    return TERMINAL_DEPLOYMENT_STATUSES.includes(status);
-}
+export const ApplicationListSchema = z.array(ApplicationSchema);
+export { DEPLOYMENT_STATUSES, TERMINAL_DEPLOYMENT_STATUSES, isTerminalDeploymentStatus, } from './deployment-status.js';
 // A deployment row (ApplicationDeploymentQueue). Coolify creates the row as soon as a deploy is
 // queued, BEFORE the build has read the commit — so a queued/in-progress row has
 // `commit_message`, `finished_at`, `server_name`, ... as null (all nullable columns in 4.5.0).
@@ -149,6 +144,7 @@ export const ServiceSchema = z.looseObject({
     created_at: z.string().nullish(),
     updated_at: z.string().nullish(),
 });
+export const ServiceListSchema = z.array(ServiceSchema);
 export const ServiceUpdateResponseSchema = z.looseObject({ uuid: z.string().nullish(), domains: z.array(z.string()).nullish() });
 export const ServerSchema = z.looseObject({
     uuid: z.string(),
@@ -161,12 +157,14 @@ export const ServerSchema = z.looseObject({
     proxy: z.record(z.string(), z.unknown()).nullish(),
     settings: z.record(z.string(), z.unknown()).nullish(),
 });
+export const ServerListSchema = z.array(ServerSchema);
 export const ServerResourceSchema = z.looseObject({
     uuid: z.string(),
     name: z.string(),
     type: z.string().nullish(),
     status: z.string().nullish(),
 });
+export const ServerResourceListSchema = z.array(ServerResourceSchema);
 export const ServerDomainsSchema = z.array(z.looseObject({ ip: z.string().nullish(), domains: z.array(z.string()) }));
 /**
  * GET/PATCH /servers/{uuid}/proxy and PUT .../proxy/configuration. `configuration` (the raw proxy
@@ -206,6 +204,7 @@ export const DatabaseSchema = z.looseObject({
     created_at: z.string().nullish(),
     updated_at: z.string().nullish(),
 });
+export const DatabaseListSchema = z.array(DatabaseSchema);
 /**
  * The subset of `PATCH /databases/{uuid}` fields the harness exposes. Changing `is_public` (or
  * `instant_deploy`) also needs the `deploy` ability — Coolify starts/stops the public-port proxy.
@@ -237,6 +236,7 @@ export const BackupConfigSchema = z.looseObject({
     save_s3: z.boolean().nullish(),
     executions: z.array(BackupExecutionSchema).nullish(),
 });
+export const BackupConfigListSchema = z.array(BackupConfigSchema);
 export const BackupExecutionsResponseSchema = z.looseObject({ executions: z.array(BackupExecutionSchema) });
 export const RuntimeLogsResponseSchema = z.looseObject({
     logs: z.string().optional(),

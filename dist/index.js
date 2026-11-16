@@ -9,7 +9,7 @@ export { listServiceImages, setServiceImage, splitImageRef, isValidImageRef, for
 export { generateCatalog, buildArtifacts } from './catalog/generate.js';
 export { checkCatalogFresh } from './catalog/stale-check.js';
 export { walkEnvSchema, mergeCatalogs } from './catalog/walk.js';
-export { DEPLOYMENT_STATUSES, TERMINAL_DEPLOYMENT_STATUSES, isTerminalDeploymentStatus } from './client/schemas.js';
+export { DEPLOYMENT_STATUSES, TERMINAL_DEPLOYMENT_STATUSES, isTerminalDeploymentStatus } from './client/deployment-status.js';
 export { waitForDeployment } from './client/wait.js';
 // Which Coolify versions this release is verified against, and how a live version compares.
 export { HARNESS_VERSION, TESTED_COOLIFY, compareVersions, coolifyCompatibility, compatibilityWarning, } from './version.js';

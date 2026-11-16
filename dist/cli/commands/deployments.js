@@ -1,4 +1,4 @@
-import { isTerminalDeploymentStatus } from '../../client/schemas.js';
+import { isTerminalDeploymentStatus } from '../../client/deployment-status.js';
 import { audited, print, printJson, requireInstance, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
 import { EXIT } from '../exit.js';

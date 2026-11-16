@@ -1,7 +1,7 @@
 import type { ResolvedTarget } from '../config/schema.js';
 import { type CoolifyClientDeps } from './base.js';
 import { CoolifyInstanceClient } from './instance.js';
-import { type DeployAck, type EnvVar, type EnvWriteItem, type Application, type Deployment, type DeploymentCancel, type MessageAck, type Service, type Database, type ServiceUpdateResponse } from './schemas.js';
+import type { DeployAck, EnvVar, EnvWriteItem, Application, Deployment, DeploymentCancel, MessageAck, Service, Database, ServiceUpdateResponse } from './schemas.js';
 import { type WaitOptions } from './wait.js';
 export type { CoolifyClientDeps } from './base.js';
 /**

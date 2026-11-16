@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { ProjectRegistrySchema } from './schema.js';
+import { parseRegistry } from './schema.js';
 import { ConfigError, MissingTokenError } from '../errors/index.js';
 /** File names looked up, in order, when no `--config` is given. */
 export const DEFAULT_CONFIG_NAMES = [
@@ -17,12 +17,11 @@ export function loadRegistry(raw) {
     if (raw === undefined) {
         throw new ConfigError('Invalid coolify-harness config: the file has no default export (use `export default defineConfig({ instances, targets })`)');
     }
-    const parsed = ProjectRegistrySchema.safeParse(raw);
-    if (!parsed.success) {
-        const issues = parsed.error.issues.map((i) => `${i.path.map(String).join('.') || '(root)'}: ${i.message}`);
-        throw new ConfigError(`Invalid coolify-harness config: ${issues.join('; ')}`);
+    const parsed = parseRegistry(raw);
+    if (!parsed.ok) {
+        throw new ConfigError(`Invalid coolify-harness config: ${parsed.issues.join('; ')}`);
     }
-    return parsed.data;
+    return parsed.registry;
 }
 export function resolveInstance(registry, instanceName, env) {
     const instance = registry.instances[instanceName];

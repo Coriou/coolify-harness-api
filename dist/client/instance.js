@@ -1,6 +1,5 @@
-import { z } from 'zod';
 import { CoolifyApi } from './base.js';
-import { ApplicationSchema, BackupConfigSchema, BackupExecutionsResponseSchema, DatabaseSchema, DatabaseUpdateSchema, DeploymentCancelSchema, DeploymentSchema, MessageAckSchema, ServerDomainsSchema, ServerProxySchema, ServerProxyUpdateSchema, ServerResourceSchema, ServerSchema, ServiceSchema, parseInput, parseOrContractError, } from './schemas.js';
+import { loadSchemas } from './lazy-schemas.js';
 import { toBase64 } from './compose.js';
 const asText = (body) => (typeof body === 'string' ? body : JSON.stringify(body ?? '')).trim();
 const seg = (uuid) => encodeURIComponent(uuid);
@@ -39,45 +38,54 @@ export class CoolifyInstanceClient {
     /** All applications visible to the token's team. Payload holds secrets — redact before printing. */
     async listApplications() {
         const res = await this.api.request('/applications', 'GET');
-        return parseOrContractError(z.array(ApplicationSchema), res.body, 'listApplications');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ApplicationListSchema, res.body, 'listApplications');
     }
     async listServices() {
         const res = await this.api.request('/services', 'GET');
-        return parseOrContractError(z.array(ServiceSchema), res.body, 'listServices');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ServiceListSchema, res.body, 'listServices');
     }
     // ── deployments ──────────────────────────────────────────────────────────
     /** Queued + in-progress deployments across the team (`GET /deployments`). */
     async listRunningDeployments() {
         const res = await this.api.request('/deployments', 'GET');
         const items = Array.isArray(res.body) ? res.body : Object.values((res.body ?? {}));
-        return items.map((d, i) => parseOrContractError(DeploymentSchema, d, `listRunningDeployments[${i}]`));
+        const s = await loadSchemas();
+        return items.map((d, i) => s.parseOrContractError(s.DeploymentSchema, d, `listRunningDeployments[${i}]`));
     }
     async getDeployment(deploymentUuid) {
         const res = await this.api.request(`/deployments/${seg(deploymentUuid)}`, 'GET');
-        return parseOrContractError(DeploymentSchema, res.body, 'getDeployment');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.DeploymentSchema, res.body, 'getDeployment');
     }
     /** `POST /deployments/{uuid}/cancel` (scope `deploy`). 400 if the deployment already ended. */
     async cancelDeployment(deploymentUuid) {
         const res = await this.api.request(`/deployments/${seg(deploymentUuid)}/cancel`, 'POST');
-        return parseOrContractError(DeploymentCancelSchema, res.body, 'cancelDeployment');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.DeploymentCancelSchema, res.body, 'cancelDeployment');
     }
     // ── servers ──────────────────────────────────────────────────────────────
     /** Server payloads include `settings.sentinel_token` and the stored proxy compose — redact before printing. */
     async listServers() {
         const res = await this.api.request('/servers', 'GET');
-        return parseOrContractError(z.array(ServerSchema), res.body, 'listServers');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ServerListSchema, res.body, 'listServers');
     }
     async getServer(serverUuid) {
         const res = await this.api.request(`/servers/${seg(serverUuid)}`, 'GET');
-        return parseOrContractError(ServerSchema, res.body, 'getServer');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ServerSchema, res.body, 'getServer');
     }
     async getServerResources(serverUuid) {
         const res = await this.api.request(`/servers/${seg(serverUuid)}/resources`, 'GET');
-        return parseOrContractError(z.array(ServerResourceSchema), res.body, 'getServerResources');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ServerResourceListSchema, res.body, 'getServerResources');
     }
     async getServerDomains(serverUuid) {
         const res = await this.api.request(`/servers/${seg(serverUuid)}/domains`, 'GET');
-        return parseOrContractError(ServerDomainsSchema, res.body, 'getServerDomains');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ServerDomainsSchema, res.body, 'getServerDomains');
     }
     // ── proxy ────────────────────────────────────────────────────────────────
     /**
@@ -87,13 +95,15 @@ export class CoolifyInstanceClient {
      */
     async getServerProxy(serverUuid) {
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy`, 'GET');
-        return parseOrContractError(ServerProxySchema, res.body, 'getServerProxy');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ServerProxySchema, res.body, 'getServerProxy');
     }
     /** Redirect / exact-labels / cert-resolver / proxy_type settings. Not the image — see saveServerProxyConfiguration. */
     async updateServerProxy(serverUuid, patch) {
-        const body = parseInput(ServerProxyUpdateSchema, patch, 'proxy update');
+        const s = await loadSchemas();
+        const body = s.parseInput(s.ServerProxyUpdateSchema, patch, 'proxy update');
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy`, 'PATCH', body);
-        return parseOrContractError(ServerProxySchema, res.body, 'updateServerProxy');
+        return s.parseOrContractError(s.ServerProxySchema, res.body, 'updateServerProxy');
     }
     /**
      * Replace the proxy docker-compose (`PUT /servers/{uuid}/proxy/configuration`, scopes
@@ -105,22 +115,26 @@ export class CoolifyInstanceClient {
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy/configuration`, 'PUT', {
             configuration: toBase64(composeYaml),
         }, { idempotent: true, secrets: [composeYaml, toBase64(composeYaml)] });
-        return parseOrContractError(ServerProxySchema, res.body, 'saveServerProxyConfiguration');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ServerProxySchema, res.body, 'saveServerProxyConfiguration');
     }
     /** Queue a proxy restart (scope `deploy`). Coolify pulls the image from the stored compose first. */
     async restartServerProxy(serverUuid) {
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy/restart`, 'POST');
-        return parseOrContractError(MessageAckSchema, res.body, 'restartServerProxy');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.MessageAckSchema, res.body, 'restartServerProxy');
     }
     // ── standalone databases ─────────────────────────────────────────────────
     /** Database payloads include connection URLs with passwords — redact before printing. */
     async listDatabases() {
         const res = await this.api.request('/databases', 'GET');
-        return parseOrContractError(z.array(DatabaseSchema), res.body, 'listDatabases');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.DatabaseListSchema, res.body, 'listDatabases');
     }
     async getDatabase(databaseUuid) {
         const res = await this.api.request(`/databases/${seg(databaseUuid)}`, 'GET');
-        return parseOrContractError(DatabaseSchema, res.body, 'getDatabase');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.DatabaseSchema, res.body, 'getDatabase');
     }
     /**
      * `PATCH /databases/{uuid}` (scope `write`; also `deploy` when `is_public` or `instant_deploy`
@@ -128,18 +142,21 @@ export class CoolifyInstanceClient {
      * acknowledgement, so re-read with getDatabase() to confirm.
      */
     async updateDatabase(databaseUuid, patch) {
-        const body = parseInput(DatabaseUpdateSchema, patch, 'database update');
+        const s = await loadSchemas();
+        const body = s.parseInput(s.DatabaseUpdateSchema, patch, 'database update');
         await this.api.request(`/databases/${seg(databaseUuid)}`, 'PATCH', body);
     }
     /** Scheduled backup configurations, each with its executions. */
     async listDatabaseBackups(databaseUuid) {
         const res = await this.api.request(`/databases/${seg(databaseUuid)}/backups`, 'GET');
-        return parseOrContractError(z.array(BackupConfigSchema), res.body, 'listDatabaseBackups');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.BackupConfigListSchema, res.body, 'listDatabaseBackups');
     }
     /** Executions of one backup configuration. `message` is null unless the token has read:sensitive. */
     async listBackupExecutions(databaseUuid, backupUuid) {
         const res = await this.api.request(`/databases/${seg(databaseUuid)}/backups/${seg(backupUuid)}/executions`, 'GET');
-        return parseOrContractError(BackupExecutionsResponseSchema, res.body, 'listBackupExecutions').executions;
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.BackupExecutionsResponseSchema, res.body, 'listBackupExecutions').executions;
     }
     /** Run an existing backup configuration now (`PATCH …/backups/{id}` with `backup_now`; scopes `write` + `deploy`). */
     async runDatabaseBackup(databaseUuid, backupUuid) {

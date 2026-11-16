@@ -1,6 +1,6 @@
 import { CoolifyApi, withQuery } from './base.js';
 import { CoolifyInstanceClient } from './instance.js';
-import { BulkRequestSchema, BulkResponseSchema, DeployAckApplicationSchema, DeployAckServiceSchema, ApplicationSchema, DeploymentSchema, MessageAckSchema, RuntimeLogsResponseSchema, ServiceSchema, ServiceUpdateResponseSchema, DatabaseSchema, parseInput, parseOrContractError, } from './schemas.js';
+import { loadSchemas } from './lazy-schemas.js';
 import { CoolifyFeatureNotSupportedError } from '../errors/index.js';
 import { waitForDeployment } from './wait.js';
 import { toBase64 } from './compose.js';
@@ -39,7 +39,8 @@ export class CoolifyClient {
     }
     async listEnvs() {
         const res = await this.api.request(`${this.base()}/envs`, 'GET');
-        return parseOrContractError(BulkResponseSchema, res.body, 'listEnvs');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.BulkResponseSchema, res.body, 'listEnvs');
     }
     /**
      * Bulk upsert by key (`PATCH …/envs/bulk`). An item without `is_preview` touches the production
@@ -49,7 +50,8 @@ export class CoolifyClient {
     async upsertEnvs(items) {
         // Validate + normalize the request at the boundary: unknown fields are stripped (Coolify would
         // silently ignore them) and a malformed item fails here, before the wire.
-        const body = parseInput(BulkRequestSchema, { data: items }, 'env write');
+        const s = await loadSchemas();
+        const body = s.parseInput(s.BulkRequestSchema, { data: items }, 'env write');
         if (this.target.kind !== 'application' && body.data.some((i) => i.is_preview === true)) {
             throw new CoolifyFeatureNotSupportedError(`Preview env rows only exist for applications (this target is a ${this.target.kind}).`);
         }
@@ -58,7 +60,7 @@ export class CoolifyClient {
             idempotent: true,
             secrets: body.data.map((i) => i.value),
         });
-        return parseOrContractError(BulkResponseSchema, res.body, 'upsertEnvs');
+        return s.parseOrContractError(s.BulkResponseSchema, res.body, 'upsertEnvs');
     }
     /**
      * Delete one env row by its uuid (from `listEnvs()`). Applications, services and databases.
@@ -66,7 +68,8 @@ export class CoolifyClient {
      */
     async deleteEnv(envUuid) {
         const res = await this.api.request(`${this.base()}/envs/${encodeURIComponent(envUuid)}`, 'DELETE');
-        return parseOrContractError(MessageAckSchema, res.body, 'deleteEnv');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.MessageAckSchema, res.body, 'deleteEnv');
     }
     /**
      * Deploy (applications: queue a build; services/databases: start). `force` rebuilds without the
@@ -86,14 +89,15 @@ export class CoolifyClient {
         const path = withQuery(`${this.base()}/restart`, { latest: opts.latest ? true : undefined });
         return this.ackFor(await this.api.request(path, 'POST'), 'restart');
     }
-    ackFor(res, ctx) {
+    async ackFor(res, ctx) {
+        const s = await loadSchemas();
         if (this.target.kind === 'application') {
-            const parsed = parseOrContractError(DeployAckApplicationSchema, res.body, ctx);
+            const parsed = s.parseOrContractError(s.DeployAckApplicationSchema, res.body, ctx);
             return parsed.deployment_uuid == null
                 ? { message: parsed.message }
                 : { message: parsed.message, deploymentUuid: parsed.deployment_uuid };
         }
-        const parsed = parseOrContractError(DeployAckServiceSchema, res.body, ctx);
+        const parsed = s.parseOrContractError(s.DeployAckServiceSchema, res.body, ctx);
         return { message: parsed.message };
     }
     /**
@@ -104,18 +108,21 @@ export class CoolifyClient {
      */
     async get() {
         const res = await this.api.request(this.base(), 'GET');
-        return parseOrContractError(ApplicationSchema, res.body, 'get');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ApplicationSchema, res.body, 'get');
     }
     /** Service details incl. `docker_compose_raw` and its sub-applications / sub-databases. */
     async getService() {
         this.requireKind('service', 'getService');
         const res = await this.api.request(this.base(), 'GET');
-        return parseOrContractError(ServiceSchema, res.body, 'getService');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ServiceSchema, res.body, 'getService');
     }
     async getDatabase() {
         this.requireKind('database', 'getDatabase');
         const res = await this.api.request(this.base(), 'GET');
-        return parseOrContractError(DatabaseSchema, res.body, 'getDatabase');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.DatabaseSchema, res.body, 'getDatabase');
     }
     /**
      * Replace a service's docker-compose (`PATCH /services/{uuid}`, base64-encoded as Coolify
@@ -129,7 +136,8 @@ export class CoolifyClient {
             idempotent: true,
             secrets: [composeRaw, toBase64(composeRaw)],
         });
-        return parseOrContractError(ServiceUpdateResponseSchema, res.body, 'updateServiceCompose');
+        const s = await loadSchemas();
+        return s.parseOrContractError(s.ServiceUpdateResponseSchema, res.body, 'updateServiceCompose');
     }
     /**
      * Fetch runtime / container logs for the target. Requires read:sensitive.
@@ -155,7 +163,8 @@ export class CoolifyClient {
             };
         }
         const res = await this.api.request(withQuery(`${this.base()}/logs`, query), 'GET');
-        const parsed = parseOrContractError(RuntimeLogsResponseSchema, res.body, 'getRuntimeLogs');
+        const s = await loadSchemas();
+        const parsed = s.parseOrContractError(s.RuntimeLogsResponseSchema, res.body, 'getRuntimeLogs');
         return { logs: parsed.logs ?? '' };
     }
     /**
@@ -182,7 +191,8 @@ export class CoolifyClient {
             if (Array.isArray(maybe))
                 items = maybe;
         }
-        return items.map((d, i) => parseOrContractError(DeploymentSchema, d, `listDeployments[${i}]`));
+        const s = await loadSchemas();
+        return items.map((d, i) => s.parseOrContractError(s.DeploymentSchema, d, `listDeployments[${i}]`));
     }
     /** Fetch a single deployment by its uuid (includes embedded build logs with read:sensitive). */
     async getDeployment(deploymentUuid) {
