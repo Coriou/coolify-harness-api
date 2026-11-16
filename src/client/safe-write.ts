@@ -71,7 +71,15 @@ function groupByKey(current: EnvVar[]): Map<string, EnvVar[]> {
 const scopeOf = (row: EnvVar): EnvScope => (row.is_preview ? 'preview' : 'production');
 
 /** What PHP's `trim()` removes (Coolify's side): space, tab, newline, CR, NUL, vertical tab. */
-const phpTrim = (v: string): string => v.replace(/^[ \t\n\r\0\x0B]+|[ \t\n\r\0\x0B]+$/g, '');
+const PHP_TRIM_CODES = new Set([0x20, 0x09, 0x0a, 0x0d, 0x00, 0x0b]);
+/** By index: a regex with `…+$` re-scans a long inner run of blanks from every position (quadratic). */
+function phpTrim(v: string): string {
+  let start = 0;
+  let end = v.length;
+  while (start < end && PHP_TRIM_CODES.has(v.charCodeAt(start))) start += 1;
+  while (end > start && PHP_TRIM_CODES.has(v.charCodeAt(end - 1))) end -= 1;
+  return start === 0 && end === v.length ? v : v.slice(start, end);
+}
 
 /**
  * Would Coolify store `desired` as `stored`? Coolify 4.7 trims a value on save unless its trimmed
@@ -87,6 +95,15 @@ const sameValue = (stored: string, desired: string): boolean => {
 
 /** A row whose value Coolify never returns: locked (`is_shown_once`), whatever the token can read. */
 export const isLockedRow = (row: EnvVar): boolean => row.value_hidden === true && row.is_shown_once;
+
+/** True when the caller asked for a flag the row is known to hold differently. */
+function flagsDiffer(row: EnvVar, wanted: Partial<EnvFlags> | undefined): boolean {
+  if (!wanted) return false;
+  return (['is_literal', 'is_multiline', 'is_shown_once'] as const).some((flag) => {
+    const have: unknown = row[flag];
+    return wanted[flag] !== undefined && typeof have === 'boolean' && have !== wanted[flag];
+  });
+}
 
 /**
  * Build the bulk item for one key. On an UPDATE, flags the row has SET (`is_literal`,
@@ -181,8 +198,9 @@ export function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePl
     }
     // Every row already holds the desired value: nothing to write, however many rows there are.
     // (Duplicates with the same value used to be planned as an update on every run, so a diff
-    // never came back clean.)
-    if (rows.every((r) => sameValue(r.value, value))) {
+    // never came back clean.) A flag the caller asks for and the row lacks is still a change:
+    // dropping it silently left a requested lock (`is_shown_once`) unapplied.
+    if (rows.every((r) => sameValue(r.value, value)) && !rows.some((r) => flagsDiffer(r, desired.flags?.[key]))) {
       unchanged.push(key);
       continue;
     }

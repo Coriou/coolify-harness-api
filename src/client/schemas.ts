@@ -59,7 +59,9 @@ export type EnvVar = z.infer<typeof EnvVarSchema>;
  * Checked against `create_bulk_envs` of the three API controllers on 4.5.0 and 4.7.5.
  */
 export const EnvWriteItemSchema = z.object({
-  key: z.string().min(1),
+  // Coolify trims the key it stores: one sent with edge whitespace is saved under another name
+  // and the write never confirms. (Its other key rules differ by version and are left to it.)
+  key: z.string().min(1).refine((k) => k === k.trim(), { message: 'must not start or end with whitespace' }),
   value: z.string(),
   is_preview: z.boolean().optional(),
   is_literal: z.boolean().optional(),

@@ -74,10 +74,12 @@ export interface HttpRequestInit {
    * Whether repeating the request is harmless. Default: only GET / HEAD. A network error, a
    * timeout or a 5xx is retried ONLY for idempotent requests: the server may have processed a
    * mutation whose answer was lost, and replaying `POST …/start` would queue a second deployment.
-   * A 429 (rate limited, not processed) and Coolify's bulk-unmarshal quirk are retried for every
-   * method.
+   * A 429 (rate limited, not processed) is retried for every method; Coolify's bulk-unmarshal
+   * quirk only for a write marked idempotent (the bulk env write it belongs to).
    */
   idempotent?: boolean;
+  /** Return the answer's body as the text it is, without trying JSON (`/version`, `/health`). */
+  rawText?: boolean;
 }
 
 export interface HttpResult {
@@ -85,6 +87,11 @@ export interface HttpResult {
   body: unknown;
   /** `Location` of a 3xx answer. Redirects are never followed (see httpRequest). */
   location?: string;
+  /**
+   * True when a write was answered 2xx but the body never arrived (the connection dropped after
+   * the status line). `body` is then undefined, which is NOT the same as an empty answer.
+   */
+  bodyLost?: boolean;
 }
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
@@ -140,21 +147,29 @@ function isTimeout(err: unknown): boolean {
   return name === 'TimeoutError' || name === 'AbortError';
 }
 
-function networkError(url: string, method: string, err: unknown, timeoutMs: number, token: string): CoolifyNetworkError {
+/** Failures that happen before a request can leave: nothing reached Coolify. */
+const NOT_SENT = /^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|EHOSTDOWN|UND_ERR_CONNECT_TIMEOUT|ERR_INVALID_URL|ERR_TLS_|CERT_|UNABLE_TO_|DEPTH_ZERO_|SELF_SIGNED_)/;
+const MAYBE_PROCESSED = ' The request may have reached Coolify: check what it did before sending it again.';
+
+function networkError(
+  url: string, method: string, err: unknown, timeoutMs: number, token: string, attempts: number, isRead: boolean,
+): CoolifyNetworkError {
   const origin = originOf(url);
   if (isTimeout(err)) {
     return new CoolifyNetworkError(
-      `Coolify did not answer ${method} ${url} within ${Math.round(timeoutMs / 1000)}s`,
-      { reason: 'timeout' },
+      `Coolify did not answer ${method} ${url} within ${Math.round(timeoutMs / 1000)}s${attempts > 1 ? ` (tried ${attempts} times)` : ''}.${isRead ? '' : MAYBE_PROCESSED}`,
+      { reason: 'timeout', ...(isRead ? {} : { outcomeUnknown: true }) },
     );
   }
   const code = causeCode(err);
+  // A write whose connection broke AFTER it could have been sent is not "nothing happened".
+  const unknown = !isRead && !NOT_SENT.test(code ?? '');
   // The runtime's own message may quote what it was given (an invalid header value is the token).
   const raw = err instanceof Error ? err.message : String(err);
   const detail = (token.length >= 4 ? raw.split(token).join('[REDACTED]') : raw).slice(0, 300);
   return new CoolifyNetworkError(
-    `Cannot reach Coolify at ${origin} (${method}): ${code ? `${code} — ` : ''}${detail}`,
-    { reason: code ?? 'network' },
+    `Cannot reach Coolify at ${origin} (${method}): ${code ? `${code} — ` : ''}${detail}${unknown ? `.${MAYBE_PROCESSED}` : ''}`,
+    { reason: code ?? 'network', ...(unknown ? { outcomeUnknown: true } : {}) },
   );
 }
 
@@ -175,7 +190,8 @@ export async function httpRequest(
   const sleep = opts.sleep ?? defaultSleep;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxRetryDelayMs = opts.maxRetryDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
-  const idempotent = init.idempotent ?? /^(GET|HEAD)$/i.test(init.method);
+  const isRead = /^(GET|HEAD)$/i.test(init.method);
+  const idempotent = init.idempotent ?? isRead;
   const backoff = (attempt: number): number => Math.min(maxRetryDelayMs, backoffBaseMs * 2 ** attempt);
 
   // A token with whitespace or control characters (a pasted newline, a quote left in a .env) cannot
@@ -193,6 +209,7 @@ export async function httpRequest(
     );
   }
 
+  let timeouts = 0;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${init.token}`,
@@ -225,21 +242,26 @@ export async function httpRequest(
       text = await response.text();
     } catch (err) {
       // …except for a write Coolify already answered 2xx: it was carried out, only the
-      // acknowledgement is lost. Reporting a network error would get the mutation repeated.
-      if (response !== undefined && !idempotent && response.status >= 200 && response.status < 300) {
+      // acknowledgement is lost. Reporting a network error would get the mutation repeated. (A
+      // write that may be replayed is replayed first; a read without its body is no answer.)
+      const answered2xx = response !== undefined && response.status >= 200 && response.status < 300;
+      if (answered2xx && !isRead && (!idempotent || attempt >= maxRetries)) {
         breaker.recordSuccess();
-        return { status: response.status, body: undefined };
+        return { status: response!.status, body: undefined, bodyLost: true }; // reason: answered2xx implies response is defined
       }
       breaker.recordFailure();
-      if (idempotent && attempt < maxRetries) {
+      // A server that accepts the connection and never answers is retried ONCE: four silent
+      // 30 s attempts outlast the two-minute timeout of the agent that is waiting for this.
+      if (isTimeout(err)) timeouts += 1;
+      if (idempotent && attempt < maxRetries && timeouts < 2) {
         await sleep(backoff(attempt));
         continue;
       }
-      throw networkError(url, init.method, err, timeoutMs, init.token);
+      throw networkError(url, init.method, err, timeoutMs, init.token, attempt + 1, isRead);
     }
 
     const status = response.status;
-    const body = parseBody(text);
+    const body = init.rawText ? text : parseBody(text);
 
     if (status >= 300 && status < 400) {
       breaker.recordSuccess();
@@ -252,19 +274,19 @@ export async function httpRequest(
       return { status, body };
     }
 
-    const unmarshal = bodyHasUnmarshalQuirk(body);
+    // The unmarshal quirk belongs to the (idempotent) bulk env write: a read, or a write that must
+    // not be replayed, that happens to carry that text is an ordinary answer.
+    const unmarshal = idempotent && !isRead && bodyHasUnmarshalQuirk(body);
     const rateLimited = status === 429;
 
     // A definitive 4xx answer (other than 429 / the unmarshal quirk) is not a transport failure
     // and is never retried: return it for typed-error mapping.
-    if (status >= 400 && status < 500 && !rateLimited && !(unmarshal && idempotent)) {
+    if (status >= 400 && status < 500 && !rateLimited && !unmarshal) {
       breaker.recordSuccess();
       return { status, body };
     }
 
     breaker.recordFailure();
-    // The unmarshal quirk belongs to the (idempotent) bulk env write; a non-idempotent request
-    // that happens to carry that text is not replayed.
     const retryable = rateLimited || idempotent;
     if (retryable && attempt < maxRetries) {
       const asked = rateLimited ? retryAfterMs(response.headers.get('retry-after')) : undefined;
@@ -275,7 +297,7 @@ export async function httpRequest(
       continue;
     }
 
-    if (unmarshal && idempotent) {
+    if (unmarshal) {
       throw new CoolifyBulkUnmarshalError('Coolify bulk endpoint returned the unmarshal-array quirk after retries');
     }
     return { status, body };
