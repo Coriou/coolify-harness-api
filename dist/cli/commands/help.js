@@ -61,7 +61,7 @@ Not in the Coolify API (exit 2 with where to do it instead)
 Local (no token, no network)
   catalog gen | catalog check        env catalog from your Zod schemas (zod 3 or 4)
   help | --help | -h     (wins anywhere on the line: nothing else runs)
-  --version | -v         (alone on the line; beside a command it is refused)
+  --version | -v         (alone, or with global flags; beside a command it is refused)
 
 Global flags: --config FILE (default: ./coolify-harness.config.{ts,mts,mjs,js}) · --json
               --token-file FILE  read the API token(s) from a dotenv file (a variable set in the
@@ -72,7 +72,8 @@ Timeouts: a request gets 30 s; a read that times out is tried once more (about a
 Exit codes: 0 ok · 1 Coolify/network/internal error · 2 usage, config or unsupported · 3 catalog stale
             4 drift (--fail-on-drift / --fail-on-changes) · 5 auth/scope · 6 locked env var
             7 deploy failed/cancelled (--wait) · 8 wait timeout
-            130 --wait interrupted (Ctrl-C or SIGTERM; the deployment keeps running)
+            130 deploy interrupted while checking or waiting (Ctrl-C or SIGTERM; the deployment
+                keeps running)
 Docs: https://github.com/Coriou/coolify-harness-api#readme
 `;
 /** Meaning of every exit code, for `help --json`. */
@@ -86,7 +87,7 @@ export const EXIT_CODES = {
     6: 'refused to delete an env var Coolify would re-create',
     7: 'deploy --wait: the deployment failed or was cancelled',
     8: 'deploy --wait: timed out',
-    130: 'deploy --wait: interrupted by SIGINT or SIGTERM (the deployment keeps running)',
+    130: 'deploy: interrupted by SIGINT or SIGTERM while checking or waiting (the deployment keeps running)',
 };
 /** `help` / `--help` / `--version`: local, instant, never touches the config or the network. */
 export function helpCmd(args) {

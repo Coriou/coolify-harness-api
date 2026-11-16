@@ -225,6 +225,16 @@ export async function envList(args, deps) {
     print(`${view.length} variable row(s). Values are never printed${withheld ? '; lengths need read:sensitive' : ''}.`);
     return EXIT.ok;
 }
+/**
+ * A key the caller typed and that matched nothing, for output: echoed when it reads like a
+ * variable name, described otherwise. A long run of lower-case letters and digits (`sk-…`,
+ * `glpat-…`, a token pasted after --key) is a value, not a name.
+ */
+function describeKey(key) {
+    const name = /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(key);
+    const tokenLike = key.length >= 16 && /[a-z]/.test(key) && /\d/.test(key);
+    return name && !tokenLike ? key : `<${key.length}-character key>`;
+}
 /** True when the compose document still references KEY (`${KEY}`, `$KEY`, `KEY=`, `KEY:` or a bare `- KEY`). */
 export function composeReferences(compose, key) {
     const k = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -258,8 +268,7 @@ export async function envDelete(args, deps) {
     const matches = rows.filter((e) => args.keys.includes(e.key) && scopeOf(e) === wantScope);
     // A key that was not found is echoed only when it reads like a name: it is what the caller
     // typed, and a secret pasted after --key must not come back in the output.
-    const missing = args.keys.filter((k) => !matches.some((e) => e.key === k))
-        .map((k) => (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(k) ? k : `<${k.length}-character key>`));
+    const missing = args.keys.filter((k) => !matches.some((e) => e.key === k)).map(describeKey);
     // The compose is only needed to decide whether a MATCHED row would be re-created.
     let compose;
     let composeExpected = false;
