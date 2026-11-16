@@ -58,11 +58,12 @@ export class CoolifyClient {
         // Upsert-by-key is idempotent, so it may be retried; the values must never be echoed in an error.
         const res = await this.api.request(`${this.base()}/envs/bulk`, 'PATCH', body, {
             idempotent: true,
-            secrets: body.data.map((i) => i.value),
+            // Coolify trims a value before it validates it: an error may quote the trimmed form.
+            secrets: body.data.flatMap((i) => [i.value, i.value.trim()]),
         });
         // Services and databases answer a CREATED row without its flag columns, which is not an env
         // row by our schema: the write landed all the same, and callers confirm by re-reading.
-        return ackAfterWrite(this.deps, 'upsertEnvs', res.body, () => s.parseOrContractError(s.BulkResponseSchema, res.body, 'upsertEnvs'), () => []);
+        return ackAfterWrite(this.deps, 'upsertEnvs', res, () => s.parseOrContractError(s.BulkResponseSchema, res.body, 'upsertEnvs'), () => []);
     }
     /**
      * Delete one env row by its uuid (from `listEnvs()`). Applications, services and databases.
@@ -70,7 +71,7 @@ export class CoolifyClient {
      */
     async deleteEnv(envUuid) {
         const res = await this.api.request(`${this.base()}/envs/${encodeURIComponent(envUuid)}`, 'DELETE');
-        return ackAfterWrite(this.deps, 'deleteEnv', res.body, async () => {
+        return ackAfterWrite(this.deps, 'deleteEnv', res, async () => {
             const s = await loadSchemas();
             return s.parseOrContractError(s.MessageAckSchema, res.body, 'deleteEnv');
         }, () => ({ message: rawMessage(res.body) }));
@@ -96,7 +97,7 @@ export class CoolifyClient {
     ackFor(res, ctx) {
         // Coolify accepted the request: an acknowledgement we cannot read must not look like a failed
         // deploy (the agent would queue another one).
-        return ackAfterWrite(this.deps, ctx, res.body, async () => {
+        return ackAfterWrite(this.deps, ctx, res, async () => {
             const s = await loadSchemas();
             if (this.target.kind === 'application') {
                 const parsed = s.parseOrContractError(s.DeployAckApplicationSchema, res.body, ctx);
@@ -149,7 +150,7 @@ export class CoolifyClient {
             idempotent: true,
             secrets: [...documentSecrets(composeRaw), toBase64(composeRaw)],
         });
-        return ackAfterWrite(this.deps, 'updateServiceCompose', res.body, async () => {
+        return ackAfterWrite(this.deps, 'updateServiceCompose', res, async () => {
             const s = await loadSchemas();
             return s.parseOrContractError(s.ServiceUpdateResponseSchema, res.body, 'updateServiceCompose');
         }, () => ({}));
@@ -221,12 +222,14 @@ export class CoolifyClient {
      * Convenience: the most recent deployment of this target — the first row of Coolify's
      * newest-first list (one request, one row). Its `logs` are present when the token has
      * read:sensitive. `take` widens the window; the newest by created_at (then updated_at) wins.
+     *
+     * The list also holds pull-request PREVIEW deployments (`pull_request_id` ≠ 0). A preview build
+     * is not the state of the application: when the newest row is one, the newest production row is
+     * returned instead (one more request, ten rows, unless `take` was given). Only an application
+     * that has nothing but preview deployments gets a preview row back.
      */
     async getLatestDeployment(opts = {}) {
-        const list = await this.listDeployments({ take: opts.take ?? DEFAULT_LATEST_TAKE });
-        if (list.length <= 1)
-            return list[0];
-        const sorted = [...list].sort((a, b) => {
+        const newestFirst = (list) => (list.length <= 1 ? list : [...list].sort((a, b) => {
             const ac = a.created_at || a.updated_at || '';
             const bc = b.created_at || b.updated_at || '';
             if (ac !== bc)
@@ -236,8 +239,13 @@ export class CoolifyClient {
             if (au !== bu)
                 return bu.localeCompare(au);
             return (b.deployment_uuid || '').localeCompare(a.deployment_uuid || '');
-        });
-        return sorted[0];
+        }));
+        const production = (list) => list.find((d) => (d.pull_request_id ?? 0) === 0);
+        let list = newestFirst(await this.listDeployments({ take: opts.take ?? DEFAULT_LATEST_TAKE }));
+        if (list.length > 0 && !production(list) && opts.take === undefined) {
+            list = newestFirst(await this.listDeployments({ take: 10 }));
+        }
+        return production(list) ?? list[0];
     }
     /**
      * Convenience: return the logs from the latest deployment (build/deploy logs).

@@ -101,6 +101,11 @@ export declare class CoolifyClient {
      * Convenience: the most recent deployment of this target — the first row of Coolify's
      * newest-first list (one request, one row). Its `logs` are present when the token has
      * read:sensitive. `take` widens the window; the newest by created_at (then updated_at) wins.
+     *
+     * The list also holds pull-request PREVIEW deployments (`pull_request_id` ≠ 0). A preview build
+     * is not the state of the application: when the newest row is one, the newest production row is
+     * returned instead (one more request, ten rows, unless `take` was given). Only an application
+     * that has nothing but preview deployments gets a preview row back.
      */
     getLatestDeployment(opts?: {
         take?: number;

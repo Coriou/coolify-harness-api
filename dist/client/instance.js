@@ -30,7 +30,8 @@ export class CoolifyInstanceClient {
     // ── instance ─────────────────────────────────────────────────────────────
     /** Coolify version string, e.g. `4.7.5` (`GET /version`, scope `read`; served as text). */
     async getVersion() {
-        const version = asText((await this.api.request('/version', 'GET')).body);
+        // Served as text: read as JSON, `4.10` would become the number 4.1.
+        const version = asText((await this.api.request('/version', 'GET', undefined, { rawText: true })).body).replace(/^"(.*)"$/, '$1');
         // A login page or a proxy's HTML answers 200 too: that is not a Coolify instance answering.
         if (!/^v?\d+\.\d+(\.\d+)?[0-9A-Za-z.+-]*$/.test(version)) {
             throw new CoolifyContractError(`${this.api.instanceUrl}/api/v1/version did not answer with a Coolify version (got ${version.length} characters of something else). Is the instance url right, and the API enabled?`, { zodIssues: 'version: expected a version string' });
@@ -39,7 +40,7 @@ export class CoolifyInstanceClient {
     }
     /** `OK` when the instance is healthy (`GET /health`, no auth needed). */
     async getHealth() {
-        return asText((await this.api.request('/health', 'GET')).body);
+        return asText((await this.api.request('/health', 'GET', undefined, { rawText: true })).body);
     }
     /** All applications visible to the token's team. Payload holds secrets — redact before printing. */
     async listApplications() {
@@ -68,7 +69,7 @@ export class CoolifyInstanceClient {
     /** `POST /deployments/{uuid}/cancel` (scope `deploy`). 400 if the deployment already ended. */
     async cancelDeployment(deploymentUuid) {
         const res = await this.api.request(`/deployments/${seg(deploymentUuid)}/cancel`, 'POST');
-        return ackAfterWrite(this.api.deps, 'cancelDeployment', res.body, async () => {
+        return ackAfterWrite(this.api.deps, 'cancelDeployment', res, async () => {
             const s = await loadSchemas();
             return s.parseOrContractError(s.DeploymentCancelSchema, res.body, 'cancelDeployment');
         }, () => ({ message: rawMessage(res.body) }));
@@ -111,7 +112,7 @@ export class CoolifyInstanceClient {
         const s = await loadSchemas();
         const body = s.parseInput(s.ServerProxyUpdateSchema, patch, 'proxy update');
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy`, 'PATCH', body);
-        return ackAfterWrite(this.api.deps, 'updateServerProxy', res.body, () => s.parseOrContractError(s.ServerProxySchema, res.body, 'updateServerProxy'), () => ({}));
+        return ackAfterWrite(this.api.deps, 'updateServerProxy', res, () => s.parseOrContractError(s.ServerProxySchema, res.body, 'updateServerProxy'), () => ({}));
     }
     /**
      * Replace the proxy docker-compose (`PUT /servers/{uuid}/proxy/configuration`, scopes
@@ -125,7 +126,7 @@ export class CoolifyInstanceClient {
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy/configuration`, 'PUT', {
             configuration: toBase64(composeYaml),
         }, { secrets: [...documentSecrets(composeYaml), toBase64(composeYaml)] });
-        return ackAfterWrite(this.api.deps, 'saveServerProxyConfiguration', res.body, async () => {
+        return ackAfterWrite(this.api.deps, 'saveServerProxyConfiguration', res, async () => {
             const s = await loadSchemas();
             return s.parseOrContractError(s.ServerProxySchema, res.body, 'saveServerProxyConfiguration');
         }, () => ({}));
@@ -133,7 +134,7 @@ export class CoolifyInstanceClient {
     /** Queue a proxy restart (scope `deploy`). Coolify pulls the image from the stored compose first. */
     async restartServerProxy(serverUuid) {
         const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy/restart`, 'POST');
-        return ackAfterWrite(this.api.deps, 'restartServerProxy', res.body, async () => {
+        return ackAfterWrite(this.api.deps, 'restartServerProxy', res, async () => {
             const s = await loadSchemas();
             return s.parseOrContractError(s.MessageAckSchema, res.body, 'restartServerProxy');
         }, () => ({ message: rawMessage(res.body) }));
@@ -158,7 +159,8 @@ export class CoolifyInstanceClient {
     async updateDatabase(databaseUuid, patch) {
         const s = await loadSchemas();
         const body = s.parseInput(s.DatabaseUpdateSchema, patch, 'database update');
-        await this.api.request(`/databases/${seg(databaseUuid)}`, 'PATCH', body);
+        const res = await this.api.request(`/databases/${seg(databaseUuid)}`, 'PATCH', body);
+        await ackAfterWrite(this.api.deps, 'updateDatabase', res, () => { s.parseOrContractError(s.MessageAckSchema, res.body, 'updateDatabase'); }, () => undefined);
     }
     /** Scheduled backup configurations, each with its executions. */
     async listDatabaseBackups(databaseUuid) {
@@ -174,6 +176,10 @@ export class CoolifyInstanceClient {
     }
     /** Run an existing backup configuration now (`PATCH …/backups/{id}` with `backup_now`; scopes `write` + `deploy`). */
     async runDatabaseBackup(databaseUuid, backupUuid) {
-        await this.api.request(`/databases/${seg(databaseUuid)}/backups/${seg(backupUuid)}`, 'PATCH', { backup_now: true });
+        const res = await this.api.request(`/databases/${seg(databaseUuid)}/backups/${seg(backupUuid)}`, 'PATCH', { backup_now: true });
+        await ackAfterWrite(this.api.deps, 'runDatabaseBackup', res, async () => {
+            const s = await loadSchemas();
+            s.parseOrContractError(s.MessageAckSchema, res.body, 'runDatabaseBackup');
+        }, () => undefined);
     }
 }

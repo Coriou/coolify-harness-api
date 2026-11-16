@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from './args.js';
 import { errorCode, errorToExitCode } from './exit.js';
 import { sanitizeErrorMessage } from './errors-out.js';
+import { beginRun, takeAuditFailures } from './output-state.js';
 export { EXIT, errorToExitCode } from './exit.js';
 /**
  * Report a failure. Human mode: one line on stderr. `--json`: one JSON document on stderr
@@ -16,17 +17,22 @@ function reportError(err, json, prefix = '') {
     if (json) {
         const extra = {};
         if (err && typeof err === 'object') {
-            for (const k of ['requiredScope', 'serverMessage', 'status', 'fields', 'reason', 'key', 'keys', 'staleFiles', 'deploymentUuid', 'lastStatus', 'issues']) {
+            for (const k of ['requiredScope', 'serverMessage', 'status', 'fields', 'reason', 'key', 'keys', 'staleFiles', 'deploymentUuid', 'lastStatus', 'issues', 'stored', 'outcomeUnknown']) {
                 const v = err[k]; // reason: copying the documented, non-secret fields of the typed errors
                 if (v !== undefined)
                     extra[k] = v;
             }
         }
+        // An audit record that could not be written, when no document on stdout reported it.
+        const auditFailures = takeAuditFailures();
+        if (auditFailures.length > 0)
+            extra['auditError'] = auditFailures.join('; ');
         process.stderr.write(`${JSON.stringify({ error: { code: errorCode(err), message, exitCode, ...extra } })}\n`);
     }
     else {
         process.stderr.write(`${prefix}${message}\n`);
-        if (process.env['COOLIFY_HARNESS_DEBUG'] && err instanceof Error && err.stack) {
+        // Text mode only (with --json the error document is the whole of stderr). `0` / `false` are off.
+        if (!/^(|0|false|no|off)$/i.test(process.env['COOLIFY_HARNESS_DEBUG'] ?? '') && err instanceof Error && err.stack) {
             // Frames only: the first line of a stack repeats the raw, unsanitised message.
             process.stderr.write(`${err.stack.split('\n').filter((l) => /^\s+at /.test(l)).join('\n')}\n`);
         }
@@ -36,6 +42,7 @@ function reportError(err, json, prefix = '') {
 export async function main(argv) {
     // Decided from the raw argv so a parse error can honour it too.
     const json = argv.includes('--json');
+    beginRun(json);
     let args;
     try {
         args = parseArgs(argv);
@@ -88,17 +95,30 @@ export function ignoreClosedPipe(stream) {
         stream.write = () => true;
     });
 }
-// Bin entrypoint: run main and set the process exit code.
-if (isMainModule(import.meta.url, process.argv[1])) {
+/**
+ * Run the CLI as a process: what the `coolify-harness` bin does, for a wrapper script of your own
+ * (`await run()`). On top of `main()` it survives a closed pipe (`… | head`), sets the exit code,
+ * and exits as soon as the output is flushed — a request abandoned at a wait timeout, or a
+ * keep-alive socket, must not keep the process (and the agent that started it) waiting.
+ */
+export async function run(argv = process.argv.slice(2)) {
     ignoreClosedPipe(process.stdout);
     ignoreClosedPipe(process.stderr);
-    // Exit as soon as the command is done and its output flushed: a request abandoned at a wait
-    // timeout, or a keep-alive socket, must not keep the process (and the agent) waiting.
-    const finish = (code) => {
-        process.exitCode = code;
-        process.stdout.write('', () => { process.stderr.write('', () => { process.exit(code); }); });
-    };
-    main(process.argv.slice(2))
-        .then(finish)
-        .catch((err) => { finish(reportError(err, process.argv.includes('--json'))); });
+    let code;
+    try {
+        code = await main(argv);
+    }
+    catch (err) {
+        code = reportError(err, argv.includes('--json'));
+    }
+    process.exitCode = code;
+    // Bun calls a write "done" before it is flushed: a forced exit there cuts piped output short
+    // (131 kB of a 6 MB document). Under Bun the process ends by itself once everything is written.
+    if ('bun' in process.versions)
+        return;
+    await new Promise((resolve) => { process.stdout.write('', () => { process.stderr.write('', () => { resolve(); }); }); });
+    process.exit(code);
 }
+// Bin entrypoint.
+if (isMainModule(import.meta.url, process.argv[1]))
+    void run();

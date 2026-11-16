@@ -9,14 +9,28 @@ let cached;
  * for it; the others pay while they wait for the network (see preloadSchemasOnceRequestIsSent).
  */
 export function loadSchemas() {
-    cached ??= import('./schemas.js');
+    if (!cached) {
+        cached = import('./schemas.js');
+        stopListening();
+    }
     return cached;
 }
 /** Node's built-in fetch (undici) publishes here right before it writes a request to the socket. */
 const SEND_HEADERS = 'undici:client:sendHeaders';
-let subscribed = false;
+let listener;
 let issued = 0;
 let sent = 0;
+/** Without undici's channel the event never comes: do not stay subscribed past the first load. */
+function stopListening() {
+    if (!listener)
+        return;
+    const l = listener;
+    listener = undefined;
+    try {
+        unsubscribe(SEND_HEADERS, l);
+    }
+    catch { /* diagnostics_channel unavailable */ }
+}
 /**
  * Call once per request, right before it is issued: the validators start loading at the moment
  * every request issued so far has been written to its socket.
@@ -35,20 +49,20 @@ export function preloadSchemasOnceRequestIsSent() {
     if (cached)
         return;
     issued += 1;
-    if (subscribed)
+    if (listener)
         return;
-    subscribed = true;
     const onSent = () => {
         sent += 1;
         if (sent < issued)
             return;
-        unsubscribe(SEND_HEADERS, onSent);
+        stopListening();
         setImmediate(() => { loadSchemas().catch(() => { }); });
     };
+    listener = onSent;
     try {
         subscribe(SEND_HEADERS, onSent);
     }
     catch {
-        // diagnostics_channel unavailable: load lazily on first use
+        listener = undefined; // diagnostics_channel unavailable: load lazily on first use
     }
 }

@@ -4,6 +4,7 @@ const DEFAULT_INTERVAL_MS = 2000;
 const DEFAULT_MAX_INTERVAL_MS = 5000;
 const INTERVAL_GROWTH = 1.25;
 const MAX_TIMER_MS = 2 ** 31 - 1;
+const DEFAULT_POLL_GRACE_MS = 10_000;
 function isFatal(err, seen) {
     if (err instanceof CoolifyAuthError || err instanceof CoolifyAuthScopeError)
         return true;
@@ -18,20 +19,28 @@ function isFatal(err, seen) {
 }
 /** Refused locally because the circuit breaker is open: no request was made. */
 const isCircuitOpen = (err) => err instanceof CoolifyNetworkError && err.reason === 'circuit-open';
-/** `promise`, or a rejection with `timeoutError()` once `ms` have passed. The timer never holds the process. */
-function withDeadline(promise, ms, timeoutError) {
-    // setTimeout fires at once above 2^31-1 ms: a deadline that far away (or Infinity) needs no timer.
-    if (!(ms <= MAX_TIMER_MS))
-        return promise;
-    return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { reject(timeoutError()); }, Math.max(0, ms));
-        timer.unref?.();
-        promise.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); });
-    });
-}
 function abortError(signal) {
     const reason = signal.reason;
     return reason instanceof Error ? reason : new Error('waitForDeployment aborted');
+}
+/**
+ * `promise`, or a rejection with `timeoutError()` once `ms` have passed, or with the abort reason
+ * as soon as the signal aborts (a poll in flight must not hold Ctrl-C back). The abandoned promise
+ * stays handled; the timer never holds the process.
+ */
+function withDeadline(promise, ms, timeoutError, signal) {
+    return new Promise((resolve, reject) => {
+        // setTimeout fires at once above 2^31-1 ms: a deadline that far away (or Infinity) needs no timer.
+        const timer = ms <= MAX_TIMER_MS ? setTimeout(() => { done(); reject(timeoutError()); }, Math.max(0, ms)) : undefined;
+        timer?.unref?.();
+        const onAbort = () => { done(); reject(abortError(signal)); }; // reason: only registered when signal is defined
+        const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); };
+        if (signal?.aborted)
+            onAbort();
+        else
+            signal?.addEventListener('abort', onAbort, { once: true });
+        promise.then((v) => { done(); resolve(v); }, (e) => { done(); reject(e instanceof Error ? e : new Error(String(e))); });
+    });
 }
 /** The default sleep: its timer is cleared on abort, so an interrupted wait does not keep the process alive. */
 function timerSleep(ms, signal) {
@@ -60,8 +69,10 @@ function sleepOrAbort(sleep, ms, signal) {
  * - Does not know about the client; you pass a getter (enables easy injection in tests).
  * - Sleep and clock are injectable.
  * - Resolves with the terminal deployment whatever its outcome; callers decide what `failed` means.
- * - Never sleeps past the deadline: the last poll happens at the timeout, not one interval later,
- *   and a poll that is still in flight at the deadline is abandoned.
+ * - Never sleeps past the deadline: the last poll happens at the timeout, not one interval later.
+ *   A poll gets at least `pollGraceMs` (10 s) to answer, so the wait ends at most that long after
+ *   the timeout.
+ * - An abort ends the wait at once, also while a poll is in flight.
  */
 export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}) {
     const fixed = opts.intervalMs !== undefined && opts.maxIntervalMs === undefined;
@@ -72,6 +83,13 @@ export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}
     const now = opts.now ?? (() => Date.now());
     const maxErrors = opts.maxConsecutiveErrors ?? 5;
     const signal = opts.signal;
+    const pollGraceMs = Math.max(0, opts.pollGraceMs ?? DEFAULT_POLL_GRACE_MS) || 0;
+    // NaN compares false with everything: the loop would never time out, or spin without sleeping.
+    if (Number.isNaN(timeoutMs) || timeoutMs < 0)
+        throw new RangeError('waitForDeployment: timeoutMs must be a number >= 0 (Infinity waits for ever)');
+    if (!Number.isFinite(firstInterval) || firstInterval < 0 || !Number.isFinite(maxInterval)) {
+        throw new RangeError('waitForDeployment: intervalMs and maxIntervalMs must be finite numbers >= 0');
+    }
     const start = now();
     let interval = firstInterval;
     let lastStatus;
@@ -79,25 +97,30 @@ export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}
     while (true) {
         if (signal?.aborted)
             throw abortError(signal);
+        let seen;
         try {
-            const left = timeoutMs - (now() - start);
-            const d = await withDeadline(getDeployment(deploymentUuid), left, () => new CoolifyWaitTimeoutError(deploymentUuid, timeoutMs, lastStatus));
+            const left = Math.max(pollGraceMs, timeoutMs - (now() - start));
+            seen = await withDeadline(getDeployment(deploymentUuid), left, () => new CoolifyWaitTimeoutError(deploymentUuid, timeoutMs, lastStatus), signal);
             consecutiveErrors = 0;
-            if (d.status !== lastStatus) {
-                lastStatus = d.status;
-                opts.onStatus?.(d.status, d);
-            }
-            if (isTerminalDeploymentStatus(d.status)) {
-                return d;
-            }
         }
         catch (err) {
             if (err instanceof CoolifyWaitTimeoutError)
                 throw err;
+            if (signal?.aborted)
+                throw abortError(signal);
             if (!isCircuitOpen(err))
                 consecutiveErrors += 1;
             if (isFatal(err, lastStatus !== undefined) || consecutiveErrors > maxErrors)
                 throw err;
+        }
+        // Outside the try: an error thrown by the caller's onStatus is the caller's, not a failed poll.
+        if (seen) {
+            if (seen.status !== lastStatus) {
+                lastStatus = seen.status;
+                opts.onStatus?.(seen.status, seen);
+            }
+            if (isTerminalDeploymentStatus(seen.status))
+                return seen;
         }
         if (signal?.aborted)
             throw abortError(signal);

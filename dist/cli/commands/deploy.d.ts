@@ -6,6 +6,11 @@ export interface DeployOutcome {
     doc: Record<string, unknown>;
 }
 /**
+ * Deploy switches that do not fit the target, as a message — or undefined when they do. Checked
+ * before anything is sent (and by `flag set --redeploy` before it writes the env).
+ */
+export declare function deployFlagProblem(args: Pick<ParsedArgs, 'force' | 'latest' | 'restart' | 'app'>, kind: string): string | undefined;
+/**
  * `deploy`: explicit redeploy (applications) / start (services, databases), or `--restart`.
  * `--force` rebuilds an application without the Docker cache (needed to pick up a patched base
  * image — a plain redeploy of an unchanged commit reuses the old image). `--restart --latest`

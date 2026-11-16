@@ -1,6 +1,7 @@
 import { CoolifyInstanceClient } from '../../client/instance.js';
 import { loadConfigModule, resolveInstance } from '../../config/load.js';
 import { configPathFor } from '../config-path.js';
+import { describePath } from '../dotenv.js';
 import { ConfigError, CoolifyAuthError, CoolifyHarnessError, MissingTokenError, UsageError } from '../../errors/index.js';
 import { noopLogger } from '../../logging/index.js';
 import { HARNESS_VERSION, TESTED_COOLIFY, compatibilityWarning, coolifyCompatibility } from '../../version.js';
@@ -33,11 +34,12 @@ export async function configDoctor(args, deps = {}) {
     const path = configPathFor(args);
     const mod = await loadConfigModule(path);
     const { instances, targets } = mod.registry;
-    const dangling = Object.entries(targets).filter(([, t]) => !instances[t.instance]).map(([n, t]) => `${n} → ${t.instance}`);
+    const has = (map, key) => Object.hasOwn(map, key); // `constructor` is not a target
+    const dangling = Object.entries(targets).filter(([, t]) => !has(instances, t.instance)).map(([n, t]) => `${n} → ${t.instance}`);
     if (dangling.length > 0) {
         throw new ConfigError(`Target(s) reference an unknown instance: ${dangling.join(', ')}. Known instances: ${Object.keys(instances).join(', ')}`);
     }
-    if (args.app && !targets[args.app]) {
+    if (args.app && !has(targets, args.app)) {
         throw new ConfigError(`Unknown target '${args.app}'. Known targets: ${Object.keys(targets).join(', ')}`);
     }
     const appInstance = args.app ? targets[args.app]?.instance : undefined;
@@ -45,7 +47,7 @@ export async function configDoctor(args, deps = {}) {
         throw new UsageError(`--app ${args.app ?? ''} is on instance '${appInstance}', not '${args.instance}': pass one of --app / --instance, or matching ones`);
     }
     const focus = args.instance ?? appInstance;
-    if (focus !== undefined && !instances[focus]) {
+    if (focus !== undefined && !has(instances, focus)) {
         throw new ConfigError(`Unknown instance '${focus}'. Known instances: ${Object.keys(instances).join(', ')}`);
     }
     const names = focus !== undefined ? [focus] : Object.keys(instances);
@@ -78,7 +80,7 @@ export async function configDoctor(args, deps = {}) {
         return report;
     }));
     const missingFiles = deps.missingTokenFiles ?? [];
-    const fileHint = missingFiles.length > 0 ? ` (and --token-file ${missingFiles.join(', ')} does not exist)` : '';
+    const fileHint = missingFiles.length > 0 ? ` (and --token-file ${missingFiles.map(describePath).join(', ')} does not exist)` : '';
     const missing = reports.filter((r) => !r.envVarSet);
     if (missing.length > 0 && (focus !== undefined || (missing.length === reports.length && !args.offline))) {
         const m = missing[0];
@@ -95,7 +97,8 @@ export async function configDoctor(args, deps = {}) {
             testedCoolify: TESTED_COOLIFY,
             config: path,
             offline: args.offline === true,
-            ...(missingFiles.length > 0 ? { missingTokenFiles: missingFiles } : {}),
+            // Not `…TokenFiles`: a key with "token" in its name is redacted on print.
+            ...(missingFiles.length > 0 ? { filesNotFound: missingFiles.map(describePath) } : {}),
             instances: reports,
             targets: Object.entries(targets).map(([name, t]) => ({ name, instance: t.instance, kind: t.kind, uuid: t.uuid })),
             ...(args.app ? { target: args.app } : {}),

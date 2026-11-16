@@ -61,7 +61,8 @@ export async function statusCmd(args, deps) {
     }
     if (target.kind === 'application') {
         if (latest) {
-            print(`  latest deploy: ${latest.deployment_uuid} [${latest.status}]`);
+            const preview = (latest.pull_request_id ?? 0) !== 0 ? ` (preview of pull request #${latest.pull_request_id}; no production deployment found)` : '';
+            print(`  latest deploy: ${latest.deployment_uuid} [${latest.status}]${preview}`);
             if (latest.commit)
                 print(`    commit: ${latest.commit}`);
             if (latest.updated_at)

@@ -21,6 +21,11 @@ export declare function imageChanges(before: ServiceImage[], after: ServiceImage
  */
 export declare function composeGet(args: ParsedArgs, deps: CmdDeps): Promise<number>;
 /**
+ * A replacement document must at least define services. An empty file (a wrong path, a dotenv
+ * file) would otherwise be sent as the new compose — for the proxy, of every site on the server.
+ */
+export declare function requireServices(document: string, flag: string): void;
+/**
  * `compose set` (services): replace the stored docker-compose from `--from-file`, or bump images
  * with `--image <service>=<ref>`. Dry-run (redacted diff) unless --apply. Coolify validates and
  * re-parses the compose but does NOT restart; `--restart` restarts with latest=true so new tags

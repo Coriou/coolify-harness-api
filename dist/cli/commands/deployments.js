@@ -14,10 +14,12 @@ function deploymentReader(args, deps) {
 }
 /**
  * A deployment without its build log, for `--no-logs`: the log is hundreds of kB per deployment
- * and a list of ten drowns an agent's context. `logs_length` says how much was left out.
+ * and a list of ten drowns an agent's context. `logs_length` says how much was left out. The
+ * application record Coolify embeds in each row (its whole configuration, ~14 kB) goes too: it is
+ * what `status` prints.
  */
 export function withoutLogs(d) {
-    const { logs, ...rest } = d;
+    const { logs, application: _application, ...rest } = d; // reason: `application` is a passthrough field, not in the static type
     return { ...rest, logs_length: typeof logs === 'string' ? logs.length : null };
 }
 function printDeploymentLine(d) {

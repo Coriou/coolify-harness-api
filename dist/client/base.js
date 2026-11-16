@@ -12,6 +12,7 @@ export function withQuery(path, query = {}) {
     return qs ? `${path}?${qs}` : path;
 }
 const MAX_SERVER_MESSAGE = 400;
+const MAX_SCANNED_MESSAGE = 8000;
 /**
  * The strings of a document (compose, proxy configuration) that a server error must not quote
  * back: the document itself, each of its lines, and each assigned value. A parse error typically
@@ -23,8 +24,20 @@ export function documentSecrets(document) {
         const line = raw.trim();
         if (line.length >= 4)
             out.add(line);
-        const value = /^(?:-\s*)?['"]?[^=:'"]+['"]?\s*[=:]\s*(.+)$/.exec(line)?.[1]?.trim().replace(/^(['"])(.*)\1$/, '$2');
-        if (value !== undefined && value.length >= 4 && !/^(true|false|yes|no|on|off|null|\d+)$/i.test(value))
+        // The value after the first `=` or `:` (found by scanning: a pattern with `[^=:]+…\s*[=:]`
+        // backtracks over a long run of blanks).
+        let sep = -1;
+        for (let i = 1; i < line.length; i += 1) {
+            const c = line.charAt(i);
+            if (c === '=' || c === ':') {
+                sep = i;
+                break;
+            }
+        }
+        if (sep < 0)
+            continue;
+        const value = line.slice(sep + 1).trim().replace(/^(['"])(.*)\1$/, '$2');
+        if (value.length >= 4 && !/^(true|false|yes|no|on|off|null|\d+)$/i.test(value))
             out.add(value);
     }
     return [...out];
@@ -34,7 +47,8 @@ export function documentSecrets(document) {
  * sent, strip credentials inside URLs, collapse whitespace and bound the length.
  */
 export function sanitizeServerMessage(message, secrets = []) {
-    let out = message;
+    // Bounded before it is scanned: the answer is the server's, and may be megabytes of anything.
+    let out = message.length > MAX_SCANNED_MESSAGE ? message.slice(0, MAX_SCANNED_MESSAGE) : message;
     // Longest first so a secret that contains another is removed whole.
     for (const secret of [...secrets].filter((s) => s.length >= 4).sort((a, b) => b.length - a.length)) {
         out = out.split(secret).join(REDACTED);
@@ -46,7 +60,10 @@ function serverMessage(body, secrets) {
     if (!body || typeof body !== 'object')
         return { fields: [] };
     const b = body; // reason: narrowed by the object guard above; fields read defensively
-    const fields = b.errors && typeof b.errors === 'object' ? Object.keys(b.errors) : [];
+    // Field NAMES come from the server too: scrubbed like its message, and bounded.
+    const fields = b.errors && typeof b.errors === 'object'
+        ? Object.keys(b.errors).slice(0, 20).map((f) => sanitizeServerMessage(f.slice(0, 120), secrets))
+        : [];
     return typeof b.message === 'string' ? { message: sanitizeServerMessage(b.message, secrets), fields } : { fields };
 }
 /**
@@ -78,6 +95,7 @@ export class CoolifyApi {
             token: this.token,
             ...(jsonBody !== undefined ? { jsonBody } : {}),
             ...(opts.idempotent !== undefined ? { idempotent: opts.idempotent } : {}),
+            ...(opts.rawText ? { rawText: true } : {}),
         }, {
             fetchImpl: d.fetchImpl,
             logger: d.logger,
@@ -88,10 +106,18 @@ export class CoolifyApi {
             ...(d.timeoutMs !== undefined ? { timeoutMs: d.timeoutMs } : {}),
             ...(d.maxRetryDelayMs !== undefined ? { maxRetryDelayMs: d.maxRetryDelayMs } : {}),
         });
-        this.assertOk(res, `${method} ${fullUrl}`, opts.secrets ?? []);
+        // The token itself must never come back in an error message (an echoing proxy, a debug page).
+        const secrets = [...(opts.secrets ?? []), this.token, this.token.slice(this.token.indexOf('|') + 1)];
+        this.assertOk(res, `${method} ${fullUrl}`, secrets, !/^(GET|HEAD)$/i.test(method));
         return res;
     }
-    assertOk(res, ctx, secrets) {
+    assertOk(res, ctx, secrets, isWrite) {
+        if (res.status >= 200 && res.status < 300)
+            return;
+        if (res.status < 200) {
+            // 1xx, or the status 0 of an opaque answer from an injected fetch: not an answer to rely on.
+            throw new CoolifyRequestError(`Coolify request ${ctx} got an unusable answer (status ${res.status})`, { status: res.status });
+        }
         if (res.status >= 300 && res.status < 400) {
             let to = '';
             try {
@@ -100,8 +126,6 @@ export class CoolifyApi {
             catch { /* unparseable Location */ }
             throw new CoolifyRequestError(`Coolify answered ${ctx} with a redirect (${res.status})${to}. Redirects are not followed: set the instance url in the config to the final address (https, no trailing path).`, { status: res.status });
         }
-        if (res.status < 400)
-            return;
         const { message, fields } = serverMessage(res.body, secrets);
         if (res.status === 401 || res.status === 403) {
             // Coolify says WHY: `Unauthenticated.`, `Missing required permissions: delete`, or that the
@@ -112,7 +136,9 @@ export class CoolifyApi {
             throw new CoolifyNotFoundError(`Coolify resource not found (404) on ${ctx}${message ? ` — ${message}` : ''}`);
         }
         const detail = [message, fields.length ? `fields: ${fields.join(', ')}` : ''].filter(Boolean).join('; ');
-        throw new CoolifyRequestError(`Coolify request ${ctx} failed with status ${res.status}${detail ? ` — ${detail}` : ''}`, { status: res.status, fields });
+        // A 5xx to a write settles nothing: Coolify may have done part or all of it before failing.
+        const unsettled = isWrite && res.status >= 500 ? ' (a 5xx does not say whether the request took effect: check before sending it again)' : '';
+        throw new CoolifyRequestError(`Coolify request ${ctx} failed with status ${res.status}${detail ? ` — ${detail}` : ''}${unsettled}`, { status: res.status, fields });
     }
 }
 /** `message` of a JSON acknowledgement, read without a schema. */
@@ -121,24 +147,30 @@ export function rawMessage(body) {
     return typeof m === 'string' ? m : '';
 }
 /**
- * Parse the acknowledgement of a mutation Coolify has ALREADY accepted (2xx). If the body is JSON
- * (or empty) but does not match the schema — or the validators cannot be loaded — the write still
- * happened: reporting it as a failure would make an agent repeat it (a second deployment, a second
- * delete). So an acknowledgement in an unexpected JSON shape is logged and replaced by a
- * best-effort one.
+ * Parse the acknowledgement of a mutation Coolify has ALREADY accepted (2xx). If the body is a
+ * JSON object or array that does not match the schema — or the validators cannot be loaded, or the
+ * body was lost on the way back — the write still happened: reporting it as a failure would make
+ * an agent repeat it (a second deployment, a second delete). So such an acknowledgement is logged
+ * and replaced by a best-effort one.
  *
- * A 2xx that is not JSON at all (an HTML login or maintenance page from a proxy, a wrong URL) is
- * NOT an acknowledgement: nothing says Coolify saw the request, so that stays an error.
+ * A 2xx that is not a JSON object (an HTML login or maintenance page from a proxy, a wrong URL, an
+ * empty 200: Coolify always answers its writes with JSON) is NOT an acknowledgement: nothing says
+ * Coolify saw the request, so that stays an error. A 204 is, by definition, a success without a
+ * body.
  */
-export async function ackAfterWrite(deps, ctx, body, parse, fallback) {
+export async function ackAfterWrite(deps, ctx, res, parse, fallback) {
+    if (res.bodyLost || (res.status === 204 && res.body === undefined)) {
+        deps.logger.warn(res.bodyLost ? 'coolify.ack.lost' : 'coolify.ack.empty', { ctx });
+        return fallback();
+    }
+    if (res.body === null || typeof res.body !== 'object') {
+        const what = res.body === undefined ? 'an empty answer' : 'not a JSON object (a login or maintenance page? a wrong instance url?)';
+        throw new CoolifyContractError(`Coolify answered ${ctx} with a 2xx that is ${what}. Whether the request was carried out is unknown: check before retrying.`, { zodIssues: 'non-JSON body' });
+    }
     try {
         return await parse();
     }
     catch (err) {
-        const isJson = body === undefined || (body !== null && typeof body === 'object');
-        if (!isJson) {
-            throw new CoolifyContractError(`Coolify answered ${ctx} with a 2xx that is not JSON (a login or maintenance page? a wrong instance url?). Whether the request was carried out is unknown: check before retrying.`, { zodIssues: 'non-JSON body' });
-        }
         deps.logger.warn('coolify.ack.unrecognised', { ctx, error: err instanceof Error ? err.message : String(err) });
         return fallback();
     }

@@ -25,6 +25,8 @@ export interface RequestOptions {
      * audit log.
      */
     secrets?: readonly string[];
+    /** The endpoint answers plain text (`/version`, `/health`): do not read it as JSON. */
+    rawText?: boolean;
 }
 /**
  * The strings of a document (compose, proxy configuration) that a server error must not quote
@@ -54,13 +56,15 @@ export declare class CoolifyApi {
 /** `message` of a JSON acknowledgement, read without a schema. */
 export declare function rawMessage(body: unknown): string;
 /**
- * Parse the acknowledgement of a mutation Coolify has ALREADY accepted (2xx). If the body is JSON
- * (or empty) but does not match the schema — or the validators cannot be loaded — the write still
- * happened: reporting it as a failure would make an agent repeat it (a second deployment, a second
- * delete). So an acknowledgement in an unexpected JSON shape is logged and replaced by a
- * best-effort one.
+ * Parse the acknowledgement of a mutation Coolify has ALREADY accepted (2xx). If the body is a
+ * JSON object or array that does not match the schema — or the validators cannot be loaded, or the
+ * body was lost on the way back — the write still happened: reporting it as a failure would make
+ * an agent repeat it (a second deployment, a second delete). So such an acknowledgement is logged
+ * and replaced by a best-effort one.
  *
- * A 2xx that is not JSON at all (an HTML login or maintenance page from a proxy, a wrong URL) is
- * NOT an acknowledgement: nothing says Coolify saw the request, so that stays an error.
+ * A 2xx that is not a JSON object (an HTML login or maintenance page from a proxy, a wrong URL, an
+ * empty 200: Coolify always answers its writes with JSON) is NOT an acknowledgement: nothing says
+ * Coolify saw the request, so that stays an error. A 204 is, by definition, a success without a
+ * body.
  */
-export declare function ackAfterWrite<T>(deps: CoolifyClientDeps, ctx: string, body: unknown, parse: () => Promise<T> | T, fallback: () => T): Promise<T>;
+export declare function ackAfterWrite<T>(deps: CoolifyClientDeps, ctx: string, res: Pick<HttpResult, 'status' | 'body' | 'bodyLost'>, parse: () => Promise<T> | T, fallback: () => T): Promise<T>;

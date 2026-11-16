@@ -40,16 +40,23 @@ export interface HttpRequestInit {
      * Whether repeating the request is harmless. Default: only GET / HEAD. A network error, a
      * timeout or a 5xx is retried ONLY for idempotent requests: the server may have processed a
      * mutation whose answer was lost, and replaying `POST …/start` would queue a second deployment.
-     * A 429 (rate limited, not processed) and Coolify's bulk-unmarshal quirk are retried for every
-     * method.
+     * A 429 (rate limited, not processed) is retried for every method; Coolify's bulk-unmarshal
+     * quirk only for a write marked idempotent (the bulk env write it belongs to).
      */
     idempotent?: boolean;
+    /** Return the answer's body as the text it is, without trying JSON (`/version`, `/health`). */
+    rawText?: boolean;
 }
 export interface HttpResult {
     status: number;
     body: unknown;
     /** `Location` of a 3xx answer. Redirects are never followed (see httpRequest). */
     location?: string;
+    /**
+     * True when a write was answered 2xx but the body never arrived (the connection dropped after
+     * the status line). `body` is then undefined, which is NOT the same as an empty answer.
+     */
+    bodyLost?: boolean;
 }
 export declare const DEFAULT_TIMEOUT_MS = 30000;
 export declare function httpRequest(url: string, init: HttpRequestInit, opts: HttpRequestOptions): Promise<HttpResult>;

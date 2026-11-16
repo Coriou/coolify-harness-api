@@ -20,3 +20,10 @@ export declare function ignoreClosedPipe(stream: {
     on(event: 'error', listener: (err: NodeJS.ErrnoException) => void): unknown;
     write: unknown;
 }): void;
+/**
+ * Run the CLI as a process: what the `coolify-harness` bin does, for a wrapper script of your own
+ * (`await run()`). On top of `main()` it survives a closed pipe (`… | head`), sets the exit code,
+ * and exits as soon as the output is flushed — a request abandoned at a wait timeout, or a
+ * keep-alive socket, must not keep the process (and the agent that started it) waiting.
+ */
+export declare function run(argv?: string[]): Promise<void>;

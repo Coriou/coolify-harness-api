@@ -9,6 +9,11 @@
  * A line that is not `KEY=VALUE` is a usage error; its content is never echoed.
  */
 export declare function parseDotenv(text: string): Record<string, string>;
+/**
+ * A path is echoed only when it reads like one. `--token-file` is the flag a token gets pasted
+ * after by mistake, and error text ends up in logs.
+ */
+export declare const describePath: (path: string) => string;
 export interface TokenFiles {
     /** Variables found in the files, later files winning. */
     vars: Record<string, string>;

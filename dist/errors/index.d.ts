@@ -27,8 +27,14 @@ export declare class CoolifyAuthScopeError extends CoolifyHarnessError {
 export declare class CoolifyNetworkError extends CoolifyHarnessError {
     /** `timeout`, `circuit-open`, or the underlying system code (`ENOTFOUND`, `ECONNREFUSED`, ...). */
     readonly reason: string;
+    /**
+     * True when a WRITE failed after it may have been sent (a timeout, a connection reset): Coolify
+     * may have carried it out. Absent for reads and for failures before anything left.
+     */
+    readonly outcomeUnknown?: boolean;
     constructor(message: string, opts: {
         reason: string;
+        outcomeUnknown?: boolean;
     });
 }
 /** Bad command line: unknown command/flag, missing or malformed value. CLI exit 2. */
@@ -47,6 +53,14 @@ export declare class InvalidInputError extends CoolifyHarnessError {
     });
 }
 export declare class CoolifyNotFoundError extends CoolifyHarnessError {
+    constructor(message: string);
+}
+/**
+ * Coolify acknowledged a deploy or restart with a deployment uuid, but created no such deployment:
+ * the server's deployment queue was full (`POST /applications/{uuid}/start` and `/restart` answer
+ * "queued" all the same). Nothing was queued. CLI exit 1.
+ */
+export declare class CoolifyDeployNotQueuedError extends CoolifyHarnessError {
     constructor(message: string);
 }
 export declare class CoolifyContractError extends CoolifyHarnessError {

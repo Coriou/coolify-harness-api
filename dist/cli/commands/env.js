@@ -156,7 +156,11 @@ export async function runEnvApply(args, deps) {
     if (!args.json) {
         if (result.confirmError !== undefined)
             warn(`WARNING: the write succeeded but could not be re-read: ${result.confirmError}`);
-        print(result.confirmed ? 'Applied and confirmed.' : 'Applied (confirmation mismatch — re-check).');
+        print(result.applied.length === 0
+            ? 'Nothing to write: every key already holds its value.'
+            : result.confirmError !== undefined
+                ? 'Applied; not confirmed (the re-read failed) — check with `env diff`.'
+                : result.confirmed ? 'Applied and confirmed.' : 'Applied (confirmation mismatch — re-check).');
     }
     return {
         code: EXIT.ok,
@@ -164,7 +168,8 @@ export async function runEnvApply(args, deps) {
             ...base,
             dryRun: false,
             applied: result.applied.map((i) => i.key),
-            confirmed: result.confirmed,
+            // null = could not be checked (the re-read failed), as for compose / proxy / database set.
+            confirmed: result.confirmError !== undefined ? null : result.confirmed,
             ...(result.confirmError !== undefined ? { confirmError: result.confirmError } : {}),
         },
     };
@@ -223,7 +228,9 @@ export async function envList(args, deps) {
 /** True when the compose document still references KEY (`${KEY}`, `$KEY`, `KEY=`, `KEY:` or a bare `- KEY`). */
 export function composeReferences(compose, key) {
     const k = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`\\$\\{?${k}\\b|^\\s*-?\\s*['"]?${k}(\\s*[=:]|['"]?\\s*$)`, 'm').test(compose);
+    // `[ \t]*` rather than `\s*`: with the `m` flag `\s` also eats line breaks, and a run of blank
+    // lines was re-scanned from each of them.
+    return new RegExp(`\\$\\{?${k}\\b|^[ \\t]*(?:-[ \\t]*)?['"]?${k}([ \\t]*[=:]|['"]?[ \\t]*$)`, 'm').test(compose);
 }
 /**
  * `env delete`: delete env rows by key. Dry-run unless --apply.
@@ -235,6 +242,11 @@ export function composeReferences(compose, key) {
 export async function envDelete(args, deps) {
     if (args.keys.length === 0) {
         return usageFail(args, 'env delete: at least one --key <KEY> is required');
+    }
+    // `--key NAME=value` (or a value pasted after --key) would be echoed back as "not found".
+    const invalid = args.keys.filter((k) => !COOLIFY_KEY_RE.test(k) || k.length > 255).length;
+    if (invalid > 0) {
+        return usageFail(args, `env delete: ${invalid} --key value(s) are not variable names (a name starts with a letter or _ and holds only letters, digits, _ and .; no \`=value\`). Not echoed: they may be secret.`);
     }
     const target = deps.resolveTargetFor(args);
     scopeFor(args, target);

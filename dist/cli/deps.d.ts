@@ -22,9 +22,10 @@ export interface CmdDeps {
     writeFile?: (path: string, content: string) => Promise<void>;
 }
 /**
- * Write an unredacted document for `--out`, readable by the owner only. The file is opened
- * without following a symlink and its mode is forced to 0600 BEFORE the content is written, so an
- * existing world-readable file (or a planted link) never receives the secrets.
+ * Write an unredacted document for `--out`, readable by the owner only. The content goes to a new
+ * 0600 file beside the target, which then takes the target's place: an existing world-readable
+ * file is never written into (a reader that already had it open keeps the OLD content), another
+ * hard link to it is left alone, and a symbolic link is refused rather than followed.
  */
 export declare const defaultWriteFile: (path: string, content: string) => Promise<void>;
 export declare function requireInstance(args: ParsedArgs, deps: CmdDeps): {
@@ -41,7 +42,10 @@ export declare const warn: (line: string) => void;
 export declare function emitError(args: Pick<ParsedArgs, 'json'>, code: string, message: string, exitCode: number, extra?: Record<string, unknown>): number;
 /** A usage problem (exit 2). */
 export declare function usageFail(args: Pick<ParsedArgs, 'json'>, message: string): number;
-/** JSON output for agents: always redacted, never prose. */
+/**
+ * JSON output for agents: always redacted, never prose. An audit record that could not be written
+ * is reported here (`auditError`), since with `--json` stderr stays empty on success.
+ */
 export declare function printJson(value: unknown): void;
 export declare function audit(deps: CmdDeps, record: {
     instanceUrl: string;
