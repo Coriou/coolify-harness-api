@@ -187,3 +187,168 @@ describe('sensitive names', () => {
     expect(out.name).toBe('app');
   });
 });
+
+// ── second review round ─────────────────────────────────────────────────────
+const S = 'S3cr3tValue9x';
+const has = (text: string): boolean => text.includes(S);
+
+describe('exec-form command arrays', () => {
+  it('redacts the argument after a secret flag, whole, whatever precedes it', () => {
+    for (const line of [
+      '      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "S3cr3tValue9x", "ping"]',
+      '      test: ["CMD", "curl", "-H", "X-Api-Key: S3cr3tValue9x", "http://localhost/health"]',
+      '    command: ["server", "--password", "correct horse S3cr3tValue9x"]',
+      'CMD ["server", "--password", "S3cr3tValue9x"]',
+      "    entrypoint: ['sh', '-c', 'export PGPASSWORD=S3cr3tValue9x && psql']",
+    ]) {
+      expect(has(redactDocument(line)), line).toBe(false);
+    }
+    expect(redactDocument('      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "S3cr3tValue9x", "ping"]'))
+      .toBe('      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "[REDACTED]", "ping"]');
+    expect(redactDocument('      test: ["CMD", "pg_isready", "-U", "postgres"]')).toBe('      test: ["CMD", "pg_isready", "-U", "postgres"]');
+  });
+
+  it('a flow list spread over several lines (prettier, pretty JSON)', () => {
+    for (const d of [
+      doc('    command:', '      [', '        "redis-server",', '        "--requirepass",', '        "S3cr3tValue9x",', '      ]', '    image: redis:7'),
+      doc('    command: [', '      "redis-server",', '      "--requirepass",', '      "S3cr3tValue9x"', '    ]', '    image: redis:7'),
+      doc('      "command": [', '        "redis-server",', '        "--requirepass",', '        "S3cr3tValue9x"', '      ],', '      "image": "redis:7"'),
+    ]) {
+      const out = redactDocumentLines(d);
+      expect(has(out.join('\n')), d).toBe(false);
+      expect(out.join('\n')).toContain('redis-server');
+      expect(out.at(-1)).toContain('redis:7');
+    }
+  });
+});
+
+describe('multi-line command content', () => {
+  it('Dockerfile RUN continuation lines are command lines', () => {
+    const out = redactDocument(doc(
+      'RUN apt-get update && \\',
+      '    mysql -uroot -pS3cr3tValue9x -e "select 1" && \\',
+      '    curl -u admin:S3cr3tValue9x https://x && \\',
+      '    export PGPASSWORD=S3cr3tValue9x && \\',
+      '    npm config set //registry.npmjs.org/:_authToken=S3cr3tValue9x && \\',
+      '    git clone https://x-access-token:S3cr3tValue9x@github.com/a/b /src',
+      'FROM node:24',
+    ));
+    expect(has(out)).toBe(false);
+    expect(out).toContain('git clone https://x-access-token:[REDACTED]@github.com/a/b /src');
+    expect(out).toContain('FROM node:24');
+  });
+
+  it('a script given as a block scalar item of command:', () => {
+    const out = redactDocument(doc('    command:', '      - sh', '      - -c', '      - |', '        export PGPASSWORD=S3cr3tValue9x', '        mysql -uroot -pS3cr3tValue9x', '    image: a:1'));
+    expect(has(out)).toBe(false);
+    expect(out).toContain('    image: a:1');
+  });
+
+  it('assignments and flags with awkward boundaries', () => {
+    for (const cmd of [
+      'DB_PASSWORD=abc,S3cr3tValue9x node x',
+      'DB_PASSWORD=abc;S3cr3tValue9x',
+      'sh -c "mysql --password=\\"S3cr3tValue9x\\" x"',
+      'curl --user admin:S3cr3tValue9x https://x',
+      'curl --proxy-user admin:S3cr3tValue9x https://x',
+      'curl -H "X-Auth-Key: S3cr3tValue9x" https://x',
+      'redis-server --requirepass 123456S3cr3tValue9x',
+    ]) {
+      expect(has(redactCommandLine(cmd)), cmd).toBe(false);
+    }
+    expect(redactCommandLine('redis-server --requirepass 123456')).toBe('redis-server --requirepass [REDACTED]');
+  });
+});
+
+describe('comments and tags', () => {
+  it('a comment line neither closes the environment block nor leaks what it comments out', () => {
+    const out = redactDocument(doc('    environment:', '      ASPNETCORE_ENVIRONMENT: Production', '#      Jwt__Key: S3cr3tValue9x-old', '      jwt__key: S3cr3tValue9x', '    # top comment', '      other: S3cr3tValue9x', '    image: a:1'));
+    expect(has(out)).toBe(false);
+    expect(out).toContain('    image: a:1');
+  });
+
+  it('a comment inside a command list does not reset "the next argument is the secret"', () => {
+    expect(has(redactDocument(doc('    command:', '      - --requirepass', '      # rotated 2026-01', '      - S3cr3tValue9x', '    image: a:1')))).toBe(false);
+  });
+
+  it('environment: with a YAML tag', () => {
+    expect(has(redactDocument(doc('    environment: !override', '      jwtKey: S3cr3tValue9x', '    image: a:1')))).toBe(false);
+  });
+});
+
+describe('documents on one line', () => {
+  it('a minified JSON compose is hidden whole (there is no line structure to keep)', () => {
+    expect(has(redactDocument('{"services":{"db":{"image":"postgres:16","environment":{"POSTGRES_PASSWORD":"S3cr3tValue9x"}}}}'))).toBe(false);
+  });
+});
+
+describe('redaction is linear-time', () => {
+  it('long runs of spaces after a flag do not blow up', () => {
+    const started = Date.now();
+    redactDeep({ start_command: `node server.js --verbose${' '.repeat(20_000)}` });
+    redactDocument(`    command: redis-server --port 6379${' '.repeat(20_000)}`);
+    redactCommandLine(`tool -x${' '.repeat(20_000)}-y`);
+    redactUrlCredentials(`postgres://${'a:'.repeat(5_000)}`);
+    redactDocument(`${'  - "x",\n'.repeat(2_000)}`);
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+});
+
+describe('structure stays readable', () => {
+  it('a service whose NAME looks sensitive still shows its image and ports', () => {
+    const compose = doc('services:', '  supertokens:', '    image: registry.supertokens.io/supertokens/supertokens-postgresql:9.0', '    ports:', "      - '3567:3567'", '    environment:', '      API_KEYS: S3cr3tValue9x', '  passbolt:', '    image: passbolt/passbolt:4.0');
+    const out = redactDocument(compose);
+    expect(has(out)).toBe(false);
+    expect(out).toContain('    image: registry.supertokens.io/supertokens/supertokens-postgresql:9.0');
+    expect(out).toContain("      - '3567:3567'");
+    expect(out).toContain('    image: passbolt/passbolt:4.0');
+    const diff = formatRedactedDiff(compose, compose.replace('postgresql:9.0', 'postgresql:9.1')).join('\n');
+    expect(diff).toContain('postgresql:9.0');
+    expect(diff).toContain('postgresql:9.1');
+  });
+
+  it('the top-level secrets: section keeps its structure', () => {
+    const out = redactDocument(doc('secrets:', '  db_password:', '    file: ./db_password.txt', 'services:', '  a:', '    image: a:1'));
+    expect(out).toContain('    file: ./db_password.txt');
+    expect(out).toContain('    image: a:1');
+  });
+});
+
+describe('names and values the heuristics missed', () => {
+  it('URL passwords containing "@" followed by "/", and more query parameter names', () => {
+    expect(has(redactUrlCredentials('postgres://app:p@ss/S3cr3tValue9x@db:5432/app'))).toBe(false);
+    for (const name of ['access_token', 'client_secret', 'private_token', 'key', 'X-Amz-Signature', 'api_key']) {
+      expect(has(redactUrlCredentials(`https://h/p?a=1&${name}=S3cr3tValue9x&b=2`)), name).toBe(false);
+    }
+    expect(redactUrlCredentials('https://h/p?page=2&sort=asc')).toBe('https://h/p?page=2&sort=asc');
+  });
+
+  it('names ending in "key", conninfo strings and command values in config documents', () => {
+    for (const line of [
+      '      - homepage.widget.key=S3cr3tValue9x',
+      '    Jwt__Key: S3cr3tValue9x',
+      'fastcgi_param APP_KEY S3cr3tValue9x;',
+      "primary_conninfo = 'host=primary user=replica password=S3cr3tValue9x'",
+      "restore_command = 'AWS_SECRET_ACCESS_KEY=S3cr3tValue9x wal-g wal-fetch %f %p'",
+    ]) {
+      expect(has(redactDocument(line)), line).toBe(false);
+    }
+  });
+
+  it('a numeric password is still a password; a numeric port is still shown', () => {
+    expect(redactDocument(doc('    environment:', '      POSTGRES_PASSWORD: 123456', '      PORT: 3000'))).toBe(doc('    environment:', '      POSTGRES_PASSWORD: [REDACTED]', '      PORT: 3000'));
+  });
+
+  it('a variable NAMED test / command inside environment: is a variable, not a command', () => {
+    expect(has(redactDocument(doc('    environment:', '      test: S3cr3tValue9x', '      command: S3cr3tValue9x', '      entrypoint: S3cr3tValue9x')))).toBe(false);
+  });
+
+  it('a line separator character inside a value does not hide the rest from the patterns', () => {
+    expect(has(redactDocument('    environment:\n      API_URL: abc S3cr3tValue9x'))).toBe(false);
+  });
+
+  it('prose that merely contains the word "token" or "basic" is left alone', () => {
+    const text = 'The API token contains whitespace or non-printable characters; use basic configuration.';
+    expect(redactUrlCredentials(text)).toBe(text);
+  });
+});

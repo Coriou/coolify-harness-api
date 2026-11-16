@@ -8,7 +8,8 @@
  *
  * The document redactor is line-based on purpose (it must return one line per input line so a
  * diff can be printed), and it errs on the side of hiding: anything it cannot classify inside a
- * secret-bearing construct is replaced.
+ * secret-bearing construct is replaced. Every pattern here is linear-time: the input is whatever
+ * a compose file or a start command contains, and a slow pattern would hang `status`.
  */
 
 /** Names (object keys, compose keys, flags, directives) whose value is always secret. */
@@ -23,8 +24,12 @@ const SENSITIVE_KEY_RE = new RegExp(
   'i',
 );
 
-/** A name inside a document / command line that marks its value as secret. */
-const SENSITIVE_NAME_RE = new RegExp(`(${SENSITIVE_NAME}|pwd|authorization|x-api-key)`, 'i');
+/**
+ * A name inside a document / command line that marks its value as secret. Wider than the object
+ * key rule: here a name ENDING in `key` (`Jwt__Key`, `widget.key`, `X-Auth-Key`) counts too, which
+ * would be wrong for API payloads, where `key` is the field holding a variable's name.
+ */
+const SENSITIVE_NAME_RE = new RegExp(`(${SENSITIVE_NAME}|pwd|authorization|conninfo|(^|[._-])key$)`, 'i');
 
 /** Object keys whose string values are docker-compose / config documents: redact line by line. */
 const DOCUMENT_KEY_RE =
@@ -41,17 +46,18 @@ const PURE_REF_RE = /^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/;
 const BORING_RE = /^(true|false|yes|no|on|off|null|~|\d{1,6})$/i;
 /**
  * `scheme://user:password@host` — keep the user (may be empty, as in `redis://:pw@host`), drop the
- * password. The password may itself contain `@` or `/`: an `@` ends it only when what follows is
- * the host (`host[:port]` then `/`, `?`, `#`, a quote, whitespace or the end).
+ * password. The password runs to the LAST `@` of the URL: passwords contain `@`, `/`, `?`, and
+ * cutting too late only hides more of the URL.
  */
-const URL_CREDS_RE =
-  /([a-z][a-z0-9+.-]*:\/\/)([^\s:/@'"]*):((?:[^\s'"@]|@(?![A-Za-z0-9.\-[\]]+(?::\d+)?(?:[/?#\s'"]|$)))*)@/gi;
+const URL_CREDS_RE = /([a-z][a-z0-9+.-]*:\/\/)([^\s:/@'"]*):([^\s'"]*)@/gi;
 /** `https://TOKEN@host` — a lone userinfo on http(s) is a token (git remotes), not a username. */
 const URL_TOKEN_RE = /(https?:\/\/)([^\s:/@'"]{8,})@/gi;
-/** `?password=…&token=…` in a URL or a connection string. */
-const URL_QUERY_SECRET_RE = /([?&;](?:password|passwd|pwd|token|secret|api[_-]?key|access[_-]?key|sig|signature)=)([^&\s'"#;]+)/gi;
-/** `Authorization: Bearer xyz` / `Basic xyz` / `token xyz`. A Coolify token contains `|`, so: any non-space run. */
-const AUTH_SCHEME_RE = /\b(bearer|basic|token)(\s+)([^\s'"]{8,})/gi;
+/** `?password=…&access_token=…&X-Amz-Signature=…` in a URL or a connection string. */
+const URL_QUERY_SECRET_RE = /([?&;][^=&\s'"#;]{0,40}(?:pass|pwd|token|secret|key|sig|credential)[^=&\s'"#;]{0,40}=)([^&\s'"#;]+)/gi;
+/** `Bearer xyz` anywhere. A Coolify token contains `|`, so: any non-space run. */
+const BEARER_RE = /\b(bearer)([ \t]+)([^\s'"]{8,})/gi;
+/** `Authorization: Basic xyz` / `Authorization: token xyz` (only after the header name: both are plain words too). */
+const AUTH_HEADER_RE = /(authorization["']?[ \t]*[:=][ \t]*["']?)(basic|token|bearer)([ \t]+)([^\s'"]+)/gi;
 /** YAML block scalar header: `|`, `>`, with chomping / indentation indicators and an optional comment. */
 const BLOCK_SCALAR_RE = /^[|>][+-]?\d*[+-]?\s*(#.*)?$/;
 const PEM_BEGIN_RE = /-----BEGIN [A-Z0-9 ]+-----/;
@@ -60,13 +66,16 @@ const PEM_END_RE = /-----END [A-Z0-9 ]+-----/;
 const COMMAND_YAML_KEY_RE = /^(command|entrypoint|test)$/i;
 /** Flow collections under these keys carry no secret and are worth reading. */
 const SAFE_FLOW_KEY_RE = /^(ports|expose|networks|depends_on|dns|cap_add|cap_drop|profiles|aliases|tmpfs)$/i;
-/** A command flag whose NEXT argument is a secret (`--requirepass x`, `-a x`, `-p x`, `-u user:pass`). */
+/** A long command flag whose value is a secret: `--requirepass`, `--api-key`, `--password`. */
 const SECRET_LONG_FLAG_RE = new RegExp(`^--?[A-Za-z0-9._-]*(${SENSITIVE_NAME}|pwd|key)[A-Za-z0-9._-]*$`, 'i');
 /** Short flags are case-sensitive: `-p` is a password (mysql, sshpass), `-P` a port; `-h` a host. */
 const SECRET_SHORT_FLAG_RE = /^(-a|-p)$/;
 const isSecretFlag = (flag: string): boolean => SECRET_SHORT_FLAG_RE.test(flag) || SECRET_LONG_FLAG_RE.test(flag);
-
+/** docker `-p 8080:80` / `-p 127.0.0.1:80:80/tcp` is a port mapping, not a password. */
 const PORT_MAPPING_RE = /^[\d.:[\]-]+(\/(tcp|udp|sctp))?$/;
+/** Flags taking `user:password` (curl). */
+const USERPASS_FLAG_RE = /^(-u|--user|--proxy-user)$/;
+const HEADER_FLAG_RE = /^(-H|--header)$/;
 
 export const REDACTED = '[REDACTED]';
 
@@ -80,66 +89,179 @@ export function redactUrlCredentials(text: string): string {
     .replace(URL_CREDS_RE, (_m, scheme: string, user: string) => `${scheme}${user}:${REDACTED}@`)
     .replace(URL_TOKEN_RE, (_m, scheme: string) => `${scheme}${REDACTED}@`)
     .replace(URL_QUERY_SECRET_RE, (_m, lead: string) => `${lead}${REDACTED}`)
-    .replace(AUTH_SCHEME_RE, (_m, scheme: string, gap: string) => `${scheme}${gap}${REDACTED}`);
+    .replace(AUTH_HEADER_RE, (_m, lead: string, scheme: string, gap: string) => `${lead}${scheme}${gap}${REDACTED}`)
+    .replace(BEARER_RE, (_m, scheme: string, gap: string) => `${scheme}${gap}${REDACTED}`);
 }
 
-const isHarmless = (inner: string): boolean => inner === '' || PURE_REF_RE.test(inner) || BORING_RE.test(inner);
+/**
+ * Nothing to hide: empty, a pure `${VAR}` reference, a boolean or a small number.
+ * `strict` (the name says "password", "secret", "token", …) does not let numbers through: a
+ * numeric password is still a password.
+ */
+function isHarmless(inner: string, strict = false): boolean {
+  if (inner === '' || inner === REDACTED || PURE_REF_RE.test(inner)) return true;
+  return strict ? /^(true|false|null|~)$/i.test(inner) : BORING_RE.test(inner);
+}
 
-function redactAssignedValue(raw: string): string {
-  const quoted = /^(['"])(.*)\1$/.exec(raw.trim());
+function redactAssignedValue(raw: string, strict = false): string {
+  const quoted = /^(['"])(.*)\1$/s.exec(raw.trim());
   const q = quoted?.[1] ?? '';
   const inner = quoted?.[2] ?? raw.trim();
-  if (isHarmless(inner)) return raw;
+  if (isHarmless(inner, strict)) return raw;
   // `${VAR:-default}` / `${VAR:?msg}`: keep the reference, hide the literal default.
-  const withDefault = /^\$\{([A-Za-z_][A-Za-z0-9_]*)(:?[-?=+])(.*)\}$/.exec(inner);
+  const withDefault = /^\$\{([A-Za-z_][A-Za-z0-9_]*)(:?[-?=+])(.*)\}$/s.exec(inner);
   if (withDefault) {
     return withDefault[3] === '' ? raw : `${q}\${${withDefault[1]}${withDefault[2]}${REDACTED}}${q}`;
   }
   return `${q}${REDACTED}${q}`;
 }
 
-/** A shell word: double-quoted (with escapes), single-quoted, or a bare run. */
-const WORD = String.raw`"(?:[^"\\]|\\.)*"|'[^']*'|[^\s'";,\]]+`;
-const unquoteWord = (w: string): string => w.replace(/^(['"])([\s\S]*)\1$/, '$2');
+// ── command lines ───────────────────────────────────────────────────────────
+
+interface Token {
+  /** The token as written, quotes included. */
+  text: string;
+  kind: 'space' | 'word';
+  /** Content without the surrounding quotes (and without a `\"` escape of the quotes). */
+  value: string;
+  /** Opening delimiter (`"`, `'`, `\"`) or '' for a bare word. */
+  open: string;
+  /** Closing delimiter; '' when the quote never closes. */
+  close: string;
+}
+
+/**
+ * Split a command line into words and separators, in one pass. Separators are whitespace and the
+ * punctuation of an exec-form array (`["a", "b"]`): `[`, `]`, `,`. A word is a quoted string
+ * (single, double with escapes, or the escaped `\"…\"` of a command nested in a string) or a bare
+ * run up to the next whitespace.
+ */
+function tokenize(text: string): Token[] {
+  const out: Token[] = [];
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i]!;
+    if (/[\s,[\]]/.test(c)) {
+      let j = i + 1;
+      while (j < n && /[\s,[\]]/.test(text[j]!)) j += 1;
+      out.push({ text: text.slice(i, j), kind: 'space', value: '', open: '', close: '' });
+      i = j;
+      continue;
+    }
+    const open = c === '"' || c === "'" ? c : (c === '\\' && text[i + 1] === '"' ? '\\"' : '');
+    if (open !== '') {
+      let j = i + open.length;
+      let closed = false;
+      while (j < n) {
+        if (open === '\\"') { if (text[j] === '\\' && text[j + 1] === '"') { closed = true; break; } }
+        else if (open === '"' && text[j] === '\\') { j += 2; continue; }
+        else if (text[j] === open) { closed = true; break; }
+        j += 1;
+      }
+      const end = closed ? j + open.length : n;
+      out.push({ text: text.slice(i, end), kind: 'word', value: text.slice(i + open.length, closed ? j : n), open, close: closed ? open : '' });
+      i = end;
+      continue;
+    }
+    let j = i;
+    // A bare word runs to whitespace; `--flag="quoted value"` keeps its quoted part.
+    while (j < n && !/\s/.test(text[j]!)) {
+      if (text[j] === '"' || text[j] === "'") {
+        const q = text[j]!;
+        let k = j + 1;
+        while (k < n && text[k] !== q) k += (q === '"' && text[k] === '\\') ? 2 : 1;
+        j = Math.min(n, k + 1);
+        continue;
+      }
+      j += 1;
+    }
+    // Trailing array punctuation (`x,` / `x]`) is a separator, not part of the word.
+    let end = j;
+    while (end > i + 1 && /[,\]]/.test(text[end - 1]!)) end -= 1;
+    const word = text.slice(i, end);
+    out.push({ text: word, kind: 'word', value: word, open: '', close: '' });
+    i = end;
+  }
+  return out;
+}
+
+const hidden = (t: Token): string => `${t.open}${REDACTED}${t.close}`;
+const stripQuotes = (v: string): string => v.replace(/^(['"])([\s\S]*)\1$/, '$2');
+
+/** One word of a command line that is not the value of a preceding flag. */
+function redactWord(t: Token, depth: number): string {
+  const v = t.value;
+  // A quoted word holding a whole command (`sh -c "export X=… && psql"`) or a header line.
+  if (t.open !== '' && /\s/.test(v)) {
+    const header = /^([A-Za-z][A-Za-z0-9_-]*):[ \t]*(\S[\s\S]*)$/.exec(v);
+    if (header && SENSITIVE_NAME_RE.test(header[1] ?? '')) return `${t.open}${header[1]}: ${REDACTED}${t.close}`;
+    return depth < 3 ? `${t.open}${redactCommand(v, depth + 1)}${t.close}` : hidden(t);
+  }
+  // name=value: an env assignment, `--flag=value`, npm `…:_authToken=value`.
+  const eq = v.indexOf('=');
+  if (eq > 0) {
+    const name = v.slice(0, eq);
+    const value = v.slice(eq + 1);
+    const bare = name.replace(/^.*[:/]/, ''); // `//registry/:_authToken` → `_authToken`
+    const sensitive = SENSITIVE_NAME_RE.test(bare) || isSecretFlag(name);
+    if ((sensitive || ENV_KEY_RE.test(bare)) && !isHarmless(stripQuotes(value), sensitive)) {
+      return `${t.open}${name}=${REDACTED}${t.close}`;
+    }
+  }
+  // -pSECRET (mysql, sshpass): an attached value that is not a port mapping.
+  if (t.open === '' && /^-p[^-]/.test(v) && !PORT_MAPPING_RE.test(v.slice(2))) return `-p${REDACTED}`;
+  const cleaned = redactUrlCredentials(v);
+  return cleaned === v ? t.text : `${t.open}${cleaned}${t.close}`;
+}
+
+function redactCommand(text: string, depth: number): string {
+  const tokens = tokenize(text);
+  let out = '';
+  /** The flag whose value the next word is, if any. */
+  let pending: 'secret' | 'userpass' | 'header' | undefined;
+  let pendingFlag = '';
+  for (const t of tokens) {
+    if (t.kind === 'space') { out += t.text; continue; }
+    const v = t.value;
+    if (pending !== undefined && !(t.open === '' && v.startsWith('-'))) {
+      const kind = pending;
+      pending = undefined;
+      // Only docker's `-p 8080:80` is a port mapping; a number after `--requirepass` is a password.
+      if (kind === 'secret') { out += isHarmless(v, true) || (pendingFlag === '-p' && PORT_MAPPING_RE.test(v)) ? t.text : hidden(t); continue; }
+      if (kind === 'userpass') {
+        const colon = v.indexOf(':');
+        out += colon > 0 ? `${t.open}${v.slice(0, colon)}:${REDACTED}${t.close}` : t.text;
+        continue;
+      }
+      // header: hide the value of a sensitive header, keep the others
+      const header = /^([^:]+):[ \t]*([\s\S]*)$/.exec(v);
+      out += header && SENSITIVE_NAME_RE.test(header[1] ?? '') ? `${t.open}${header[1]}: ${REDACTED}${t.close}` : redactWord(t, depth);
+      continue;
+    }
+    pending = undefined;
+    if (!v.includes('=')) {
+      if (HEADER_FLAG_RE.test(v)) pending = 'header';
+      else if (USERPASS_FLAG_RE.test(v)) pending = 'userpass';
+      else if (isSecretFlag(v)) pending = 'secret';
+      pendingFlag = v;
+    }
+    out += redactWord(t, depth);
+  }
+  return out;
+}
 
 /**
  * Redact the secrets a shell command or a docker option string can carry: `KEY=value`
  * assignments, `--password=…` / `--token …` flags, `-p…` / `-a …` / `-u user:pass`, header values,
- * auth-scheme tokens and URL credentials. The command itself stays readable.
+ * auth-scheme tokens and URL credentials — in shell form and in exec form (`["a", "--pw", "x"]`).
+ * The command itself stays readable.
  */
 export function redactCommandLine(text: string): string {
-  let out = redactUrlCredentials(text);
-  // name=value where the name is UPPER_SNAKE or looks sensitive (env prefix, export, -e, --build-arg, npm :_authToken=)
-  out = out.replace(new RegExp(String.raw`([A-Za-z_][A-Za-z0-9_.-]*)=(${WORD})`, 'g'), (m, key: string, value: string) => {
-    if (!(ENV_KEY_RE.test(key) || SENSITIVE_NAME_RE.test(key))) return m;
-    return isHarmless(unquoteWord(value)) ? m : `${key}=${REDACTED}`;
-  });
-  // --some-secret-flag=value / --some-secret-flag value (also across a JSON-style `", "` separator)
-  // A flag starts a word (`redis-cli` is not `-cli`), and its value is not itself a flag.
-  out = out.replace(
-    new RegExp(String.raw`(?<=^|[\s'"\[,(])(--?[A-Za-z][A-Za-z0-9._-]*)((?:=|\s+|["']\s*,\s*["']?)+)(?!-)(${WORD})`, 'g'),
-    (m, flag: string, sep: string, value: string) => {
-      if (isHarmless(unquoteWord(value))) return m;
-      // docker `-p 8080:80` / `-p 127.0.0.1:80:80/tcp` is a port mapping, not a password.
-      if (flag === '-p' && PORT_MAPPING_RE.test(unquoteWord(value))) return m;
-      if (/^(-H|--header)$/.test(flag)) {
-        // -H "Name: value": hide the value of a sensitive header, keep the others.
-        const header = /^(['"]?)([^:'"]+):\s*([\s\S]*?)\1$/.exec(value);
-        return header && SENSITIVE_NAME_RE.test(header[2] ?? '') ? `${flag}${sep}${header[1]}${header[2]}: ${REDACTED}${header[1]}` : m;
-      }
-      if (flag === '-u') {
-        // curl -u user:password — keep the user
-        const cred = /^(['"]?)([^:'"]+):([\s\S]+?)\1$/.exec(value);
-        return cred ? `${flag}${sep}${cred[1]}${cred[2]}:${REDACTED}${cred[1]}` : m;
-      }
-      return isSecretFlag(flag) ? `${flag}${sep}${REDACTED}` : m;
-    },
-  );
-  // -pSECRET (mysql, sshpass): an attached value that is not just digits / a port mapping
-  out = out.replace(/(^|[\s'"])(-p)([^\s'"-][^\s'"]*)/g, (m, lead: string, flag: string, value: string) =>
-    (PORT_MAPPING_RE.test(value) || value === REDACTED ? m : `${lead}${flag}${REDACTED}`));
-  return out;
+  return redactCommand(text, 0);
 }
+
+// ── documents ───────────────────────────────────────────────────────────────
 
 const indentOf = (line: string): number => line.length - line.trimStart().length;
 const startsFlow = (v: string): boolean => v.startsWith('{') || v.startsWith('[');
@@ -150,17 +272,21 @@ const opensMultiline = (v: string): boolean => {
   const rest = v.slice(1);
   return !(q === '"' ? /(^|[^\\])"/.test(rest) : rest.includes("'"));
 };
+/** `key:` with nothing after it, or a list item: the start of a nested mapping / sequence. */
+const NESTED_RE = /^\s*(-(\s|$)|['"]?[A-Za-z0-9_.\-/]+['"]?\s*:(\s|$))/;
 
-/** A `name value…` directive line (redis.conf, fluent-bit, nginx) or a bare list item. */
+/** A `name value…` directive line (redis.conf, fluent-bit, nginx), else a line of a command. */
 function redactDirective(line: string): string {
-  const m = /^(\s*(?:-\s+)?)(.*)$/.exec(line);
+  const m = /^(\s*(?:-\s+)?)([\s\S]*)$/.exec(line);
   const lead = m?.[1] ?? '';
   const tokens = (m?.[2] ?? '').split(/(\s+)/); // keeps the separators at odd indexes
   for (let i = 0; i < tokens.length; i += 2) {
-    const name = (tokens[i] ?? '').replace(/[:;]+$/, '');
+    const raw = tokens[i] ?? '';
+    const name = raw.replace(/[:;]+$/, '');
     const next = tokens[i + 2];
     if (next === undefined) break;
-    if (SENSITIVE_NAME_RE.test(name) && !isHarmless(next.replace(/;$/, ''))) {
+    // A directive NAME is a plain word: not an assignment, a URL or a flag (those are command words).
+    if (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name) && SENSITIVE_NAME_RE.test(name) && !isHarmless(next.replace(/;$/, ''), true)) {
       return `${lead}${tokens.slice(0, i + 2).join('')}${REDACTED}`;
     }
     // redis ACL: `user name on >password ~* +@all`
@@ -168,7 +294,7 @@ function redactDirective(line: string): string {
       return `${lead}${tokens.map((t, k) => (k > 0 && /^[>#]/.test(t) ? `${t[0]}${REDACTED}` : t)).join('')}`;
     }
   }
-  return redactUrlCredentials(line);
+  return redactCommandLine(line);
 }
 
 /**
@@ -176,26 +302,42 @@ function redactDirective(line: string): string {
  * input line (so a diff of the original can be printed with the redacted text). Rules:
  * - `KEY=value` / `KEY: value` (list items and maps, quoted or not, quoted keys, JSON style) where
  *   KEY is UPPER_SNAKE, looks sensitive, or sits under an `environment:` block → value replaced,
- *   unless it is a pure `${VAR}` reference, a number or a boolean;
+ *   unless it is a pure `${VAR}` reference, a boolean or (for a non-sensitive name) a small number;
  * - a multi-line value under such a key (block scalar, value on the next lines, quoted scalar
  *   spanning lines) and any PEM block → every content line replaced;
  * - flow collections (`{ … }`, `[ … ]`) are replaced whole, except under keys known to be harmless;
- * - `command:` / `entrypoint:` / `test:` and Dockerfile `RUN` / `ENV` / `ARG` lines are treated as
- *   command lines: secret flags, their next argument, and assignments are replaced;
+ * - `command:` / `entrypoint:` / `test:` (inline, YAML list, flow list over several lines) and
+ *   Dockerfile `RUN` / `CMD` / `ENV` / `ARG` lines with their continuations are command lines:
+ *   secret flags, the argument after them, and assignments are replaced;
  * - `name value` directives whose name looks sensitive (`requirepass x`, `http_Passwd x`);
- * - credentials embedded in URLs and `Bearer …` tokens anywhere.
+ * - credentials embedded in URLs and `Bearer …` tokens anywhere;
+ * - a comment never opens or closes anything, and is redacted like the line it comments out.
  * Line endings may be `\n` or `\r\n`.
  * Structure (service names, `image:` lines, ports, labels without secrets) stays readable, which is
  * what an agent needs to review an image bump or a diff.
  */
 export function redactDocumentLines(text: string): string[] {
+  const lines = text.split('\n');
   const out: string[] = [];
   let envIndent = -1; // indent of an open `environment:` key, -1 when outside
   let blockIndent = -1; // indent of a secret key whose multi-line value is being swallowed
   let cmdIndent = -1; // indent of an open `command:` / `entrypoint:` / `test:` list
   let cmdSecretNext = false; // the previous command argument was a flag that takes a secret
   let inPem = false;
-  for (const rawLine of text.split('\n')) {
+  let runContinues = false; // inside a Dockerfile RUN / CMD continued with a trailing backslash
+
+  /** Is the first non-blank line after `from` a nested mapping / sequence indented deeper than `indent`? */
+  const nestedFollows = (from: number, indent: number): boolean => {
+    for (let k = from; k < lines.length; k += 1) {
+      const next = (lines[k] ?? '').replace(/\r$/, '');
+      if (next.trim() === '' || next.trimStart().startsWith('#')) continue;
+      return indentOf(next) > indent && NESTED_RE.test(next);
+    }
+    return false;
+  };
+
+  for (let idx = 0; idx < lines.length; idx += 1) {
+    const rawLine = lines[idx] ?? '';
     // `.` does not match `\r`: without this, CRLF documents slipped past every pattern below.
     const cr = rawLine.endsWith('\r') ? '\r' : '';
     const line = cr ? rawLine.slice(0, -1) : rawLine;
@@ -213,23 +355,38 @@ export function redactDocumentLines(text: string): string[] {
       if (blank || indent > blockIndent) { hide(); continue; }
       blockIndent = -1;
     }
+    if (runContinues) {
+      runContinues = /\\\s*$/.test(line);
+      push(redactCommandLine(line));
+      continue;
+    }
+    // A comment changes no state. What it comments out is redacted like a live line.
+    if (/^\s*#/.test(line)) {
+      const body = /^(\s*#+\s*)([\s\S]*)$/.exec(line);
+      const inside = envIndent >= 0 || cmdIndent >= 0;
+      const kv = /^(['"]?)([A-Za-z_][A-Za-z0-9_.\-/]*)\1\s*[=:]\s*\S/.exec(body?.[2] ?? '');
+      push(inside || (kv && (ENV_KEY_RE.test(kv[2] ?? '') || SENSITIVE_NAME_RE.test(kv[2] ?? '')))
+        ? `${body?.[1] ?? '# '}${REDACTED}`
+        : redactCommandLine(line));
+      continue;
+    }
     const isItem = /^\s*-(\s|$)/.test(line);
     // A list may sit at the same indent as its key (`environment:\n- A=b`), so only a non-item
     // line at that indent closes the block.
     if (envIndent >= 0 && !blank && (indent < envIndent || (indent === envIndent && !isItem))) envIndent = -1;
-    if (cmdIndent >= 0 && !blank && (indent < cmdIndent || (indent === cmdIndent && !isItem))) { cmdIndent = -1; cmdSecretNext = false; }
+    if (cmdIndent >= 0 && !blank && (indent < cmdIndent || (indent === cmdIndent && !isItem && !/^\s*[\]}]/.test(line)))) { cmdIndent = -1; cmdSecretNext = false; }
     if (PEM_BEGIN_RE.test(line) && !PEM_END_RE.test(line)) {
       inPem = true;
       hide();
       continue;
     }
 
-    const env = /^(\s*(?:-\s*)?(['"]?)environment\2\s*:\s*)(.*)$/.exec(line);
+    const env = /^(\s*(?:-\s*)?(['"]?)environment\2\s*:\s*)([\s\S]*)$/.exec(line);
     if (env) {
       const inline = (env[3] ?? '').trim();
-      // Empty, a comment, an anchor (`&env`) or a merge / alias: the variables follow on their own lines.
-      // A lone opening bracket (JSON-style compose) also means the variables follow line by line.
-      if (inline === '' || inline.startsWith('#') || inline === '{' || inline === '[' || /^[&*][A-Za-z0-9_-]+\s*(#.*)?$/.test(inline)) {
+      // Empty, a comment, a lone opening bracket (JSON-style compose), an anchor (`&env`), an
+      // alias or a tag (`!override`): the variables follow on their own lines.
+      if (inline === '' || inline.startsWith('#') || inline === '{' || inline === '[' || /^[&*!][^\s{[]*\s*(#.*)?$/.test(inline)) {
         envIndent = indent;
         push(line);
       } else {
@@ -239,24 +396,26 @@ export function redactDocumentLines(text: string): string[] {
       continue;
     }
     // Dockerfile: `ENV KEY=value …` / `ARG KEY=value` / legacy `ENV KEY value`; RUN / CMD / ENTRYPOINT are command lines.
-    const df = /^(\s*(?:ENV|ARG)\s+)(.*)$/.exec(line);
+    const df = /^(\s*(?:ENV|ARG)\s+)([\s\S]*)$/.exec(line);
     if (df) {
       const rest = df[2] ?? '';
-      const legacy = /^([A-Za-z_][A-Za-z0-9_]*)(\s+)(\S.*)$/.exec(rest);
+      const legacy = /^([A-Za-z_][A-Za-z0-9_]*)(\s+)(\S[\s\S]*)$/.exec(rest);
       push(`${df[1]}${legacy && !/^[A-Za-z_][A-Za-z0-9_]*=/.test(rest)
-        ? `${legacy[1]}${legacy[2]}${redactAssignedValue(legacy[3] ?? '')}`
-        : rest.replace(/([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, (_m, k: string, v: string) => `${k}=${redactAssignedValue(v)}`)}`);
+        ? `${legacy[1]}${legacy[2]}${redactAssignedValue(legacy[3] ?? '', true)}`
+        : rest.replace(/([A-Za-z_][A-Za-z0-9_]*)=("[^"]*"|'[^']*'|\S+)/g, (_m, k: string, v: string) => `${k}=${redactAssignedValue(v, true)}`)}`);
+      runContinues = /\\\s*$/.test(line);
       continue;
     }
-    const run = /^(\s*(?:RUN|CMD|ENTRYPOINT|HEALTHCHECK)\s+)(.*)$/.exec(line);
+    const run = /^(\s*(?:RUN|CMD|ENTRYPOINT|HEALTHCHECK)\s+)([\s\S]*)$/.exec(line);
     if (run) {
       push(`${run[1]}${redactCommandLine(run[2] ?? '')}`);
+      runContinues = /\\\s*$/.test(line);
       continue;
     }
 
     // `"KEY": value` (quoted key, JSON-style compose) or `KEY: value` / `KEY=value` / `- 'KEY=value'`.
-    const quotedKey = /^(\s*(?:-\s*)?)(['"])([^'"]+)\2(\s*:\s*)(.*)$/.exec(line);
-    const plainKey = quotedKey ? null : /^(\s*(?:-\s*)?)(['"]?)(-{0,2}[A-Za-z_][A-Za-z0-9_.\-/]*)(\s*[=:]\s*)(.*)$/.exec(line);
+    const quotedKey = /^(\s*(?:-\s*)?)(['"])([^'"]+)\2(\s*:\s*)([\s\S]*)$/.exec(line);
+    const plainKey = quotedKey ? null : /^(\s*(?:-\s*)?)(['"]?)(-{0,2}[A-Za-z_][A-Za-z0-9_.\-/]*)(\s*[=:]\s*)([\s\S]*)$/.exec(line);
     const m = quotedKey ?? plainKey;
     if (m) {
       const lead = m[1] ?? '';
@@ -269,47 +428,60 @@ export function redactDocumentLines(text: string): string[] {
       const trail = !quotedKey && keyOpen !== '' && value.endsWith(keyOpen) ? keyOpen : '';
       if (trail !== '') value = value.slice(0, -1);
       const v = value.trim();
+      const inEnv = envIndent >= 0 && indent >= envIndent;
 
-      if (COMMAND_YAML_KEY_RE.test(key) && sep.includes(':')) {
-        if (v === '' || v.startsWith('#')) { cmdIndent = indent; cmdSecretNext = false; push(line); }
+      // Inside `environment:`, a variable may be NAMED `command` or `test`: it is still a variable.
+      if (!inEnv && COMMAND_YAML_KEY_RE.test(key) && sep.includes(':')) {
+        if (v === '' || v.startsWith('#') || v === '[') { cmdIndent = indent; cmdSecretNext = false; push(line); }
         else if (BLOCK_SCALAR_RE.test(v)) { blockIndent = indent; push(line); }
         else push(`${lead}${keyText}${sep}${redactCommandLine(value)}${trail}`);
         continue;
       }
-      const secretKey = ENV_KEY_RE.test(key) || SENSITIVE_NAME_RE.test(key) || (envIndent >= 0 && indent >= envIndent);
-      if (secretKey) {
-        if (BLOCK_SCALAR_RE.test(v) || v === '' || v.startsWith('#')) {
-          // Block scalar, or a value that starts on the next line: swallow what is indented under it.
-          blockIndent = indent;
+      const sensitiveName = SENSITIVE_NAME_RE.test(key);
+      if (ENV_KEY_RE.test(key) || sensitiveName || inEnv) {
+        if (BLOCK_SCALAR_RE.test(v)) { blockIndent = indent; push(line); continue; }
+        if (v === '' || v.startsWith('#')) {
+          // Nothing on this line. A nested mapping / list below (a service called `supertokens`,
+          // the top-level `secrets:` section) is structure, kept readable line by line; a plain
+          // continuation is the value itself, swallowed.
+          if (inEnv || !nestedFollows(idx + 1, indent)) blockIndent = indent;
           push(line);
           continue;
         }
         // A quoted scalar or a flow collection that continues on the next lines: swallow them too.
         if (opensMultiline(v) || (startsFlow(v) && !/[}\]]\s*,?\s*(#.*)?$/.test(v))) blockIndent = indent;
-        push(`${lead}${keyText}${sep}${startsFlow(v) ? REDACTED : redactAssignedValue(value)}${trail}`);
+        push(`${lead}${keyText}${sep}${startsFlow(v) ? REDACTED : redactAssignedValue(value, sensitiveName)}${trail}`);
         continue;
       }
-      if (startsFlow(v) && !SAFE_FLOW_KEY_RE.test(key)) {
+      if (startsFlow(v) && v.length > 1 && !SAFE_FLOW_KEY_RE.test(key)) {
         // `services: {app: {environment: {…}}}`: a flow collection can hide anything.
         push(`${lead}${keyText}${sep}${REDACTED}${trail}`);
         continue;
       }
-      push(redactUrlCredentials(line));
+      push(redactCommandLine(line));
       continue;
     }
 
-    if (cmdIndent >= 0 && isItem) {
-      // One argument of a command given as a YAML list.
-      const item = /^(\s*-\s*)(.*)$/.exec(line);
+    if (cmdIndent >= 0 && !blank) {
+      // One argument of a command given as a YAML list (`- x`) or a flow list over several lines
+      // (`"x",`); anything else in there (a `- |` script) is a command line.
+      const item = /^(\s*(?:-\s*)?)([\s\S]*?)(\s*,?\s*)$/.exec(line);
       const body = (item?.[2] ?? '').trim();
-      const bare = unquoteWord(body);
-      const q = body !== bare ? (body[0] ?? '') : '';
-      if (cmdSecretNext && !bare.startsWith('-') && !isHarmless(bare)) {
-        push(`${item?.[1] ?? ''}${q}${REDACTED}${q}`);
-        cmdSecretNext = false;
+      if (/^[[\]]$/.test(body) || body === '') { push(line); continue; }
+      const words = tokenize(body).filter((t) => t.kind === 'word');
+      const single = words.length === 1 ? words[0] : undefined;
+      if (single) {
+        const bare = single.value;
+        if (cmdSecretNext && !(single.open === '' && bare.startsWith('-')) && !isHarmless(bare, true)) {
+          push(`${item?.[1] ?? ''}${single.open}${REDACTED}${single.close}${item?.[3] ?? ''}`);
+          cmdSecretNext = false;
+        } else {
+          cmdSecretNext = !bare.includes('=') && isSecretFlag(bare);
+          push(`${item?.[1] ?? ''}${redactCommandLine(body)}${item?.[3] ?? ''}`);
+        }
       } else {
-        cmdSecretNext = isSecretFlag(bare);
-        push(`${item?.[1] ?? ''}${redactCommandLine(body)}`);
+        cmdSecretNext = false;
+        push(`${item?.[1] ?? ''}${redactCommandLine(body)}${item?.[3] ?? ''}`);
       }
       continue;
     }
@@ -318,6 +490,9 @@ export function redactDocumentLines(text: string): string[] {
       push(/^\s*-\s*['"]?[A-Za-z_][A-Za-z0-9_]*['"]?\s*(#.*)?$/.test(line) ? line : `${line.slice(0, indent)}- ${REDACTED}`);
       continue;
     }
+    // A whole document on one line (minified JSON compose) or a stray flow collection.
+    const trimmed = line.trim();
+    if (startsFlow(trimmed) && trimmed.length > 2) { hide(); continue; }
     push(redactDirective(line));
   }
   return out;
