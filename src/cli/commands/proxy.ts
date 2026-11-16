@@ -128,7 +128,9 @@ export async function proxySet(args: ParsedArgs, deps: CmdDeps): Promise<number>
     try {
       return await withScope('write+deploy', () => client.saveServerProxyConfiguration(uuid, after));
     } catch (err) {
-      await noteStoredState(err, async () => (await client.getServerProxy(uuid)).configuration, before, after, `coolify-harness proxy get --instance ${args.instance ?? '<name>'} --server ${uuid}`);
+      await noteStoredState(err, async () => (await client.getServerProxy(uuid)).configuration, before, after, `coolify-harness proxy get --instance ${args.instance ?? '<name>'} --server ${uuid}`,
+        // Coolify records the configuration first and writes the file on the server afterwards.
+        'Coolify recorded the new configuration, but the file on the server may not have been written: running the same command again rewrites it.');
       throw err;
     }
   });

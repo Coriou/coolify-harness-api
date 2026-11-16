@@ -63,7 +63,7 @@ export async function statusCmd(args: ParsedArgs, deps: CmdDeps): Promise<number
   }
   if (target.kind === 'application') {
     if (latest) {
-      const preview = (latest.pull_request_id ?? 0) !== 0 ? ` (preview of pull request #${latest.pull_request_id}; no production deployment found)` : '';
+      const preview = (latest.pull_request_id ?? 0) !== 0 ? ` (preview of pull request #${latest.pull_request_id}; no production deployment among the newest 10)` : '';
       print(`  latest deploy: ${latest.deployment_uuid} [${latest.status}]${preview}`);
       if (latest.commit) print(`    commit: ${latest.commit}`);
       if (latest.updated_at) print(`    updated: ${latest.updated_at}`);

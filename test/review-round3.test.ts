@@ -70,16 +70,57 @@ describe('deploy: "queued" is checked, because Coolify says it even when its que
   it('a uuid Coolify does not know is NOT a queued deployment: typed error, audit failure', async () => {
     const client = {
       deploy: vi.fn(async () => ({ message: 'Deployment request queued.', deploymentUuid: 'never-created' })),
-      getDeployment: vi.fn(async () => { throw new CoolifyNotFoundError('Coolify resource not found (404)'); }),
+      // Coolify's own 404: JSON with its message.
+      getDeployment: vi.fn(async () => { throw new CoolifyNotFoundError('Coolify resource not found (404) — Deployment not found.', { serverMessage: 'Deployment not found.' }); }),
     };
     const { deps, audits } = cmdDeps(client);
     const e = await deployCmd(parseArgs(['deploy', '--app', 'web', '--json']), deps).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(CoolifyDeployNotQueuedError);
     expect((e as CoolifyDeployNotQueuedError).code).toBe('DEPLOY_NOT_QUEUED');
-    expect((e as Error).message).toMatch(/created no deployment never-created.*queue is full.*Nothing was queued/);
-    expect(audits).toHaveLength(1);
-    expect(audits[0]).toMatchObject({ action: 'deploy', outcome: 'failure' });
+    expect((e as Error).message).toMatch(/has no deployment never-created.*queue is full.*Nothing was queued/);
+    // The request is recorded the moment Coolify answers; a second record says what became of it.
+    expect(audits.map((a) => a.outcome)).toEqual(['success', 'failure']);
+    expect(audits[1]!.error).toContain('Nothing was queued');
     expect(stdout()).toBe(''); // no document claims a deployment
+  });
+
+  it('a bare 404 is the proxy in front of a restarting Coolify, not "no such deployment": the acknowledgement stands', async () => {
+    const client = {
+      deploy: vi.fn(async () => ({ message: 'Deployment request queued.', deploymentUuid: 'dep-1' })),
+      getDeployment: vi.fn(async () => { throw new CoolifyNotFoundError('Coolify resource not found (404)'); }),
+    };
+    const { deps, audits } = cmdDeps(client);
+    expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--json']), deps)).toBe(0);
+    expect(oneJson()).toMatchObject({ deploymentUuid: 'dep-1' });
+    expect(audits.map((a) => a.outcome)).toEqual(['success']);
+  });
+
+  it('with --wait the first poll is the check: no extra read, and Coolify\'s 404 there is "not queued" too', async () => {
+    const client = {
+      deploy: vi.fn(async () => ({ message: 'Deployment request queued.', deploymentUuid: 'never-created' })),
+      getDeployment: vi.fn(),
+      waitForDeployment: vi.fn(async () => { throw new CoolifyNotFoundError('Coolify resource not found (404) — Deployment not found.', { serverMessage: 'Deployment not found.' }); }),
+    };
+    const { deps, audits } = cmdDeps(client);
+    const e = await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), deps).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(CoolifyDeployNotQueuedError);
+    expect(client.getDeployment).not.toHaveBeenCalled();
+    expect(audits.map((a) => a.outcome)).toEqual(['success', 'failure']);
+    expect(oneJson()).toMatchObject({ deploymentUuid: 'never-created', waitFailed: true });
+  });
+
+  it('the check is bounded and can be interrupted: the acknowledgement is audited and shown before it', async () => {
+    const hang = { deploy: vi.fn(async () => ({ message: 'Deployment request queued.', deploymentUuid: 'dep-1' })),
+      getDeployment: vi.fn((_uuid: string, opts: { signal: AbortSignal }) => new Promise<Deployment>((_resolve, reject) => {
+        opts.signal.addEventListener('abort', () => { reject(new CoolifyNetworkError('abandoned', { reason: 'aborted' })); });
+        // By now the request has been recorded and, in text mode, printed.
+        expect(shown.audits.map((a) => a.outcome)).toEqual(['success']);
+        expect(stdout()).toContain('deploy: Deployment request queued. (dep-1)');
+        process.emit('SIGINT');
+      })) };
+    const shown = cmdDeps(hang);
+    expect(await deployCmd(parseArgs(['deploy', '--app', 'web']), shown.deps)).toBe(130);
+    expect(stderr()).toMatch(/Interrupted\. Deployment dep-1 keeps running/);
   });
 
   it('a deployment Coolify does know is reported as before, with one audit record', async () => {
@@ -90,7 +131,7 @@ describe('deploy: "queued" is checked, because Coolify says it even when its que
     const { deps, audits } = cmdDeps(client);
     expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--json']), deps)).toBe(0);
     expect(oneJson()).toEqual({ action: 'deploy', message: 'Deployment request queued.', deploymentUuid: 'dep-1' });
-    expect(client.getDeployment).toHaveBeenCalledWith('dep-1');
+    expect(client.getDeployment).toHaveBeenCalledWith('dep-1', { signal: expect.any(AbortSignal) });
     expect(audits.map((a) => a.outcome)).toEqual(['success']);
   });
 
@@ -142,16 +183,62 @@ describe('deploy --wait after a skipped request: which deployment is "the one al
     expect(client.waitForDeployment).toHaveBeenCalledWith('dep-pinned', expect.anything());
   });
 
-  it('a single running production deployment needs no second look (no application read)', async () => {
+  it('the job has replaced HEAD by the sha it resolved: the production deployment still running is it', async () => {
     const client = {
       deploy: vi.fn(async () => skipped),
-      listDeployments: vi.fn(async () => [dep('in_progress', 'dep-only')]),
-      get: vi.fn(),
+      listDeployments: vi.fn(async () => [dep('in_progress', 'dep-only', { commit: '0123abcd' }), dep('finished', 'dep-old', { commit: 'HEAD', updated_at: '2026-11-10T00:00:00.000000Z' })]),
+      get: vi.fn(async () => ({ uuid: 'app-1', git_commit_sha: 'HEAD' })),
       waitForDeployment: vi.fn(async (uuid: string) => dep('finished', uuid)),
     };
     await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps);
-    expect(client.get).not.toHaveBeenCalled();
+    expect(client.waitForDeployment).toHaveBeenCalledWith('dep-only', expect.anything());
     expect(client.listDeployments).toHaveBeenCalledTimes(1);
+  });
+
+  it('the HEAD deployment has just failed while a webhook build of another commit runs: the failure is the outcome', async () => {
+    const client = {
+      deploy: vi.fn(async () => skipped),
+      listDeployments: vi.fn(async () => [
+        dep('in_progress', 'dep-webhook', { commit: 'abc123' }),
+        dep('failed', 'dep-head', { commit: 'HEAD', updated_at: '2026-11-15T23:59:59.000000Z' }),
+      ]),
+      get: vi.fn(async () => ({ uuid: 'app-1', git_commit_sha: null })),
+      waitForDeployment: vi.fn(),
+    };
+    expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).toBe(7);
+    expect(oneJson()).toMatchObject({ deploymentUuid: 'dep-head', followedExisting: true, finalStatus: 'failed' });
+    expect(client.waitForDeployment).not.toHaveBeenCalled();
+  });
+
+  it('an OLD deployment is never passed off as this one: nothing running, nothing just ended → an error, not exit 0', async () => {
+    const client = {
+      deploy: vi.fn(async () => skipped),
+      listDeployments: vi.fn(async () => [dep('finished', 'old-ok-1', { commit: 'HEAD', updated_at: '2026-11-14T08:00:00.000000Z' }), dep('finished', 'old-ok-2', { commit: 'HEAD', updated_at: '2026-11-13T08:00:00.000000Z' })]),
+      waitForDeployment: vi.fn(),
+    };
+    const e = await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(CoolifyNotFoundError);
+    expect(oneJson()).toMatchObject({ deploymentUuid: null, waitFailed: true });
+    expect(JSON.stringify(oneJson())).not.toContain('old-ok-1');
+  });
+
+  it('an acknowledgement that could not be read is not "skipped": --wait fails instead of reporting an older deployment', async () => {
+    const client = {
+      deploy: vi.fn(async () => ({ message: 'accepted', unrecognised: true })),
+      listDeployments: vi.fn(async () => [dep('finished', 'old-ok-1', { commit: 'HEAD', updated_at: '2026-11-15T23:59:59.000000Z' })]),
+      waitForDeployment: vi.fn(),
+    };
+    const { deps, audits } = cmdDeps(client);
+    const e = await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), deps).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(CoolifyContractError);
+    expect((e as Error).message).toMatch(/acknowledgement could not be read.*One may have been queued.*before deploying again/);
+    expect(client.listDeployments).not.toHaveBeenCalled();
+    expect(oneJson()).toMatchObject({ deploymentUuid: null, unrecognised: true, waitFailed: true });
+    expect(audits.map((a) => a.outcome)).toEqual(['success']); // Coolify did accept the request
+    // Without --wait the document says the same, and nothing more is claimed.
+    out = [];
+    expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--json']), cmdDeps(client).deps)).toBe(0);
+    expect(oneJson()).toEqual({ action: 'deploy', message: 'accepted', deploymentUuid: null, unrecognised: true });
   });
 
   it('a burst of preview builds fills the first page: the next page is read before giving up', async () => {
@@ -174,7 +261,7 @@ describe('deploy --wait after a skipped request: which deployment is "the one al
     };
     const e = await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(CoolifyNotFoundError);
-    expect((e as Error).message).toMatch(/queued nothing new.*nothing to follow/);
+    expect((e as Error).message).toMatch(/queued nothing new.*could not be identified/);
     expect(oneJson()).toMatchObject({ deploymentUuid: null, waitFailed: true });
     expect(client.waitForDeployment).not.toHaveBeenCalled();
   });
@@ -370,7 +457,7 @@ describe('the latest deployment of an application is a production one', () => {
     expect(latest?.deployment_uuid).toBe('dep-pr');
     const fake = { get: vi.fn(async () => ({ uuid: 'app-1', name: 'web', status: 'running:healthy' })), getLatestDeployment: vi.fn(async () => latest) };
     expect(await statusCmd(parseArgs(['status', '--app', 'web']), cmdDeps(fake).deps)).toBe(0);
-    expect(stdout()).toContain('dep-pr [failed] (preview of pull request #42; no production deployment found)');
+    expect(stdout()).toContain('dep-pr [failed] (preview of pull request #42; no production deployment among the newest 10)');
   });
 });
 

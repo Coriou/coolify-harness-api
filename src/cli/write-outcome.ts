@@ -11,6 +11,8 @@ export type StoredState = 'new' | 'old' | 'changed' | 'unknown';
  */
 export async function noteStoredState(
   err: unknown, read: () => Promise<string | null | undefined>, before: string, after: string, review: string,
+  /** What "stored: new" means for this document (Coolify does different things after recording it). */
+  whenNew = 'Coolify DID store the new document all the same (it saves before it re-parses): do not send it again.',
 ): Promise<void> {
   if (!(err instanceof CoolifyNetworkError) && !(err instanceof CoolifyRequestError && err.status >= 500)) return;
   let stored: StoredState = 'unknown';
@@ -21,7 +23,7 @@ export async function noteStoredState(
     // still unknown
   }
   const note = {
-    new: 'Coolify DID store the new document all the same (it saves before it re-parses): do not send it again.',
+    new: whenNew,
     changed: 'The stored document is no longer the previous one: the write landed at least in part.',
     old: 'The stored document is unchanged: nothing was saved.',
     unknown: 'Whether the document was stored could not be checked.',

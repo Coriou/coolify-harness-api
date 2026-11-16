@@ -16,6 +16,7 @@ import { proxySet } from '../src/cli/commands/proxy.js';
 import { configDoctor } from '../src/cli/commands/config-doctor.js';
 import { deploymentsCmd, withoutLogs } from '../src/cli/commands/deployments.js';
 import { CoolifyClient } from '../src/client/coolify.js';
+import { waitForDeployment } from '../src/client/wait.js';
 import { CircuitBreaker, httpRequest } from '../src/client/http.js';
 import { resolveInstance, resolveTarget } from '../src/config/load.js';
 import { noopLogger } from '../src/logging/index.js';
@@ -84,17 +85,20 @@ const usageMessage = (argv: string[]): string => {
   throw new Error(`parsed without error: ${argv.join(' ')}`);
 };
 
-describe('--help and --version win wherever they stand', () => {
-  it('--version next to a command never runs the command (it deployed)', async () => {
-    for (const argv of [['deploy', '--app', 'web', '--version'], ['-v', 'deploy', '--app', 'web'], ['deployment', 'cancel', 'dep-1', '--app', 'web', '--apply', '--version']]) {
-      const parsed = parseArgs(argv);
-      expect(parsed.command).toBe('help');
-      expect(parsed.version).toBe(true);
-      expect(parsed.apply).toBe(false);
+describe('--help wins; --version stands alone', () => {
+  it('--version next to a command never runs the command (it deployed) and is not a success either', async () => {
+    for (const argv of [['deploy', '--app', 'web', '--version'], ['-v', 'deploy', '--app', 'web'], ['deployment', 'cancel', 'dep-1', '--app', 'web', '--apply', '--version'], ['env', 'apply', '--app', 'web', '--set', 'A=1', '--apply', '-v']]) {
+      expect(usageMessage(argv)).toMatch(/--version \(-v\) stands alone.*Nothing was run/);
     }
-    expect(await main(['deploy', '--app', 'web', '--version', '--config', join(dir, 'does-not-exist.ts')])).toBe(0);
+    // Exit 2 before the config is even looked for.
+    expect(await main(['deploy', '--app', 'web', '--version', '--config', join(dir, 'does-not-exist.ts')])).toBe(2);
+    expect(stdout()).toBe('');
+    out = []; err = [];
+    for (const argv of [['--version'], ['-v'], ['--version', '--json']]) {
+      expect(parseArgs(argv)).toMatchObject({ command: 'help', version: true });
+    }
+    expect(await main(['--version'])).toBe(0);
     expect(stdout()).toMatch(/^coolify-harness \d+\.\d+\.\d+ /);
-    expect(stderr()).toBe('');
   });
 
   it('--help wins over a flag that is missing its value, and keeps --json', async () => {
@@ -190,6 +194,19 @@ describe('env commands', () => {
     expect(await envDelete(parseArgs(['env', 'delete', '--app', 'web', '--key', 'API_KEY=s3cr3t-AAAA1111bbbb2222', '--json']), cmdDeps(client).deps)).toBe(2);
     expect(stdout() + stderr()).not.toContain('s3cr3t');
     expect(client.listEnvs).not.toHaveBeenCalled();
+  });
+
+  it('env delete still finds a row whose name breaks today\'s rule (a legacy key with dashes)', async () => {
+    const client = { listEnvs: vi.fn(async () => [row('MY-LEGACY-KEY', 'x')]), get: vi.fn(async () => ({ uuid: 'app-1', build_pack: 'nixpacks' })), deleteEnv: vi.fn() };
+    expect(await envDelete(parseArgs(['env', 'delete', '--app', 'web', '--key', 'MY-LEGACY-KEY', '--json']), cmdDeps(client).deps)).toBe(0);
+    expect(oneJson()).toMatchObject({ dryRun: true, delete: [{ key: 'MY-LEGACY-KEY' }], notFound: [] });
+  });
+
+  it('a key that is not found is echoed only when it reads like a name', async () => {
+    const client = { listEnvs: vi.fn(async () => [row('A', '1')]), get: vi.fn(async () => ({ uuid: 'app-1', build_pack: 'nixpacks' })) };
+    expect(await envDelete(parseArgs(['env', 'delete', '--app', 'web', '--key', 'A', '--key', 'MISSING_ONE', '--key', 'p@ss/w0rd!', '--json']), cmdDeps(client).deps)).toBe(0);
+    expect(oneJson()['notFound']).toEqual(['MISSING_ONE', '<10-character key>']);
+    expect(stdout()).not.toContain('p@ss');
   });
 
   it('env apply --apply with nothing to write says so', async () => {
@@ -346,6 +363,75 @@ describe('transport: what a failure means', () => {
       expect(text).not.toContain(TOKEN.slice(2));
       expect(text).toContain('[REDACTED]');
     }
+  });
+});
+
+describe('requests that are given up on', () => {
+  it('an aborted request is not retried and is not a timeout', async () => {
+    const abort = new AbortController();
+    const fetchImpl = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => { reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+      abort.abort();
+    }));
+    const e = await httpRequest('https://c.example/x', { method: 'GET', token: 't', signal: abort.signal }, httpOpts(fetchImpl)).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(CoolifyNetworkError);
+    expect((e as CoolifyNetworkError).reason).toBe('aborted');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await expect(httpRequest('https://c.example/x', { method: 'GET', token: 't', signal: abort.signal }, httpOpts(fetchImpl))).rejects.toMatchObject({ reason: 'aborted' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1); // already aborted: nothing is sent
+  });
+
+  it('a wait that ends tells its poll to stop: nothing keeps running behind it', async () => {
+    const seen: AbortSignal[] = [];
+    const hang = (_uuid: string, poll: { signal: AbortSignal }): Promise<Deployment> => { seen.push(poll.signal); return new Promise(() => {}); };
+    await expect(waitForDeployment(hang, 'd1', { timeoutMs: 20, pollGraceMs: 20 })).rejects.toBeInstanceOf(CoolifyWaitTimeoutError);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.aborted).toBe(true);
+    // …and a poll that answered is left alone.
+    const ok: AbortSignal[] = [];
+    await waitForDeployment(async (_uuid, poll) => { ok.push(poll.signal); return { deployment_uuid: 'd1', status: 'finished' }; }, 'd1');
+    expect(ok[0]!.aborted).toBe(false);
+  });
+
+  it('a short wait is not stretched by the poll grace, and nonsense options are refused', async () => {
+    const hang = (): Promise<Deployment> => new Promise(() => {});
+    const started = Date.now();
+    await expect(waitForDeployment(hang, 'd1', { timeoutMs: 100 })).rejects.toBeInstanceOf(CoolifyWaitTimeoutError);
+    expect(Date.now() - started).toBeLessThan(2000);
+    for (const bad of [{ pollGraceMs: Number.NaN }, { pollGraceMs: -1 }, { maxConsecutiveErrors: Number.NaN }, { maxConsecutiveErrors: -1 }]) {
+      await expect(waitForDeployment(hang, 'd1', bad)).rejects.toBeInstanceOf(RangeError);
+    }
+  });
+
+  it('unreachable-host codes prove nothing was sent only while connecting', async () => {
+    const failure = (code: string, syscall: string): Error => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('x'), { code, syscall }) });
+    const post = (err: Error): Promise<unknown> => httpRequest('https://c.example/x', { method: 'POST', token: 't' }, httpOpts(vi.fn(async () => { throw err; }))).catch((x: unknown) => x);
+    expect(((await post(failure('EHOSTUNREACH', 'connect'))) as CoolifyNetworkError).outcomeUnknown).toBeUndefined();
+    expect(((await post(failure('EHOSTUNREACH', 'read'))) as CoolifyNetworkError).outcomeUnknown).toBe(true);
+    expect(((await post(failure('ENETUNREACH', 'write'))) as CoolifyNetworkError).outcomeUnknown).toBe(true);
+  });
+});
+
+describe('what Coolify says is kept readable', () => {
+  it('a refused /version keeps its reason (the endpoint is text only when it succeeds)', async () => {
+    const inst = new CoolifyClient(appTarget, { fetchImpl: (async () => json(403, { message: 'Missing required permissions: read' })) as never, logger: noopLogger(), maxRetries: 0 }).instance();
+    await expect(inst.getVersion()).rejects.toMatchObject({ serverMessage: 'Missing required permissions: read' });
+  });
+
+  it('field paths are not blanked by the values that were sent', async () => {
+    const body = { message: 'The data.0.value field is required.', errors: { 'data.0.value': ['required'], 'data.0.is_literal': ['boolean'] } };
+    const client = new CoolifyClient(appTarget, { fetchImpl: (async () => json(422, body)) as never, logger: noopLogger(), maxRetries: 0 });
+    const e = await client.upsertEnvs([{ key: 'A', value: 'data' }, { key: 'B', value: 'true' }]).catch((x: unknown) => x);
+    expect((e as CoolifyRequestError).fields).toEqual(['data.0.value', 'data.0.is_literal']);
+    expect((e as Error).message).toContain('fields: data.0.value, data.0.is_literal');
+  });
+
+  it('a 404 says whether it is Coolify\'s own', async () => {
+    const own = new CoolifyClient(appTarget, { fetchImpl: (async () => json(404, { message: 'Deployment not found.' })) as never, logger: noopLogger(), maxRetries: 0 });
+    await expect(own.getDeployment('d1')).rejects.toMatchObject({ code: 'COOLIFY_NOT_FOUND', serverMessage: 'Deployment not found.' });
+    const proxy = new CoolifyClient(appTarget, { fetchImpl: (async () => new Response('404 page not found', { status: 404 })) as never, logger: noopLogger(), maxRetries: 0 });
+    const e = await proxy.getDeployment('d1').catch((x: unknown) => x);
+    expect((e as { serverMessage?: string }).serverMessage).toBeUndefined();
   });
 });
 

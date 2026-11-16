@@ -61,7 +61,8 @@ Not in the Coolify API (exit 2 with where to do it instead)
 
 Local (no token, no network)
   catalog gen | catalog check        env catalog from your Zod schemas (zod 3 or 4)
-  help | --help | -h | --version | -v   (anywhere on the line they win: nothing else runs)
+  help | --help | -h     (wins anywhere on the line: nothing else runs)
+  --version | -v         (alone on the line; beside a command it is refused)
 
 Global flags: --config FILE (default: ./coolify-harness.config.{ts,mts,mjs,js}) · --json
               --token-file FILE  read the API token(s) from a dotenv file (a variable set in the

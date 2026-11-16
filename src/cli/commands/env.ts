@@ -278,10 +278,12 @@ export async function envDelete(args: ParsedArgs, deps: CmdDeps): Promise<number
   if (args.keys.length === 0) {
     return usageFail(args, 'env delete: at least one --key <KEY> is required');
   }
-  // `--key NAME=value` (or a value pasted after --key) would be echoed back as "not found".
-  const invalid = args.keys.filter((k) => !COOLIFY_KEY_RE.test(k) || k.length > 255).length;
-  if (invalid > 0) {
-    return usageFail(args, `env delete: ${invalid} --key value(s) are not variable names (a name starts with a letter or _ and holds only letters, digits, _ and .; no \`=value\`). Not echoed: they may be secret.`);
+  // `--key NAME=value` cannot be a key, and would be echoed back as "not found". A key that
+  // merely breaks today's naming rule may still exist (rows created by older Coolify versions):
+  // it is looked up like any other.
+  const impossible = args.keys.filter((k) => k.includes('=') || /\s/.test(k) || k.length > 255).length;
+  if (impossible > 0) {
+    return usageFail(args, `env delete: ${impossible} --key value(s) cannot be variable names (they hold \`=\` or a blank, or exceed 255 characters). Pass the name only. Not echoed: they may be secret.`);
   }
   const target = deps.resolveTargetFor(args);
   scopeFor(args, target);
@@ -289,7 +291,10 @@ export async function envDelete(args: ParsedArgs, deps: CmdDeps): Promise<number
   const rows = await withScope('read', () => client.listEnvs());
   const wantScope = args.preview ? 'preview' : 'prod';
   const matches = rows.filter((e) => args.keys.includes(e.key) && scopeOf(e) === wantScope);
-  const missing = args.keys.filter((k) => !matches.some((e) => e.key === k));
+  // A key that was not found is echoed only when it reads like a name: it is what the caller
+  // typed, and a secret pasted after --key must not come back in the output.
+  const missing = args.keys.filter((k) => !matches.some((e) => e.key === k))
+    .map((k) => (/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(k) ? k : `<${k.length}-character key>`));
 
   // The compose is only needed to decide whether a MATCHED row would be re-created.
   let compose: string | null | undefined;
@@ -326,7 +331,7 @@ export async function envDelete(args: ParsedArgs, deps: CmdDeps): Promise<number
     printJson({ dryRun: !args.apply, ...plan });
   }
   if (matches.length === 0) {
-    return usageFail(args, `env delete: no ${wantScope} rows match ${args.keys.join(', ')}`);
+    return usageFail(args, `env delete: no ${wantScope} rows match ${missing.join(', ')}`);
   }
   if (locked.length > 0 && !args.force) {
     throw new LockedVarError(

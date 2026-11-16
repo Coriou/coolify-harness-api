@@ -105,9 +105,10 @@ describe('a mutation Coolify accepted is never reported as failed', () => {
 
   it('deploy: a 200 acknowledgement in an unknown shape is still an accepted deploy, and keeps the uuid if there is one', async () => {
     const odd = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => json(200, { status: 'ok', deployment_uuid: 'dep-odd' }))));
-    await expect(odd.deploy()).resolves.toEqual({ message: 'accepted', deploymentUuid: 'dep-odd' });
+    // `unrecognised` says it is not Coolify's usual answer: no uuid there does not mean "skipped".
+    await expect(odd.deploy()).resolves.toEqual({ message: 'accepted', deploymentUuid: 'dep-odd', unrecognised: true });
     const bare = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => json(200, ['queued']))));
-    await expect(bare.restart()).resolves.toEqual({ message: 'accepted' });
+    await expect(bare.restart()).resolves.toEqual({ message: 'accepted', unrecognised: true });
     // A 204 is a success without a body by definition; an EMPTY 200 is not something Coolify sends.
     const del = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => new Response(null, { status: 204 }))));
     await expect(del.deleteEnv('e1')).resolves.toEqual({ message: '' });
@@ -441,10 +442,11 @@ describe('deploy --wait', () => {
   });
 
   it('when the deployment Coolify was busy with has already ended, ITS outcome is reported (never a bare "skipped")', async () => {
+    // cmdDeps' clock is 2026-11-16T00:00:00Z: `dep-just-failed` ended two seconds before it.
     const rows = [
       { ...dep('in_progress', 'dep-pr-42'), pull_request_id: 42 },
-      { ...dep('finished', 'dep-older'), updated_at: '2026-11-15T10:00:00.000000Z' },
-      { ...dep('failed', 'dep-just-failed'), updated_at: '2026-11-16T10:00:05.000000Z' },
+      { ...dep('finished', 'dep-older'), commit: 'HEAD', updated_at: '2026-11-14T10:00:00.000000Z' },
+      { ...dep('failed', 'dep-just-failed'), commit: 'HEAD', updated_at: '2026-11-15T23:59:58.000000Z' },
     ];
     const client = {
       deploy: vi.fn(async () => ({ message: 'Deployment already queued for this commit.' })),
@@ -608,7 +610,7 @@ describe('second review round', () => {
 
   it('a write answered 2xx whose body could not be read was still carried out', async () => {
     const lost = { status: 200, headers: new Headers(), text: async () => { throw new TypeError('terminated'); } } as unknown as Response;
-    await expect(new CoolifyClient(appTarget, clientDeps(vi.fn(async () => lost))).deploy()).resolves.toEqual({ message: 'accepted' });
+    await expect(new CoolifyClient(appTarget, clientDeps(vi.fn(async () => lost))).deploy()).resolves.toEqual({ message: 'accepted', unrecognised: true });
     // …but a READ whose body is lost is a network error (and is retried).
     await expect(new CoolifyClient(appTarget, clientDeps(vi.fn(async () => lost))).listEnvs()).rejects.toBeInstanceOf(CoolifyNetworkError);
   });
