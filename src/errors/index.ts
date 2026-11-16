@@ -9,19 +9,60 @@ export class CoolifyHarnessError extends Error {
 
 export class CoolifyAuthError extends CoolifyHarnessError {
   readonly status?: number;
-  constructor(message: string, opts?: { status?: number }) {
+  /** Coolify's own explanation, e.g. `Missing required permissions: delete` (never a secret). */
+  readonly serverMessage?: string;
+  constructor(message: string, opts?: { status?: number; serverMessage?: string }) {
     super(message, 'COOLIFY_AUTH');
     if (opts?.status !== undefined) {
       this.status = opts.status;
+    }
+    if (opts?.serverMessage !== undefined) {
+      this.serverMessage = opts.serverMessage;
     }
   }
 }
 
 export class CoolifyAuthScopeError extends CoolifyHarnessError {
   readonly requiredScope: string;
-  constructor(message: string, opts: { requiredScope: string }) {
+  /** Coolify's own explanation of the 403, when it sent one. */
+  readonly serverMessage?: string;
+  constructor(message: string, opts: { requiredScope: string; serverMessage?: string }) {
     super(message, 'COOLIFY_AUTH_SCOPE');
     this.requiredScope = opts.requiredScope;
+    if (opts.serverMessage !== undefined) {
+      this.serverMessage = opts.serverMessage;
+    }
+  }
+}
+
+/**
+ * Coolify could not be reached: DNS / connection / TLS failure, a request that timed out, or the
+ * circuit breaker refusing after repeated failures. Distinct from an HTTP error answer.
+ */
+export class CoolifyNetworkError extends CoolifyHarnessError {
+  /** `timeout`, `circuit-open`, or the underlying system code (`ENOTFOUND`, `ECONNREFUSED`, ...). */
+  readonly reason: string;
+  constructor(message: string, opts: { reason: string }) {
+    super(message, 'COOLIFY_NETWORK');
+    this.reason = opts.reason;
+  }
+}
+
+/** Bad command line: unknown command/flag, missing or malformed value. CLI exit 2. */
+export class UsageError extends CoolifyHarnessError {
+  constructor(message: string) { super(message, 'USAGE'); }
+}
+
+/**
+ * A value handed to the library is not something the Coolify API accepts (an empty env key, a
+ * field the endpoint does not take, ...). Raised before any request is sent. CLI exit 2.
+ */
+export class InvalidInputError extends CoolifyHarnessError {
+  /** `path: problem` per rejected field. Never contains the rejected values. */
+  readonly issues: string[];
+  constructor(message: string, opts: { issues: string[] }) {
+    super(message, 'INVALID_INPUT');
+    this.issues = opts.issues;
   }
 }
 
