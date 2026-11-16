@@ -3,6 +3,11 @@ import { type ServiceImage } from '../../client/compose.js';
 import { type CmdDeps } from '../deps.js';
 /** Re-throw a helper's input error (unknown service, bad ref) as a usage error (exit 2). */
 export declare function asUsageError<T>(fn: () => T): T;
+/**
+ * Said under a diff that hides whole added lines: the reader must not take `[REDACTED]` for "a
+ * secret, nothing to review". With `--from-file` the lines are the caller's own.
+ */
+export declare function hiddenAdditionsNote(count: number, fromFile: boolean, getCommand: string): string;
 /** Read `--from-file`; a missing or unreadable file is a usage error (exit 2), not an internal one. */
 export declare function readInputFile(path: string, deps: CmdDeps): Promise<string>;
 /** Parse repeated `--image name=ref` into pairs (a bare ref is rejected: services have several images). */

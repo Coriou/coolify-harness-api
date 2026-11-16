@@ -58,13 +58,18 @@ const PEM_BEGIN_RE = /-----BEGIN [A-Z0-9 ]+-----/;
 const PEM_END_RE = /-----END [A-Z0-9 ]+-----/;
 /**
  * A base64 line (the body of a PEM block), possibly commented out, quoted, an element of a JSON
- * array (`"…",`) or written with its line break escaped (`…\n\`).
+ * array (`"…",`), written with its line break escaped (`…\n\`) or continued by the shell (`'…' \`).
  */
-const PEM_B64_RE = /^[\s#>]*["']?[A-Za-z0-9+/=]+(?:\\[nr])*\\?["']?,?\s*$/;
-/** A header line of a PEM / OpenPGP block, by its real names (RFC 1421, RFC 4880). */
-const PEM_HEADER_RE = /^[\s#>]*(Proc-Type|DEK-Info|Content-Domain|Version|Comment|MessageID|Hash|Charset):[ \t]*\S/;
-/** How far ahead the END marker of a block is looked for. */
+const PEM_B64_RE = /^[\s#>]*["']?[A-Za-z0-9+/=]+(?:\\[nr])*\\?["']?,?(?:[ \t]+\\)?\s*$/;
+/**
+ * A header line of a PEM / OpenPGP / SSH2 block, by its real names (RFC 1421, RFC 4880, RFC 4716).
+ * By name only: any other `Name: value` line reads exactly like a YAML key.
+ */
+const PEM_HEADER_RE = /^[\s#>]*["']?(Proc-Type|DEK-Info|Content-Domain|Originator-[A-Za-z-]+|Recipient-[A-Za-z-]+|Issuer-Certificate|MIC-Info|Key-Info|CRL|Version|Comment|MessageID|Hash|Charset|Subject):(\s|$)/;
+/** How many header lines a block may hold, and how far a block cut short by another line is followed. */
 const PEM_MAX_LINES = 400;
+/** A body line of a real key is 64 to 76 characters; a word of a compose file is not. */
+const PEM_LONG_LINE = 40;
 /** Compose keys whose value is a command line (inline or as a list of arguments). */
 const COMMAND_YAML_KEY_RE = /^(command|entrypoint|test)$/i;
 /** Flow collections under these keys carry no secret and are worth reading. */
@@ -953,6 +958,14 @@ const indentOf = (line) => line.length - line.trimStart().length;
 const startsFlow = (v) => v.startsWith('{') || v.startsWith('[');
 /** Does a flow collection that starts on this line also end on it? */
 const flowCloses = (v) => /[}\]]$/.test(trimTrailing(v.trimEnd(), ',').trimEnd());
+/** `before` ends inside a trailing comment: code, then ` #`, with no quote left open before it. */
+function inTrailingComment(before) {
+    const hash = before.search(/\s#/);
+    if (hash < 0)
+        return false;
+    const code = before.slice(0, hash);
+    return code.trim() !== '' && code.split('"').length % 2 === 1 && code.split("'").length % 2 === 1;
+}
 /**
  * Index of the quote that closes a YAML / dotenv quoted scalar in `text` (which starts AFTER the
  * opening quote), or -1 when it does not close here. `\x` is an escape in double quotes, `''` in
@@ -1130,8 +1143,9 @@ export function redactDocumentLines(text) {
     let cmdScriptIndent = -1; // column of a `- |` item whose script body follows (ordinary lines)
     const cmdCarry = { flag: '' };
     let inPem = false;
-    let pemToEnd = false; // the block's END marker follows: everything up to it is the block
-    let pemLines = 0; // lines hidden since a BEGIN without END
+    let pemLines = 0; // header lines hidden since the BEGIN marker
+    let pemWeak = 0; // lines left to follow a block that another line cut short (0: none)
+    let pemRun = false; // the line before was hidden as the body of such a block
     let pemComment = false; // the BEGIN marker stood in a comment
     let continues = ''; // inside a Dockerfile instruction continued with `\`
     const runCarry = { flag: '' };
@@ -1194,18 +1208,36 @@ export function redactDocumentLines(text) {
             const stays = pemComment
                 // A block inside a comment ends with the comment.
                 ? blank || /^\s*#/.test(line)
-                // A block whose END follows is hidden whole, whatever its lines look like (headers of any
-                // name, a body that is not plain base64). A BEGIN without END in sight is a truncated or
-                // very long key, or mere text: only what can be a key is hidden — base64 lines, and a
-                // bounded number of armor headers.
-                : pemToEnd || blank || PEM_B64_RE.test(line) || (PEM_HEADER_RE.test(line) && (pemLines += 1) <= PEM_MAX_LINES);
+                // What a block is made of: base64 lines and the armor headers.
+                : blank || PEM_B64_RE.test(line) || (PEM_HEADER_RE.test(line) && (pemLines += 1) <= PEM_MAX_LINES);
             if (stays) {
                 hide();
                 continue;
             }
-            // The marker was text (a label, a note), or the block never closed. Hiding on would swallow
-            // the rest of the document — and with it whatever a diff should show.
+            // Anything else ends it: the marker was text (a label, a note, an element of a list), or
+            // the block holds a line no key block has. Hiding on, up to an END marker further down,
+            // would swallow what a diff must show — and a line-based reader cannot tell text from the
+            // rest of the service there: YAML lets a quoted scalar or a flow collection sit at any
+            // indent, so neither the indentation nor the line before the marker proves anything.
             inPem = false;
+            // If it was a block after all (a header of an unknown name), its body must not be printed
+            // for that one line: for a while, lines that can only be key material stay hidden.
+            pemWeak = pemComment ? 0 : PEM_MAX_LINES;
+            pemRun = false;
+        }
+        if (pemWeak > 0) {
+            pemWeak -= 1;
+            if (PEM_END_RE.test(line)) {
+                pemWeak = 0;
+            }
+            else if (PEM_B64_RE.test(line) && (pemRun || line.trim().length >= PEM_LONG_LINE)) {
+                pemRun = true;
+                hide();
+                continue;
+            }
+            else {
+                pemRun = false;
+            }
         }
         if (blockIndent >= 0) {
             if (blank || indent > blockIndent) {
@@ -1273,49 +1305,10 @@ export function redactDocumentLines(text) {
             }
             inPem = true;
             pemLines = 0;
-            pemComment = /^\s*#/.test(line);
-            // A block, or a marker that is mere text (a label, a note)? A block has its END marker
-            // ahead, with nothing in between left of where its lines may sit: at the marker's indent
-            // when it stands alone on its line, deeper when it is the value of a key or a list item
-            // (the lines at the key's or the dash's own indent are the next keys and items: in a list
-            // written at its key's indent they are the rest of the service).
-            const rest = line.slice(pem.index + pem[0].length);
-            const alone = /^[\s#>]*["']?$/.test(line.slice(0, pem.index)) && !/^["']?\s*:(\s|$)/.test(rest);
-            const floor = alone ? indent : indent + 1;
-            // An element of a flow collection written over several lines (the line before ends with
-            // `[`, `{` or `,`): the collection ends at the first closing bracket with no opener since
-            // the marker, and a block with it. Elsewhere a bracket is just a character of the block.
-            let before = idx - 1;
-            while (before >= 0 && (pieces[before] ?? '').trim() === '')
-                before -= 1;
-            const inFlow = /[[{,]\s*$/.test(pieces[before] ?? '');
-            let brackets = 0;
-            const closesFlow = (s) => {
-                if (!/[[\]{}]/.test(s))
-                    return false;
-                for (let c = 0; c < s.length; c += 1) {
-                    const ch = s.charAt(c);
-                    if (ch === '[' || ch === '{')
-                        brackets += 1;
-                    else if ((ch === ']' || ch === '}') && (brackets -= 1) < 0)
-                        return true;
-                }
-                return false;
-            };
-            pemToEnd = false;
-            if (!closesFlow(rest)) {
-                for (let k = idx + 1; k < pieces.length && k <= idx + PEM_MAX_LINES; k += 1) {
-                    const next = pieces[k] ?? '';
-                    if (PEM_END_RE.test(next)) {
-                        pemToEnd = true;
-                        break;
-                    }
-                    if (next.trim() !== '' && indentOf(next) < floor)
-                        break;
-                    if (inFlow && closesFlow(next))
-                        break;
-                }
-            }
+            pemWeak = 0;
+            // In a comment — the whole line, or after the code on it (`cap_add: [ # -----BEGIN…`):
+            // only comment lines can belong to it.
+            pemComment = /^\s*#/.test(line) || inTrailingComment(line.slice(0, pem.index));
             continue;
         }
         // A comment changes no state. What it comments out is redacted like a live line.

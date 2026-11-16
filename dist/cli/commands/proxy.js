@@ -1,4 +1,4 @@
-import { formatRedactedDiff, isValidImageRef, listServiceImages, setServiceImage, sha256, splitImageRef, } from '../../client/compose.js';
+import { countHiddenAdditions, formatRedactedDiff, isValidImageRef, listServiceImages, setServiceImage, sha256, splitImageRef, } from '../../client/compose.js';
 import { redactDocument } from '../../client/redact.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
 import { audited, defaultWriteFile, print, printJson, requireInstance, warn, usageFail } from '../deps.js';
@@ -6,7 +6,7 @@ import { withScope } from '../scope.js';
 import { noteStoredState } from '../write-outcome.js';
 import { sanitizeErrorMessage } from '../errors-out.js';
 import { EXIT } from '../exit.js';
-import { asUsageError, imageChanges, readInputFile, requireServices } from './compose.js';
+import { asUsageError, hiddenAdditionsNote, imageChanges, readInputFile, requireServices } from './compose.js';
 function requireServer(args) {
     if (!args.server)
         usageFail(args, `${args.command.replace('-', ' ')}: --server <uuid> is required (list them with \`servers --instance <name>\`)`);
@@ -105,7 +105,8 @@ export async function proxySet(args, deps) {
         }
     }
     const diff = formatRedactedDiff(before, after);
-    const report = { dryRun: !args.apply, server: uuid, changed: before !== after, imageChanges: changes, warnings, diff };
+    const hiddenAddedLines = countHiddenAdditions(diff);
+    const report = { dryRun: !args.apply, server: uuid, changed: before !== after, imageChanges: changes, warnings, diff, hiddenAddedLines };
     if (!args.json) {
         for (const c of changes)
             print(`proxy image ${c.service}: ${c.from ?? '(none)'} -> ${c.to ?? '(removed)'}`);
@@ -113,6 +114,8 @@ export async function proxySet(args, deps) {
             print(`WARNING: ${w}`);
         for (const line of diff)
             print(line);
+        if (hiddenAddedLines > 0)
+            print(hiddenAdditionsNote(hiddenAddedLines, args.fromFile !== undefined, `coolify-harness proxy get --instance ${args.instance ?? '<name>'} --server ${uuid} --out FILE`));
     }
     if (before === after || !args.apply) {
         const restartSkipped = before === after && args.apply && args.restart

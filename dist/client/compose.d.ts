@@ -33,6 +33,12 @@ export type DiffOp = {
 /** LCS line diff of the RAW documents. Never print its lines: use formatRedactedDiff. */
 export declare function diffLines(before: string, after: string): DiffOp[];
 /**
+ * How many added lines of a redacted diff are hidden whole (`+     [REDACTED]`): the reader cannot
+ * tell what they add. Redaction of a free-form document is a heuristic that errs on the side of
+ * hiding, so a command that prints such a diff says how many there are and where to read them.
+ */
+export declare function countHiddenAdditions(diff: readonly string[]): number;
+/**
  * Human diff of two compose documents with secrets redacted on both sides. Each document is
  * redacted as a whole first, so a line is judged in its context (inside an `environment:` block, a
  * block scalar or a PEM block) rather than on its own. A changed line whose redacted form is
