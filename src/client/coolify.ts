@@ -104,7 +104,7 @@ export class CoolifyClient {
     });
     // Services and databases answer a CREATED row without its flag columns, which is not an env
     // row by our schema: the write landed all the same, and callers confirm by re-reading.
-    return ackAfterWrite(this.deps, 'upsertEnvs', () => s.parseOrContractError(s.BulkResponseSchema, res.body, 'upsertEnvs'), () => []);
+    return ackAfterWrite(this.deps, 'upsertEnvs', res.body, () => s.parseOrContractError(s.BulkResponseSchema, res.body, 'upsertEnvs'), () => []);
   }
 
   /**
@@ -113,7 +113,7 @@ export class CoolifyClient {
    */
   async deleteEnv(envUuid: string): Promise<MessageAck> {
     const res = await this.api.request(`${this.base()}/envs/${encodeURIComponent(envUuid)}`, 'DELETE');
-    return ackAfterWrite(this.deps, 'deleteEnv', async () => {
+    return ackAfterWrite(this.deps, 'deleteEnv', res.body, async () => {
       const s = await loadSchemas();
       return s.parseOrContractError(s.MessageAckSchema, res.body, 'deleteEnv');
     }, () => ({ message: rawMessage(res.body) }));
@@ -146,7 +146,7 @@ export class CoolifyClient {
   private ackFor(res: { body: unknown }, ctx: string): Promise<DeployAck> {
     // Coolify accepted the request: an acknowledgement we cannot read must not look like a failed
     // deploy (the agent would queue another one).
-    return ackAfterWrite(this.deps, ctx, async () => {
+    return ackAfterWrite(this.deps, ctx, res.body, async () => {
       const s = await loadSchemas();
       if (this.target.kind === 'application') {
         const parsed = s.parseOrContractError(s.DeployAckApplicationSchema, res.body, ctx);
@@ -203,7 +203,7 @@ export class CoolifyClient {
       idempotent: true,
       secrets: [...documentSecrets(composeRaw), toBase64(composeRaw)],
     });
-    return ackAfterWrite(this.deps, 'updateServiceCompose', async () => {
+    return ackAfterWrite(this.deps, 'updateServiceCompose', res.body, async () => {
       const s = await loadSchemas();
       return s.parseOrContractError(s.ServiceUpdateResponseSchema, res.body, 'updateServiceCompose');
     }, () => ({}));

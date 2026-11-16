@@ -17,6 +17,7 @@ import type {
   Service,
 } from './schemas.js';
 import { loadSchemas } from './lazy-schemas.js';
+import { CoolifyContractError } from '../errors/index.js';
 import { toBase64 } from './compose.js';
 
 const asText = (body: unknown): string => (typeof body === 'string' ? body : JSON.stringify(body ?? '')).trim();
@@ -28,7 +29,7 @@ const seg = (uuid: string): string => encodeURIComponent(uuid);
  *
  * Not exposed by the Coolify API (checked on 4.5.0 and 4.7.5) and therefore NOT here: upgrading Coolify itself,
  * checking/installing server OS package updates, and rebooting a server. Those exist only as
- * dashboard (Livewire) actions; see README "What the Coolify API does not expose".
+ * dashboard (Livewire) actions; see README "What the Coolify API cannot do".
  */
 export class CoolifyInstanceClient {
   private readonly api: CoolifyApi;
@@ -49,7 +50,15 @@ export class CoolifyInstanceClient {
 
   /** Coolify version string, e.g. `4.7.5` (`GET /version`, scope `read`; served as text). */
   async getVersion(): Promise<string> {
-    return asText((await this.api.request('/version', 'GET')).body);
+    const version = asText((await this.api.request('/version', 'GET')).body);
+    // A login page or a proxy's HTML answers 200 too: that is not a Coolify instance answering.
+    if (!/^v?\d+\.\d+(\.\d+)?[0-9A-Za-z.+-]*$/.test(version)) {
+      throw new CoolifyContractError(
+        `${this.api.instanceUrl}/api/v1/version did not answer with a Coolify version (got ${version.length} characters of something else). Is the instance url right, and the API enabled?`,
+        { zodIssues: 'version: expected a version string' },
+      );
+    }
+    return version;
   }
 
   /** `OK` when the instance is healthy (`GET /health`, no auth needed). */
@@ -89,7 +98,7 @@ export class CoolifyInstanceClient {
   /** `POST /deployments/{uuid}/cancel` (scope `deploy`). 400 if the deployment already ended. */
   async cancelDeployment(deploymentUuid: string): Promise<DeploymentCancel> {
     const res = await this.api.request(`/deployments/${seg(deploymentUuid)}/cancel`, 'POST');
-    return ackAfterWrite(this.api.deps, 'cancelDeployment', async () => {
+    return ackAfterWrite(this.api.deps, 'cancelDeployment', res.body, async () => {
       const s = await loadSchemas();
       return s.parseOrContractError(s.DeploymentCancelSchema, res.body, 'cancelDeployment');
     }, () => ({ message: rawMessage(res.body) }));
@@ -140,7 +149,7 @@ export class CoolifyInstanceClient {
     const s = await loadSchemas();
     const body = s.parseInput(s.ServerProxyUpdateSchema, patch, 'proxy update');
     const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy`, 'PATCH', body);
-    return ackAfterWrite(this.api.deps, 'updateServerProxy', () => s.parseOrContractError(s.ServerProxySchema, res.body, 'updateServerProxy'), () => ({}));
+    return ackAfterWrite(this.api.deps, 'updateServerProxy', res.body, () => s.parseOrContractError(s.ServerProxySchema, res.body, 'updateServerProxy'), () => ({}));
   }
 
   /**
@@ -155,7 +164,7 @@ export class CoolifyInstanceClient {
     const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy/configuration`, 'PUT', {
       configuration: toBase64(composeYaml),
     }, { secrets: [...documentSecrets(composeYaml), toBase64(composeYaml)] });
-    return ackAfterWrite(this.api.deps, 'saveServerProxyConfiguration', async () => {
+    return ackAfterWrite(this.api.deps, 'saveServerProxyConfiguration', res.body, async () => {
       const s = await loadSchemas();
       return s.parseOrContractError(s.ServerProxySchema, res.body, 'saveServerProxyConfiguration');
     }, () => ({}));
@@ -164,7 +173,7 @@ export class CoolifyInstanceClient {
   /** Queue a proxy restart (scope `deploy`). Coolify pulls the image from the stored compose first. */
   async restartServerProxy(serverUuid: string): Promise<MessageAck> {
     const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy/restart`, 'POST');
-    return ackAfterWrite(this.api.deps, 'restartServerProxy', async () => {
+    return ackAfterWrite(this.api.deps, 'restartServerProxy', res.body, async () => {
       const s = await loadSchemas();
       return s.parseOrContractError(s.MessageAckSchema, res.body, 'restartServerProxy');
     }, () => ({ message: rawMessage(res.body) }));

@@ -41,7 +41,8 @@ describe('httpRequest', () => {
   it('retries the bulk-unmarshal quirk then throws CoolifyBulkUnmarshalError on exhaustion', async () => {
     const fetchImpl = vi.fn().mockImplementation(() => mkResponse(500, { message: 'cannot unmarshal array into Go value' }));
     await expect(
-      httpRequest('https://c/x', { method: 'PATCH', token: 't', jsonBody: { data: [] } }, { ...baseOpts(fetchImpl as unknown as typeof fetch), maxRetries: 2 }),
+      // The bulk env write is the idempotent request this quirk belongs to (the client marks it so).
+      httpRequest('https://c/x', { method: 'PATCH', token: 't', jsonBody: { data: [] }, idempotent: true }, { ...baseOpts(fetchImpl as unknown as typeof fetch), maxRetries: 2 }),
     ).rejects.toBeInstanceOf(CoolifyBulkUnmarshalError);
   });
 

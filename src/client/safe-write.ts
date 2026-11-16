@@ -70,12 +70,20 @@ function groupByKey(current: EnvVar[]): Map<string, EnvVar[]> {
 
 const scopeOf = (row: EnvVar): EnvScope => (row.is_preview ? 'preview' : 'production');
 
+/** What PHP's `trim()` removes (Coolify's side): space, tab, newline, CR, NUL, vertical tab. */
+const phpTrim = (v: string): string => v.replace(/^[ \t\n\r\0\x0B]+|[ \t\n\r\0\x0B]+$/g, '');
+
 /**
- * Coolify trims a value when it saves it (single-line values on 4.7, every value on 4.5), so
- * ` x ` and `x` are the same stored value. Comparing them raw made such a key an update on every
- * run and its confirmation fail forever.
+ * Would Coolify store `desired` as `stored`? Coolify 4.7 trims a value on save unless its trimmed
+ * form spans several lines (a PEM keeps its final newline); 4.5 trimmed everything. Comparing raw
+ * made ` x ` an update on every run. A multi-line value is compared exactly: its edge whitespace
+ * is real on 4.7 (on 4.5 such a value with a trailing newline never converges).
  */
-const sameValue = (a: string, b: string): boolean => a === b || a.trim() === b.trim();
+const sameValue = (stored: string, desired: string): boolean => {
+  if (stored === desired) return true;
+  const trimmed = phpTrim(desired);
+  return !trimmed.includes('\n') && phpTrim(stored) === trimmed;
+};
 
 /** A row whose value Coolify never returns: locked (`is_shown_once`), whatever the token can read. */
 export const isLockedRow = (row: EnvVar): boolean => row.value_hidden === true && row.is_shown_once;
@@ -135,7 +143,7 @@ export function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePl
   const otherScope: OtherScopeDifference[] = [];
   for (const [key, value] of Object.entries(desired.values)) {
     const other = otherByKey.get(key);
-    if (value !== value.trim() && !value.includes('\n')) {
+    if (value !== phpTrim(value) && !phpTrim(value).includes('\n')) {
       warnings.push({ kind: 'trimmed-value', message: `Key '${key}': the value has leading or trailing whitespace, which Coolify removes when it saves` });
     }
     if (other && other.some((r) => r.value_hidden !== true && !sameValue(r.value, value))) {

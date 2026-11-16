@@ -217,13 +217,19 @@ export async function httpRequest(
         : 0,
     });
 
-    let response: Response;
+    let response: Response | undefined;
     let text: string;
     try {
       response = await fetchImpl(url, requestInit);
       // Reading the body is part of the attempt: a connection dropped mid-body is a network error.
       text = await response.text();
     } catch (err) {
+      // …except for a write Coolify already answered 2xx: it was carried out, only the
+      // acknowledgement is lost. Reporting a network error would get the mutation repeated.
+      if (response !== undefined && !idempotent && response.status >= 200 && response.status < 300) {
+        breaker.recordSuccess();
+        return { status: response.status, body: undefined };
+      }
       breaker.recordFailure();
       if (idempotent && attempt < maxRetries) {
         await sleep(backoff(attempt));
@@ -251,13 +257,15 @@ export async function httpRequest(
 
     // A definitive 4xx answer (other than 429 / the unmarshal quirk) is not a transport failure
     // and is never retried: return it for typed-error mapping.
-    if (status >= 400 && status < 500 && !rateLimited && !unmarshal) {
+    if (status >= 400 && status < 500 && !rateLimited && !(unmarshal && idempotent)) {
       breaker.recordSuccess();
       return { status, body };
     }
 
     breaker.recordFailure();
-    const retryable = rateLimited || unmarshal || idempotent;
+    // The unmarshal quirk belongs to the (idempotent) bulk env write; a non-idempotent request
+    // that happens to carry that text is not replayed.
+    const retryable = rateLimited || idempotent;
     if (retryable && attempt < maxRetries) {
       const asked = rateLimited ? retryAfterMs(response.headers.get('retry-after')) : undefined;
       // A server asking for a longer pause than we are willing to sit through gets the 429
@@ -267,7 +275,7 @@ export async function httpRequest(
       continue;
     }
 
-    if (unmarshal) {
+    if (unmarshal && idempotent) {
       throw new CoolifyBulkUnmarshalError('Coolify bulk endpoint returned the unmarshal-array quirk after retries');
     }
     return { status, body };

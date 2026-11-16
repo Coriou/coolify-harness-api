@@ -1,6 +1,6 @@
 import { CircuitBreaker, httpRequest, type FetchLike, type HttpResult } from './http.js';
 import type { Logger } from '../logging/index.js';
-import { CoolifyAuthError, CoolifyNotFoundError, CoolifyRequestError } from '../errors/index.js';
+import { CoolifyAuthError, CoolifyContractError, CoolifyNotFoundError, CoolifyRequestError } from '../errors/index.js';
 import { REDACTED, redactUrlCredentials } from './redact.js';
 import { preloadSchemasOnceRequestIsSent } from './lazy-schemas.js';
 
@@ -166,15 +166,26 @@ export function rawMessage(body: unknown): string {
 }
 
 /**
- * Parse the acknowledgement of a mutation Coolify has ALREADY accepted (2xx). If the body does
- * not match the schema — or the validators cannot even be loaded — the write still happened:
- * reporting it as a failure would make an agent repeat it (a second deployment, a second delete).
- * So an unreadable acknowledgement is logged and replaced by a best-effort one.
+ * Parse the acknowledgement of a mutation Coolify has ALREADY accepted (2xx). If the body is JSON
+ * (or empty) but does not match the schema — or the validators cannot be loaded — the write still
+ * happened: reporting it as a failure would make an agent repeat it (a second deployment, a second
+ * delete). So an acknowledgement in an unexpected JSON shape is logged and replaced by a
+ * best-effort one.
+ *
+ * A 2xx that is not JSON at all (an HTML login or maintenance page from a proxy, a wrong URL) is
+ * NOT an acknowledgement: nothing says Coolify saw the request, so that stays an error.
  */
-export async function ackAfterWrite<T>(deps: CoolifyClientDeps, ctx: string, parse: () => Promise<T> | T, fallback: () => T): Promise<T> {
+export async function ackAfterWrite<T>(deps: CoolifyClientDeps, ctx: string, body: unknown, parse: () => Promise<T> | T, fallback: () => T): Promise<T> {
   try {
     return await parse();
   } catch (err) {
+    const isJson = body === undefined || (body !== null && typeof body === 'object');
+    if (!isJson) {
+      throw new CoolifyContractError(
+        `Coolify answered ${ctx} with a 2xx that is not JSON (a login or maintenance page? a wrong instance url?). Whether the request was carried out is unknown: check before retrying.`,
+        { zodIssues: 'non-JSON body' },
+      );
+    }
     deps.logger.warn('coolify.ack.unrecognised', { ctx, error: err instanceof Error ? err.message : String(err) });
     return fallback();
   }
