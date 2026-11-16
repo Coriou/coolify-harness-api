@@ -143,16 +143,28 @@ export function diffLines(before, after) {
     return diffIndices(a, b).map((o) => ({ op: o.op, line: o.op === 'add' ? b[o.b] : a[o.a] }));
 }
 /**
- * How many added lines of a redacted diff are hidden whole (`+     [REDACTED]`): the reader cannot
- * tell what they add. Redaction of a free-form document is a heuristic that errs on the side of
- * hiding, so a command that prints such a diff says how many there are and where to read them.
+ * How many added or changed lines of a redacted diff are hidden whole (`+     [REDACTED]`,
+ * `~ [REDACTED]   (redacted value changed)`): the reader cannot tell what they add. Redaction of a
+ * free-form document is a heuristic that errs on the side of hiding, so a command that prints such
+ * a diff says how many there are and where to read them. A lone CR is a line break to YAML: each
+ * piece of a diff line counts.
  */
 export function countHiddenAdditions(diff) {
     let hidden = 0;
-    for (const line of diff)
-        if (/^\+\s*(?:-\s+)?\[REDACTED\]\s*$/.test(line))
-            hidden += 1;
+    for (const line of diff) {
+        const sign = line.charAt(0);
+        if (sign !== '+' && sign !== '~')
+            continue;
+        const text = sign === '~' ? line.slice(1).replace(/\s+\(redacted value changed\)$/, '') : line.slice(1);
+        for (const piece of text.split('\r'))
+            if (/^\s*(?:-\s+)?\[REDACTED\]\s*$/.test(piece))
+                hidden += 1;
+    }
     return hidden;
+}
+/** A diff line for a terminal: a CR inside it would move the cursor back and overprint its start. */
+export function printableDiffLine(line) {
+    return line.replace(/\r(?!$)/g, '\\r');
 }
 /**
  * Human diff of two compose documents with secrets redacted on both sides. Each document is

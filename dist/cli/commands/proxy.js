@@ -1,4 +1,4 @@
-import { countHiddenAdditions, formatRedactedDiff, isValidImageRef, listServiceImages, setServiceImage, sha256, splitImageRef, } from '../../client/compose.js';
+import { countHiddenAdditions, formatRedactedDiff, isValidImageRef, listServiceImages, printableDiffLine, setServiceImage, sha256, splitImageRef, } from '../../client/compose.js';
 import { redactDocument } from '../../client/redact.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
 import { audited, defaultWriteFile, print, printJson, requireInstance, warn, usageFail } from '../deps.js';
@@ -113,7 +113,7 @@ export async function proxySet(args, deps) {
         for (const w of warnings)
             print(`WARNING: ${w}`);
         for (const line of diff)
-            print(line);
+            print(printableDiffLine(line));
         if (hiddenAddedLines > 0)
             print(hiddenAdditionsNote(hiddenAddedLines, args.fromFile !== undefined, `coolify-harness proxy get --instance ${args.instance ?? '<name>'} --server ${uuid} --out FILE`));
     }

@@ -4,7 +4,7 @@ import { type CmdDeps } from '../deps.js';
 /** Re-throw a helper's input error (unknown service, bad ref) as a usage error (exit 2). */
 export declare function asUsageError<T>(fn: () => T): T;
 /**
- * Said under a diff that hides whole added lines: the reader must not take `[REDACTED]` for "a
+ * Said under a diff that hides whole added or changed lines: the reader must not take `[REDACTED]` for "a
  * secret, nothing to review". With `--from-file` the lines are the caller's own.
  */
 export declare function hiddenAdditionsNote(count: number, fromFile: boolean, getCommand: string): string;

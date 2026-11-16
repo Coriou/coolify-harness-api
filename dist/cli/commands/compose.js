@@ -1,5 +1,5 @@
 import { readFile as nodeReadFile } from 'node:fs/promises';
-import { countHiddenAdditions, formatRedactedDiff, isValidImageRef, listServiceImages, setServiceImage, sha256, } from '../../client/compose.js';
+import { countHiddenAdditions, formatRedactedDiff, isValidImageRef, listServiceImages, printableDiffLine, setServiceImage, sha256, } from '../../client/compose.js';
 import { redactDocument } from '../../client/redact.js';
 import { CoolifyAuthScopeError, CoolifyFeatureNotSupportedError, UsageError } from '../../errors/index.js';
 import { sanitizeErrorMessage } from '../errors-out.js';
@@ -18,14 +18,14 @@ export function asUsageError(fn) {
     }
 }
 /**
- * Said under a diff that hides whole added lines: the reader must not take `[REDACTED]` for "a
+ * Said under a diff that hides whole added or changed lines: the reader must not take `[REDACTED]` for "a
  * secret, nothing to review". With `--from-file` the lines are the caller's own.
  */
 export function hiddenAdditionsNote(count, fromFile, getCommand) {
     const where = fromFile
         ? 'They come from your --from-file document: read them there'
         : `They are lines of the stored document (\`${getCommand}\` writes it unredacted): read them`;
-    return `NOTE: ${count} added line${count === 1 ? ' is' : 's are'} hidden whole by redaction ([REDACTED]) — a secret, or text the redactor took for one. ${where} before --apply.`;
+    return `NOTE: ${count} added or changed line${count === 1 ? ' is' : 's are'} hidden whole by redaction ([REDACTED]) — a secret, or text the redactor took for one. ${where} before --apply.`;
 }
 /** Read `--from-file`; a missing or unreadable file is a usage error (exit 2), not an internal one. */
 export async function readInputFile(path, deps) {
@@ -158,7 +158,7 @@ export async function composeSet(args, deps) {
         for (const c of changes)
             print(`image ${c.service}: ${c.from ?? '(none)'} -> ${c.to ?? '(removed)'}`);
         for (const line of diff)
-            print(line);
+            print(printableDiffLine(line));
         if (hiddenAddedLines > 0)
             print(hiddenAdditionsNote(hiddenAddedLines, args.fromFile !== undefined, `coolify-harness compose get --app ${args.app ?? '<service>'} --out FILE`));
     }
