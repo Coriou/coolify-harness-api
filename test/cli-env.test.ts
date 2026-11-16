@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { z } from 'zod';
+import { UsageError } from '../src/errors/index.js';
 import { envDiff, envApply, parseDotenv } from '../src/cli/commands/env.js';
 import type { ParsedArgs } from '../src/cli/args.js';
 import type { EnvVar } from '../src/client/schemas.js';
@@ -44,8 +44,28 @@ describe('parseDotenv', () => {
     expect(result).toEqual({ FOO: 'bar' });
   });
 
-  it('throws ZodError on a line without =', () => {
-    expect(() => parseDotenv('BADLINE\n')).toThrow(z.ZodError);
+  it('rejects a line without = as a usage error, naming the line but never its content', () => {
+    expect(() => parseDotenv('A=1\nsup3r-s3cret-pasted-alone\n')).toThrow(UsageError);
+    expect(() => parseDotenv('A=1\nsup3r-s3cret-pasted-alone\n')).toThrow(/line 2/);
+    try { parseDotenv('sup3r-s3cret-pasted-alone\n'); } catch (e) { expect((e as Error).message).not.toContain('sup3r'); }
+  });
+
+  it('strips matching quotes like every dotenv loader (a quoted value used to be written WITH its quotes)', () => {
+    expect(parseDotenv('A="hello world"\nB=\'single $literal\'\nC="line1\\nline2"\n')).toEqual({
+      A: 'hello world', B: 'single $literal', C: 'line1\nline2',
+    });
+  });
+
+  it('reads a multi-line quoted value (PEM) and keeps an unquoted value verbatim', () => {
+    const pem = '-----BEGIN KEY-----\nabc\ndef\n-----END KEY-----';
+    expect(parseDotenv(`KEY="${pem}"\nPLAIN=a b #not-a-comment \nEMPTY=\n`)).toEqual({
+      KEY: pem, PLAIN: 'a b #not-a-comment ', EMPTY: '',
+    });
+  });
+
+  it('keeps a value that only starts with a quote verbatim, and refuses an unterminated quote', () => {
+    expect(parseDotenv('A="x" y\n')).toEqual({ A: '"x" y' });
+    expect(() => parseDotenv('A="never closed\nB=2\n')).toThrow(/unterminated double quote/);
   });
 });
 

@@ -1,4 +1,3 @@
-import { readFile as nodeReadFile } from 'node:fs/promises';
 import type { ParsedArgs } from '../args.js';
 import {
   formatRedactedDiff, isValidImageRef, listServiceImages, setServiceImage, sha256, splitImageRef,
@@ -6,13 +5,13 @@ import {
 import { redactDocument } from '../../client/redact.js';
 import type { ServerProxy } from '../../client/schemas.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
-import { audited, defaultWriteFile, print, printJson, requireInstance, warn, type CmdDeps } from '../deps.js';
+import { audited, defaultWriteFile, print, printJson, requireInstance, warn, type CmdDeps, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
-import { EXIT } from '../main.js';
-import { asUsageError, imageChanges } from './compose.js';
+import { EXIT } from '../exit.js';
+import { asUsageError, imageChanges, readInputFile } from './compose.js';
 
 function requireServer(args: ParsedArgs): string | undefined {
-  if (!args.server) warn(`${args.command.replace('-', ' ')}: --server <uuid> is required (list them with \`servers --instance <name>\`)`);
+  if (!args.server) usageFail(args, `${args.command.replace('-', ' ')}: --server <uuid> is required (list them with \`servers --instance <name>\`)`);
   return args.server;
 }
 
@@ -70,15 +69,14 @@ export async function proxySet(args: ParsedArgs, deps: CmdDeps): Promise<number>
   const uuid = requireServer(args);
   if (!uuid) return EXIT.usage;
   if (!args.fromFile && args.images.length !== 1) {
-    warn('proxy set: pass exactly one --image <ref> (e.g. traefik:v3.6.4) or --from-file <compose.yml>');
-    return EXIT.usage;
+    return usageFail(args, 'proxy set: pass exactly one --image <ref> (e.g. traefik:v3.6.4) or --from-file <compose.yml>');
   }
   const { client } = requireInstance(args, deps);
   const proxy = await withScope('read:sensitive', () => client.getServerProxy(uuid));
   const before = requireConfiguration(proxy);
   let after: string;
   if (args.fromFile) {
-    after = await (deps.readFile ?? ((p: string) => nodeReadFile(p, 'utf8')))(args.fromFile);
+    after = await readInputFile(args.fromFile, deps);
   } else {
     const image = args.images[0]!;
     if (!isValidImageRef(image)) throw new CoolifyFeatureNotSupportedError(`Not a valid image reference: '${image}'`);

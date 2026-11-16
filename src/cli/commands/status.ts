@@ -1,30 +1,48 @@
 import type { ParsedArgs } from '../args.js';
 import type { CmdDeps } from '../deps.js';
-import { print, printJson } from '../deps.js';
+import type { Deployment } from '../../client/schemas.js';
+import { CoolifyAuthError, CoolifyAuthScopeError } from '../../errors/index.js';
+import { print, printJson, warn, usageFail } from '../deps.js';
+import { sanitizeErrorMessage } from '../errors-out.js';
 import { withScope } from '../scope.js';
-import { EXIT } from '../main.js';
+import { EXIT } from '../exit.js';
+import { withoutLogs } from './deployments.js';
 
 interface SubResource { name?: unknown; status?: unknown; image?: unknown }
 
+/**
+ * `status`: the resource and, for an application, its latest deployment — fetched together.
+ * The JSON `latestDeployment` embeds the build log when the token can read it (hundreds of kB);
+ * `--no-logs` replaces it with `logs_length`, which is what a polling agent wants.
+ */
 export async function statusCmd(args: ParsedArgs, deps: CmdDeps): Promise<number> {
   if (!args.app) {
-    process.stderr.write('status: --app <name> is required\n');
-    return EXIT.usage;
+    return usageFail(args, 'status: --app <name> is required');
   }
   const target = deps.resolveTargetFor(args);
   const client = deps.clientFactory(target);
 
-  const app = await withScope('read', () => client.get());
-  let latest: Awaited<ReturnType<typeof client.getLatestDeployment>> | undefined;
-  try {
-    latest = await withScope('read', () => client.getLatestDeployment());
-  } catch {
-    // non-fatal for status summary (latestDeployment is bonus info)
-  }
+  // The latest deployment is bonus information: its failure must not fail `status`, but it must
+  // not be hidden either (a contract error here is how API drift first shows up).
+  let latestError: string | undefined;
+  const [app, latest] = await Promise.all([
+    withScope('read', () => client.get()),
+    withScope('read', () => client.getLatestDeployment()).catch((err: unknown): Deployment | undefined => {
+      if (err instanceof CoolifyAuthError || err instanceof CoolifyAuthScopeError) throw err;
+      latestError = sanitizeErrorMessage(err);
+      return undefined;
+    }),
+  ]);
+  if (latestError !== undefined) warn(`status: could not read the latest deployment: ${latestError}`);
 
   if (args.json) {
     // The raw resource carries webhook secrets, basic-auth fields and compose documents: redacted.
-    printJson({ target: { name: args.app, kind: target.kind, uuid: target.uuid }, app, latestDeployment: latest ?? null });
+    printJson({
+      target: { name: args.app, kind: target.kind, uuid: target.uuid },
+      app,
+      latestDeployment: latest ? (args.noLogs ? withoutLogs(latest) : latest) : null,
+      ...(latestError !== undefined ? { latestDeploymentError: latestError } : {}),
+    });
     return EXIT.ok;
   }
 
@@ -50,7 +68,7 @@ export async function statusCmd(args: ParsedArgs, deps: CmdDeps): Promise<number
       if (latest.commit) print(`    commit: ${latest.commit}`);
       if (latest.updated_at) print(`    updated: ${latest.updated_at}`);
     } else {
-      print('  latest deploy: (none found)');
+      print(latestError === undefined ? '  latest deploy: (none found)' : '  latest deploy: (unavailable — see the warning above)');
     }
   }
   print('NOTE: use --json for full machine-readable output (secrets redacted).');

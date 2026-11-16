@@ -2,9 +2,9 @@ import type { ParsedArgs } from '../args.js';
 import type { Database, DatabaseUpdate } from '../../client/schemas.js';
 import { isValidImageRef } from '../../client/compose.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
-import { audited, print, printJson, requireInstance, warn, type CmdDeps, type InstanceClient } from '../deps.js';
+import { audited, print, printJson, requireInstance, type CmdDeps, type InstanceClient, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
-import { EXIT } from '../main.js';
+import { EXIT } from '../exit.js';
 
 /**
  * Standalone databases are addressed either by a configured target of kind `database` (`--app`)
@@ -20,7 +20,7 @@ function resolveDatabase(args: ParsedArgs, deps: CmdDeps): { client: InstanceCli
     return { client: requireInstance(args, deps).client, uuid: target.uuid };
   }
   if (!args.database) {
-    warn(`${args.command.replace('-', ' ')}: --app <database target> or --instance <name> --database <uuid> is required`);
+    usageFail(args, `${args.command.replace('-', ' ')}: --app <database target> or --instance <name> --database <uuid> is required`);
     return undefined;
   }
   return { client: requireInstance(args, deps).client, uuid: args.database };
@@ -43,8 +43,10 @@ export async function databasesCmd(args: ParsedArgs, deps: CmdDeps): Promise<num
 export async function databaseGet(args: ParsedArgs, deps: CmdDeps): Promise<number> {
   const db = resolveDatabase(args, deps);
   if (!db) return EXIT.usage;
-  const record = await withScope('read', () => db.client.getDatabase(db.uuid));
-  const backups = await withScope('read', () => db.client.listDatabaseBackups(db.uuid));
+  const [record, backups] = await Promise.all([
+    withScope('read', () => db.client.getDatabase(db.uuid)),
+    withScope('read', () => db.client.listDatabaseBackups(db.uuid)),
+  ]);
   if (args.json) {
     printJson({ database: record, backups });
     return EXIT.ok;
@@ -75,8 +77,7 @@ export async function databaseSet(args: ParsedArgs, deps: CmdDeps): Promise<numb
   if (!db) return EXIT.usage;
   const patch = desiredUpdate(args);
   if (Object.keys(patch).length === 0) {
-    warn('database set: nothing to change (use --public true|false, --public-port <n>, --image <ref>)');
-    return EXIT.usage;
+    return usageFail(args, 'database set: nothing to change (use --public true|false, --public-port <n>, --image <ref>)');
   }
   const before = await withScope('read', () => db.client.getDatabase(db.uuid));
   const changes = (Object.keys(patch) as Array<keyof DatabaseUpdate>)
@@ -131,10 +132,9 @@ export async function databaseBackup(args: ParsedArgs, deps: CmdDeps): Promise<n
   const backups = await withScope('read', () => db.client.listDatabaseBackups(db.uuid));
   const chosen = args.backup ? backups.find((b) => b.uuid === args.backup) : backups.length === 1 ? backups[0] : undefined;
   if (!chosen) {
-    warn(backups.length === 0
+    return usageFail(args, backups.length === 0
       ? 'database backup: this database has no backup configuration; create one in the dashboard first.'
       : `database backup: pick one with --backup <uuid>: ${backups.map((b) => `${b.uuid} (${b.frequency ?? '?'})`).join(', ')}`);
-    return EXIT.usage;
   }
   if (!args.apply) {
     if (args.json) printJson({ dryRun: true, database: db.uuid, backup: chosen.uuid });

@@ -99,6 +99,6 @@ describe('env scope: production vs preview rows of the same key', () => {
       actor: 't', writeAudit: vi.fn().mockResolvedValue(undefined),
     });
     expect(result.confirmed).toBe(false);
-    expect(result.audit.options).toEqual({ scope: 'production' });
+    expect(result.audit.options).toEqual({ scope: 'production', confirmed: false });
   });
 });

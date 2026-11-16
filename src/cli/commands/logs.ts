@@ -1,14 +1,13 @@
 import type { ParsedArgs } from '../args.js';
 import type { CmdDeps } from '../deps.js';
-import { print, printJson, warn } from '../deps.js';
+import { print, printJson, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
-import { EXIT } from '../main.js';
+import { EXIT } from '../exit.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
 
 export async function logsCmd(args: ParsedArgs, deps: CmdDeps): Promise<number> {
   if (!args.app) {
-    warn('logs: --app <name> is required');
-    return EXIT.usage;
+    return usageFail(args, 'logs: --app <name> is required');
   }
   const target = deps.resolveTargetFor(args);
   const client = deps.clientFactory(target);
@@ -18,17 +17,20 @@ export async function logsCmd(args: ParsedArgs, deps: CmdDeps): Promise<number> 
   try {
     if (wantBuild) {
       let depUuid = args.deployment;
+      let dep;
       if (!depUuid) {
         const latest = await withScope('read:sensitive', () => client.getLatestDeployment());
         if (!latest) {
-          warn(target.kind === 'application'
+          return usageFail(args, target.kind === 'application'
             ? 'logs: no deployments found for build logs'
             : `logs: a ${target.kind} has no build/deployment logs; use runtime logs (drop --build)`);
-          return EXIT.usage;
         }
         depUuid = latest.deployment_uuid;
+        // The list row already embeds the log (with read:sensitive): no second request needed.
+        if (latest.logs != null) dep = latest;
       }
-      const dep = await withScope('read:sensitive', () => client.getDeployment(depUuid!));
+      const uuid = depUuid;
+      dep ??= await withScope('read:sensitive', () => client.getDeployment(uuid));
       const out = {
         type: 'build',
         deployment_uuid: dep.deployment_uuid,
@@ -66,8 +68,7 @@ export async function logsCmd(args: ParsedArgs, deps: CmdDeps): Promise<number> 
     return EXIT.ok;
   } catch (err) {
     if (err instanceof CoolifyFeatureNotSupportedError) {
-      warn(err.message);
-      return EXIT.usage;
+      return usageFail(args, err.message);
     }
     throw err;
   }

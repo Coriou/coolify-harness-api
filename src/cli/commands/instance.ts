@@ -1,17 +1,38 @@
 import type { ParsedArgs } from '../args.js';
 import { listServiceImages } from '../../client/compose.js';
 import { CoolifyFeatureNotSupportedError } from '../../errors/index.js';
-import { print, printJson, requireInstance, warn, type CmdDeps } from '../deps.js';
+import { print, printJson, requireInstance, warn, type CmdDeps, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
-import { EXIT } from '../main.js';
+import { sanitizeErrorMessage } from '../errors-out.js';
+import { TESTED_COOLIFY, compatibilityWarning, coolifyCompatibility } from '../../version.js';
+import { EXIT } from '../exit.js';
 
-/** `instance info` / `version`: Coolify version + health for an instance. */
+/**
+ * `instance info` / `version`: Coolify version + health for an instance, and whether that version
+ * is inside the range this harness release is tested against. Outside the range is a WARNING
+ * (stderr, and `compatibility` / `warning` in the JSON), never a failure: most commands keep
+ * working, but a contract error becomes a likely cause to check first.
+ */
 export async function instanceInfo(args: ParsedArgs, deps: CmdDeps): Promise<number> {
   const { name, client } = requireInstance(args, deps);
-  const version = await withScope('read', () => client.getVersion());
-  const health = await client.getHealth().catch((e: unknown) => `error: ${e instanceof Error ? e.message : String(e)}`);
-  if (args.json) printJson({ instance: name, url: client.instanceUrl, version, health });
-  else print(`${name} (${client.instanceUrl}): Coolify ${version}, health ${health}`);
+  const [version, health] = await Promise.all([
+    withScope('read', () => client.getVersion()),
+    client.getHealth().catch((e: unknown) => `error: ${sanitizeErrorMessage(e)}`),
+  ]);
+  const compatibility = coolifyCompatibility(version);
+  const warning = compatibilityWarning(version);
+  if (args.json) {
+    printJson({
+      instance: name, url: client.instanceUrl, version, health,
+      compatibility, testedCoolify: TESTED_COOLIFY, ...(warning !== undefined ? { warning } : {}),
+    });
+  } else {
+    print(`${name} (${client.instanceUrl}): Coolify ${version}, health ${health}`);
+    print(compatibility === 'tested'
+      ? `  within the tested range (${TESTED_COOLIFY.min}–${TESTED_COOLIFY.max})`
+      : `  OUTSIDE the tested range (${TESTED_COOLIFY.min}–${TESTED_COOLIFY.max})`);
+  }
+  if (warning !== undefined) warn(`WARNING: ${warning}`);
   return EXIT.ok;
 }
 
@@ -33,14 +54,15 @@ export async function serversCmd(args: ParsedArgs, deps: CmdDeps): Promise<numbe
 /** `server get`: server + its resources + proxy summary (type, status, image). */
 export async function serverGet(args: ParsedArgs, deps: CmdDeps): Promise<number> {
   if (!args.server) {
-    warn('server get: --server <uuid> is required (list them with `servers --instance <name>`)');
-    return EXIT.usage;
+    return usageFail(args, 'server get: --server <uuid> is required (list them with `servers --instance <name>`)');
   }
   const uuid = args.server;
   const { client } = requireInstance(args, deps);
-  const server = await withScope('read', () => client.getServer(uuid));
-  const resources = await withScope('read', () => client.getServerResources(uuid));
-  const proxy = await withScope('read', () => client.getServerProxy(uuid));
+  const [server, resources, proxy] = await Promise.all([
+    withScope('read', () => client.getServer(uuid)),
+    withScope('read', () => client.getServerResources(uuid)),
+    withScope('read', () => client.getServerProxy(uuid)),
+  ]);
   const proxyImages = proxy.configuration ? listServiceImages(proxy.configuration) : [];
   if (args.json) {
     printJson({ server, resources, proxy: { ...proxy, images: proxyImages } });
@@ -56,13 +78,13 @@ export async function serverGet(args: ParsedArgs, deps: CmdDeps): Promise<number
 
 const NOT_IN_API: Record<string, string> = {
   'server-patch':
-    'Checking for / installing OS package updates on a server is not exposed by the Coolify API (4.5.0). ' +
+    'Checking for / installing OS package updates on a server is not exposed by the Coolify API (checked up to 4.7.5). ' +
     'It exists only in the dashboard: Servers → <server> → Security → Patches (/server/<uuid>/security/patches).',
   'server-reboot':
-    'Rebooting a server is not exposed by the Coolify API (4.5.0). It exists only in the dashboard, on the ' +
+    'Rebooting a server is not exposed by the Coolify API (checked up to 4.7.5). It exists only in the dashboard, on the ' +
     'same Security → Patches page (/server/<uuid>/security/patches), offered after package updates.',
   'instance-upgrade':
-    'Upgrading Coolify itself is not exposed by the Coolify API (4.5.0). Use the dashboard: Settings → Updates ' +
+    'Upgrading Coolify itself is not exposed by the Coolify API (checked up to 4.7.5). Use the dashboard: Settings → Updates ' +
     '(/settings/updates), or its auto-update schedule. `instance info` shows the running version.',
 };
 

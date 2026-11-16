@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { ProjectRegistrySchema, type ProjectRegistry, type ResolvedInstance, type ResolvedTarget } from './schema.js';
 import { ConfigError, MissingTokenError } from '../errors/index.js';
 import type { SchemaInput } from '../catalog/generate.js';
@@ -7,14 +10,26 @@ export interface ConfigModule {
   catalog?: { schemas: SchemaInput[]; out: { markdown?: string; json?: string; dotenvExample?: string } };
 }
 
+/** File names looked up, in order, when no `--config` is given. */
+export const DEFAULT_CONFIG_NAMES = [
+  'coolify-harness.config.ts',
+  'coolify-harness.config.mts',
+  'coolify-harness.config.mjs',
+  'coolify-harness.config.js',
+] as const;
+
 export function defineConfig(c: ProjectRegistry): ProjectRegistry {
   return c;
 }
 
 export function loadRegistry(raw: unknown): ProjectRegistry {
+  if (raw === undefined) {
+    throw new ConfigError('Invalid coolify-harness config: the file has no default export (use `export default defineConfig({ instances, targets })`)');
+  }
   const parsed = ProjectRegistrySchema.safeParse(raw);
   if (!parsed.success) {
-    throw new ConfigError(`Invalid coolify-harness config: ${parsed.error.message}`);
+    const issues = parsed.error.issues.map((i) => `${i.path.map(String).join('.') || '(root)'}: ${i.message}`);
+    throw new ConfigError(`Invalid coolify-harness config: ${issues.join('; ')}`);
   }
   return parsed.data;
 }
@@ -56,16 +71,45 @@ export function resolveTarget(
   return { instanceUrl, kind: target.kind, uuid: target.uuid, token };
 }
 
+/**
+ * Resolve the config file to load: an explicit path (made absolute; loading it reports a missing
+ * file), else the first of DEFAULT_CONFIG_NAMES found in `cwd`.
+ */
+export function findConfigFile(explicit: string | undefined, cwd: string = process.cwd()): string {
+  if (explicit !== undefined) return isAbsolute(explicit) ? explicit : resolve(cwd, explicit);
+  for (const name of DEFAULT_CONFIG_NAMES) {
+    const path = resolve(cwd, name);
+    if (existsSync(path)) return path;
+  }
+  throw new ConfigError(
+    `No coolify-harness config found in ${cwd} (looked for ${DEFAULT_CONFIG_NAMES.join(', ')}). Create one (see the README "Config file" section) or pass --config <path>.`,
+  );
+}
+
+async function importConfig(configPath: string): Promise<{ default?: unknown; catalog?: unknown }> {
+  const path = isAbsolute(configPath) ? configPath : resolve(configPath);
+  if (!existsSync(path)) {
+    throw new ConfigError(`Config file not found: ${path}. Create it (see the README "Config file" section) or pass --config <path>.`);
+  }
+  try {
+    // A file URL, not a bare path: an absolute Windows path is not a valid import specifier.
+    return (await import(pathToFileURL(path).href)) as { default?: unknown; catalog?: unknown }; // reason: dynamic import() is untyped; only the documented exports are read
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    const hint = /\.[cm]?ts$/.test(path)
+      ? ' A TypeScript config is loaded by the runtime itself: Node >= 24 strips types natively (imports must then use real file extensions); otherwise run the CLI through bun or tsx.'
+      : '';
+    throw new ConfigError(`Could not load config ${path}: ${detail}.${hint}`);
+  }
+}
+
 export async function loadConfig(configPath: string): Promise<ProjectRegistry> {
-  const mod: unknown = await import(configPath);
-  const def = (mod as { default?: unknown }).default; // reason: dynamic import() returns unknown; we read the documented default export
-  return loadRegistry(def);
+  return loadRegistry((await importConfig(configPath)).default);
 }
 
 export async function loadConfigModule(configPath: string): Promise<ConfigModule> {
-  const mod: unknown = await import(configPath);
-  const def = (mod as { default?: unknown }).default; // reason: dynamic import() returns unknown; we read the documented default export
-  const registry = loadRegistry(def);
-  const catalog = (mod as { catalog?: ConfigModule['catalog'] }).catalog; // reason: dynamic import() returns unknown; we read the optional named catalog export
+  const mod = await importConfig(configPath);
+  const registry = loadRegistry(mod.default);
+  const catalog = mod.catalog as ConfigModule['catalog']; // reason: dynamic import() is untyped; the optional named `catalog` export is validated by its consumers
   return catalog === undefined ? { registry } : { registry, catalog };
 }

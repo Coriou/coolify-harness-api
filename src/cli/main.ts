@@ -1,43 +1,56 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { z } from 'zod';
 import { parseArgs } from './args.js';
-import {
-  CatalogStaleError, DuplicateKeyDriftError, CoolifyAuthError, CoolifyAuthScopeError, LockedVarError,
-  CoolifyFeatureNotSupportedError, CoolifyWaitTimeoutError, ConfigError, MissingTokenError,
-} from '../errors/index.js';
+import { EXIT, errorCode, errorToExitCode } from './exit.js';
+import { sanitizeErrorMessage } from './errors-out.js';
 
-export const EXIT = {
-  ok: 0, internal: 1, usage: 2, catalogStale: 3, drift: 4, authScope: 5, lockedVar: 6,
-  deployFailed: 7, waitTimeout: 8,
-} as const;
+export { EXIT, errorToExitCode } from './exit.js';
 
-export function errorToExitCode(err: unknown): number {
-  if (err instanceof CatalogStaleError) return EXIT.catalogStale;
-  if (err instanceof DuplicateKeyDriftError) return EXIT.drift;
-  if (err instanceof CoolifyAuthScopeError || err instanceof CoolifyAuthError || err instanceof MissingTokenError) return EXIT.authScope;
-  if (err instanceof ConfigError) return EXIT.usage;
-  if (err instanceof LockedVarError) return EXIT.lockedVar;
-  if (err instanceof CoolifyFeatureNotSupportedError) return EXIT.usage;
-  if (err instanceof CoolifyWaitTimeoutError) return EXIT.waitTimeout;
-  if (err instanceof z.ZodError) return EXIT.usage;
-  return EXIT.internal;
+/**
+ * Report a failure. Human mode: one line on stderr. `--json`: one JSON document on stderr
+ * (`{ "error": { code, message, exitCode, … } }`) so an agent can branch on `code` instead of
+ * parsing prose; stdout stays empty or holds the command's own document.
+ */
+function reportError(err: unknown, json: boolean, prefix = ''): number {
+  const exitCode = errorToExitCode(err);
+  const message = sanitizeErrorMessage(err);
+  if (json) {
+    const extra: Record<string, unknown> = {};
+    if (err && typeof err === 'object') {
+      for (const k of ['requiredScope', 'serverMessage', 'status', 'fields', 'reason', 'key', 'keys', 'staleFiles', 'deploymentUuid', 'lastStatus', 'issues']) {
+        const v = (err as Record<string, unknown>)[k]; // reason: copying the documented, non-secret fields of the typed errors
+        if (v !== undefined) extra[k] = v;
+      }
+    }
+    process.stderr.write(`${JSON.stringify({ error: { code: errorCode(err), message, exitCode, ...extra } })}\n`);
+  } else {
+    process.stderr.write(`${prefix}${message}\n`);
+    if (process.env['COOLIFY_HARNESS_DEBUG'] && err instanceof Error && err.stack) {
+      process.stderr.write(`${err.stack}\n`);
+    }
+  }
+  return exitCode;
 }
 
 export async function main(argv: string[]): Promise<number> {
+  // Decided from the raw argv so a parse error can honour it too.
+  const json = argv.includes('--json');
   let args;
   try {
     args = parseArgs(argv);
   } catch (err) {
-    process.stderr.write(`usage error: ${err instanceof Error ? err.message : String(err)}\n`);
-    return EXIT.usage;
+    return reportError(err, json, 'usage error: ');
   }
   try {
+    if (args.command === 'help') {
+      // No config, no client, no zod: `help` and `--version` answer in a few milliseconds.
+      const { helpCmd } = await import('./commands/help.js');
+      return await helpCmd(args);
+    }
     const { dispatch } = await import('./dispatch.js');
     return await dispatch(args);
   } catch (err) {
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-    return errorToExitCode(err);
+    return reportError(err, args.json);
   }
 }
 
@@ -62,7 +75,11 @@ export function isMainModule(metaUrl: string, argv1: string | undefined): boolea
 
 // Bin entrypoint: run main and set the process exit code.
 if (isMainModule(import.meta.url, process.argv[1])) {
+  // `coolify-harness … | head`: the reader closing the pipe is not an error worth a stack trace.
+  process.stdout.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EPIPE') process.exit(process.exitCode ?? EXIT.ok);
+  });
   main(process.argv.slice(2))
     .then((code) => { process.exitCode = code; })
-    .catch(() => { process.exitCode = EXIT.internal; });
+    .catch((err: unknown) => { process.exitCode = reportError(err, process.argv.includes('--json')); });
 }
