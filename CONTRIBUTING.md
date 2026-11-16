@@ -61,4 +61,10 @@ an issue or a commit.
 2. Bump `version` in `package.json` and `HARNESS_VERSION` in `src/version.ts` (a test keeps them,
    the README and the CHANGELOG in sync). Rebuild and commit `dist/`.
 3. `git tag -a vX.Y.Z -m "vX.Y.Z — summary"`, push `main` and the tag.
-4. `gh release create vX.Y.Z` with the CHANGELOG entry, starting with "Verified against Coolify X.Y.Z".
+4. `pnpm pack` (writes `coolify-harness-X.Y.Z.tgz`: `dist/`, the README, the CHANGELOG, the license),
+   then `gh release create vX.Y.Z coolify-harness-X.Y.Z.tgz` with the CHANGELOG entry as notes,
+   starting with "Verified against Coolify X.Y.Z". The tarball is what
+   `pnpm add https://github.com/…/releases/download/vX.Y.Z/coolify-harness-X.Y.Z.tgz` installs.
+
+Distribution is GitHub only: tags and release tarballs. The package is not published to a
+registry.
