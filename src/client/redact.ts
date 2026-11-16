@@ -67,23 +67,12 @@ const AUTH_HEADER_RE = /(authorization["']?[ \t]*[:=][ \t]*(?:\\?["'])?)(basic|t
 const BLOCK_SCALAR_RE = /^[|>][+-]?\d*[+-]?\s*(#.*)?$/;
 const PEM_BEGIN_RE = /-----BEGIN [A-Z0-9 ]+-----/;
 const PEM_END_RE = /-----END [A-Z0-9 ]+-----/;
-/** A block that really is key material: its header lines and odd body lines are hidden too. */
-const PEM_KEY_RE = /(KEY|CERTIFICATE|PGP|PARAMETERS|REQUEST|CRL|MESSAGE|SIGNATURE)/;
 /** A base64 line (the body of a PEM block), possibly commented out or quoted. */
 const PEM_B64_RE = /^[\s#>]*[A-Za-z0-9+/=]+\s*$/;
-/**
- * A header line right after BEGIN, by its real names only (RFC 1421, OpenPGP armor): any
- * `name: value` would do for a marker that is mere text in a YAML value, and hide the keys after it.
- */
+/** A header line of a PEM / OpenPGP block, by its real names (RFC 1421, RFC 4880). */
 const PEM_HEADER_RE = /^[\s#>]*(Proc-Type|DEK-Info|Content-Domain|Version|Comment|MessageID|Hash|Charset):[ \t]*\S/;
-/** Any `Name: value` line: a header of a block whose BEGIN marker stood alone on its line. */
-const PEM_ANY_HEADER_RE = /^[\s#>]*[A-Za-z][A-Za-z0-9-]*:[ \t]*\S/;
-/**
- * What cannot be a line of a PEM body: a list item, a `key: value` / `key:` mapping line or a
- * `NAME=value` assignment (base64 has no `:` and `=` only as trailing padding) — the two RFC 1421
- * headers of an encrypted key excepted.
- */
-const NOT_PEM_BODY_RE = /^\s*(-\s|(?!Proc-Type:|DEK-Info:)['"]?[A-Za-z_][A-Za-z0-9_.\-/]*['"]?\s*(:(\s|$)|=[^=\s]))/;
+/** How far ahead the END marker of a block is looked for. */
+const PEM_MAX_LINES = 400;
 /** Compose keys whose value is a command line (inline or as a list of arguments). */
 const COMMAND_YAML_KEY_RE = /^(command|entrypoint|test)$/i;
 /** Flow collections under these keys carry no secret and are worth reading. */
@@ -307,6 +296,15 @@ interface Carry {
   flag: string;
   /** `redis-cli` was among the earlier arguments: its password may come attached (`-aSECRET`). */
   redis?: boolean;
+  /** The value of a secret flag is a quoted string left open: the next line is still that value. */
+  secretQuote?: string;
+}
+
+/** Forget what a carry was waiting for (the command it belonged to has ended). */
+function resetCarry(carry: Carry): void {
+  delete carry.pending;
+  delete carry.redis;
+  delete carry.secretQuote;
 }
 
 const isBlank = (c: string): boolean => c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f' || c === '\v';
@@ -569,7 +567,7 @@ function hiddenAssignment(word: string): string {
 }
 
 /** One word of a command line that is not the value of a preceding flag. */
-function redactWord(t: Token, depth: number): string {
+function redactWord(t: Token, depth: number, openCarry?: Carry): string {
   const v = t.value;
   // -pSECRET (mysql, sshpass), quoted or not: an attached value that is not a port mapping.
   if (/^-p[^-\s=]/.test(v) && !isPortMapping(v.slice(2))) return `${t.open}-p${REDACTED}${t.close}`;
@@ -596,7 +594,9 @@ function redactWord(t: Token, depth: number): string {
     const assigned = /^(--?[A-Za-z0-9._-]+)=/.exec(v);
     if (assigned && isSecretFlag(assigned[1] ?? '')) return `${t.open}${assigned[1]}=${REDACTED}${t.close}`;
     // A whole command (`sh -c "export X=… && psql"`).
-    return depth < MAX_DEPTH ? `${t.open}${redactCommand(v, depth + 1)}${t.close}` : hidden(t);
+    // A quote left open (the command goes on over the next line): what its last flag is still
+    // waiting for is handed back through `openCarry`.
+    return depth < MAX_DEPTH ? `${t.open}${redactCommand(v, depth + 1, t.close === '' ? openCarry : undefined)}${t.close}` : hidden(t);
   }
   // name=value: an env assignment, `--flag=value`, npm `…:_authToken=value`. Not when what stands
   // before the `=` is itself made of parts (`$(prog --requirepass "a=b")`): that word is judged
@@ -667,6 +667,15 @@ function atomToken(text: string): Token {
 }
 
 function redactCommand(text: string, depth: number, carry: Carry = { flag: '' }, opts: CommandOptions = {}): string {
+  // Still inside the quoted value of a secret flag (`--password "correct horse` / `battery" …`).
+  if (carry.secretQuote !== undefined && !opts.atom) {
+    const q = carry.secretQuote;
+    const close = closingQuoteIndex(text, q);
+    const lead = text.slice(0, text.length - text.trimStart().length);
+    if (close < 0) return text.trim() === '' ? text : `${lead}${REDACTED}`;
+    delete carry.secretQuote;
+    return `${lead}${REDACTED}${q}${redactCommand(text.slice(close + 1), depth, carry, opts)}`;
+  }
   const comments = opts.comments ?? true;
   const tokens = opts.atom ? [atomToken(text)] : tokenize(text);
   let lastWord = -1;
@@ -717,6 +726,8 @@ function redactCommand(text: string, depth: number, carry: Carry = { flag: '' },
         // Only docker's `-p 8080:80` is a port mapping; a number after `--requirepass` is a
         // password. A `$WORD` in single quotes is a literal, not a reference.
         out += isHarmless(v, true, t.open !== "'") || (pendingFlag === '-p' && isPortMapping(v)) ? t.text : hidden(t);
+        // …and when that value is a quoted string left open, the next line still belongs to it.
+        if (k === lastWord && t.close === '' && (t.open === '"' || t.open === "'")) carry.secretQuote = t.open;
         continue;
       }
       if (kind === 'userpass') {
@@ -759,6 +770,14 @@ function redactCommand(text: string, depth: number, carry: Carry = { flag: '' },
       // `--requirepass=` + a quoted part glued after it (`…=$'x'`, `…='\''x'\''`): the value follows.
       pending = 'secret';
       pendingFlag = v.slice(0, v.indexOf('='));
+    }
+    // The last word is a quoted string left open: the line continues inside it, and a flag at
+    // its end waits for the next line (`command: "redis-server --requirepass` / `  secret"`).
+    if (k === lastWord && t.open !== '' && t.close === '') {
+      const open: Carry = { flag: '' };
+      out += redactWord(t, depth, open);
+      if (open.pending !== undefined) { pending = open.pending; pendingFlag = open.flag; }
+      continue;
     }
     previous = t.open === '' ? v : '';
     // `set -e; export x=1`: a word ending in `;` ends its command.
@@ -1014,7 +1033,6 @@ export function redactDocumentLines(text: string): string[] {
   let blockIndent = -1; // column of a key whose multi-line value is being swallowed
   let quote = ''; // inside a quoted scalar that did not close on its own line
   let quoteLines = 0;
-  let quoteIndent = -1; // indent of the YAML line that opened it (-1: a dotenv line, any indent continues)
   let cmdIndent = -1; // indent of an open `command:` / `entrypoint:` / `test:` list
   let cmdFlow = false; // …written as a flow list `[ … ]` that is still open
   let cmdTextIndent = -1; // column of a `command:` key whose inline value continues on deeper lines
@@ -1023,9 +1041,8 @@ export function redactDocumentLines(text: string): string[] {
   let cmdScriptIndent = -1; // column of a `- |` item whose script body follows (ordinary lines)
   const cmdCarry: Carry = { flag: '' };
   let inPem = false;
-  let pemStrong = false; // the BEGIN marker names key material
-  let pemHeaders = 0; // header lines seen since BEGIN (-1 once the body has started)
-  let pemAlone = false; // the BEGIN marker stood alone on its line: a block, not text in a value
+  let pemToEnd = false; // the block's END marker follows: everything up to it is the block
+  let pemLines = 0; // lines hidden since a BEGIN without END
   let pemComment = false; // the BEGIN marker stood in a comment
   let continues: '' | 'run' | 'env' = ''; // inside a Dockerfile instruction continued with `\`
   const runCarry: Carry = { flag: '' };
@@ -1070,36 +1087,24 @@ export function redactDocumentLines(text: string): string[] {
     const hide = (): void => { push(blank ? line : `${line.slice(0, indent)}${REDACTED}`); };
 
     if (quote !== '') {
-      // In YAML the lines of a quoted scalar sit deeper than its key: a `key:` line at or left of
-      // it means the quote was a stray one, and what follows is the document again.
-      const stray = quoteIndent >= 0 && !blank && indent <= quoteIndent
-        && /^\s*(-\s+)?['"]?[A-Za-z_][A-Za-z0-9_.-]*['"]?\s*:(\s|$)/.test(line) && closingQuoteIndex(line, quote) < 0;
-      if (stray) {
-        quote = '';
-      } else {
-        // Up to the closing quote. Bounded: a stray quote must not hide a document.
-        quoteLines += 1;
-        if (closingQuoteIndex(line, quote) >= 0 || quoteLines >= 400) quote = '';
-        hide();
-        continue;
-      }
+      // Up to the closing quote, wherever the lines sit: libyaml and docker compose accept a
+      // quoted scalar whose continuation lines are not indented, so an under-indented `word:`
+      // line in there is still the value. Bounded: a stray quote must not hide a whole document.
+      quoteLines += 1;
+      if (closingQuoteIndex(line, quote) >= 0 || quoteLines >= 400) quote = '';
+      hide();
+      continue;
     }
     if (inPem) {
       if (PEM_END_RE.test(line)) { inPem = false; hide(); continue; }
       const stays = pemComment
         // A block inside a comment ends with the comment.
         ? blank || /^\s*#/.test(line)
-        : blank || PEM_B64_RE.test(line)
-          // Key material: its header lines right after BEGIN (at most a handful) and a body line
-          // that is not plain base64 are part of it; a line of YAML structure is not.
-          // (After a marker that is the value of a key on its own line, only the real armor
-          // header names count: any `name: value` there is the next YAML key.)
-          || (pemStrong && ((pemHeaders >= 0 && pemHeaders < 6 && (pemAlone ? PEM_ANY_HEADER_RE : PEM_HEADER_RE).test(line)) || !NOT_PEM_BODY_RE.test(line)));
-      if (stays) {
-        if (!pemComment) pemHeaders = pemHeaders >= 0 && !blank && PEM_ANY_HEADER_RE.test(line) && !PEM_B64_RE.test(line) ? pemHeaders + 1 : -1;
-        hide();
-        continue;
-      }
+        // A block whose END follows is hidden whole, whatever its lines look like (headers of any
+        // name, a body that is not plain base64). A BEGIN without END is a truncated key or mere
+        // text: only what can be a key — base64, the armor headers — is hidden, and not for long.
+        : pemToEnd || blank || ((PEM_B64_RE.test(line) || PEM_HEADER_RE.test(line)) && (pemLines += 1) <= PEM_MAX_LINES);
+      if (stays) { hide(); continue; }
       // The marker was text (a label, a note), or the block never closed. Hiding on would swallow
       // the rest of the document — and with it whatever a diff should show.
       inPem = false;
@@ -1113,8 +1118,17 @@ export function redactDocumentLines(text: string): string[] {
       // YAML): command text like its first line, readable, a flag on one line and its value on
       // the next still hidden.
       if (blank) { push(line); continue; }
-      if (indent > cmdTextIndent) { push(redactCommandPart(line, cmdTextCarry)); continue; }
-      cmdTextIndent = -1;
+      if (indent > cmdTextIndent) {
+        // Text written out by the command (`printf "user: admin\n` / `password: …`): a line that
+        // reads `name: value` under a sensitive or upper-case name loses its value.
+        const kv = /^(\s*)([A-Za-z_][A-Za-z0-9_.-]*)(\s*:\s+)\S/.exec(line);
+        if (kv && (SENSITIVE_NAME_RE.test(kv[2] ?? '') || ENV_KEY_RE.test(kv[2] ?? ''))) { push(`${kv[1]}${kv[2]}${kv[3]}${REDACTED}`); continue; }
+        if (!PEM_BEGIN_RE.test(line)) { push(redactCommandPart(line, cmdTextCarry)); continue; }
+        // A PEM marker: it falls through to the marker rule below, and the command goes on
+        // after the block.
+      } else {
+        cmdTextIndent = -1;
+      }
     }
     if (continues !== '') {
       // A blank line or a comment inside a continued instruction does not end it (nor does the
@@ -1134,12 +1148,22 @@ export function redactDocumentLines(text: string): string[] {
       // Opened inside a quoted scalar (`KEY: "-----BEGIN …`): hidden up to the closing quote,
       // wherever the following lines sit.
       const q = line.charAt(pem.index - 1);
-      if ((q === '"' || q === "'") && closingQuoteIndex(line.slice(pem.index), q) < 0) { quote = q; quoteLines = 0; quoteIndent = -1; continue; }
+      if ((q === '"' || q === "'") && closingQuoteIndex(line.slice(pem.index), q) < 0) { quote = q; quoteLines = 0; continue; }
       inPem = true;
-      pemStrong = PEM_KEY_RE.test(pem[0]);
-      pemHeaders = 0;
+      pemLines = 0;
       pemComment = /^\s*#/.test(line);
-      pemAlone = line.replace(/^[\s#>]+/, '').trimEnd() === pem[0];
+      // A block, or a marker that is mere text (a label, a note)? A block has its END marker
+      // ahead, with nothing in between left of where its lines may sit: at the marker's indent
+      // when it stands alone on its line, deeper when it is the value of a key (the lines at the
+      // key's own indent are the next keys).
+      const alone = /^[\s#>]*(-\s+)?["']?$/.test(line.slice(0, pem.index));
+      const floor = alone ? indent : indent + 1;
+      pemToEnd = false;
+      for (let k = idx + 1; k < pieces.length && k <= idx + PEM_MAX_LINES; k += 1) {
+        const next = pieces[k] ?? '';
+        if (PEM_END_RE.test(next)) { pemToEnd = true; break; }
+        if (next.trim() !== '' && indentOf(next) < floor) break;
+      }
       continue;
     }
     // A comment changes no state. What it comments out is redacted like a live line.
@@ -1162,7 +1186,7 @@ export function redactDocumentLines(text: string): string[] {
       // In a block list, a line that is not an item and sits at or left of the items is the next key.
       || (!cmdFlow && cmdScriptIndent < 0 && !isItem && cmdItemIndent >= 0 && indent <= cmdItemIndent)
     )) {
-      cmdIndent = -1; cmdFlow = false; cmdItemIndent = -1; cmdScriptIndent = -1; delete cmdCarry.pending; delete cmdCarry.redis;
+      cmdIndent = -1; cmdFlow = false; cmdItemIndent = -1; cmdScriptIndent = -1; resetCarry(cmdCarry);
     }
     if (!blank && indent === 0) {
       section = SECTION_RE.test(line) ? (/^[a-z]+/.exec(line)?.[0] ?? '') : '';
@@ -1180,7 +1204,7 @@ export function redactDocumentLines(text: string): string[] {
         const content = line.slice(indent);
         const flow = redactFlowItems(content, cmdCarry, content.trimEnd() === '[');
         push(`${line.slice(0, indent)}${flow.text}`);
-        if (flow.closed) { cmdFlow = false; cmdIndent = -1; delete cmdCarry.pending; delete cmdCarry.redis; }
+        if (flow.closed) { cmdFlow = false; cmdIndent = -1; resetCarry(cmdCarry); }
         continue;
       }
       const leadLen = (/^\s*(?:-\s*)?/.exec(line)?.[0] ?? '').length;
@@ -1241,7 +1265,7 @@ export function redactDocumentLines(text: string): string[] {
     }
     const run = /^(\s*(?:ONBUILD\s+)?(?:RUN|CMD|ENTRYPOINT|HEALTHCHECK)\s+)([\s\S]*)$/i.exec(line);
     if (run) {
-      delete runCarry.pending; delete runCarry.redis;
+      resetCarry(runCarry);
       push(`${run[1]}${redactCommandPart(run[2] ?? '', runCarry)}`);
       continues = endsWithBackslash(line) ? 'run' : '';
       continue;
@@ -1273,16 +1297,14 @@ export function redactDocumentLines(text: string): string[] {
         // Not `- KEY="`: that item is a plain scalar, one line, whatever quote it holds — and
         // treating it as open hid every line after it.
         const scalarStart = sep.includes(':') || lead.trim() === '';
-        // A dotenv line (`KEY="…` at column 0) continues at any indent; a YAML one only deeper.
-        const yamlIndent = sep.includes(':') || lead.trim() !== '' || indent > 0 ? indent : -1;
-        if (trail === '' && scalarStart && (q === '"' || q === "'") && closingQuoteIndex(v.slice(1), q) < 0) { quote = q; quoteLines = 0; quoteIndent = yamlIndent; }
-        else if (trail === '' && !quotedKey && keyOpen !== '' && closingQuoteIndex(value, keyOpen) < 0) { quote = keyOpen; quoteLines = 0; quoteIndent = yamlIndent; }
+        if (trail === '' && scalarStart && (q === '"' || q === "'") && closingQuoteIndex(v.slice(1), q) < 0) { quote = q; quoteLines = 0; }
+        else if (trail === '' && !quotedKey && keyOpen !== '' && closingQuoteIndex(value, keyOpen) < 0) { quote = keyOpen; quoteLines = 0; }
       };
 
       // Inside `environment:`, a variable may be NAMED `command` or `test`: it is still a variable.
       const head = `${lead}${keyText}${sep}`;
       if (!inEnv && !isName && COMMAND_YAML_KEY_RE.test(key) && sep.includes(':')) {
-        delete cmdCarry.pending; delete cmdCarry.redis;
+        resetCarry(cmdCarry);
         if (v === '' || v.startsWith('#') || /^[&!][^\s[{]*\s*(#.*)?$/.test(v)) {
           // The arguments follow as a list (after a comment, an anchor or a tag) — if a list
           // does follow: `test:` with a mapping under it is a key like any other.
@@ -1300,12 +1322,12 @@ export function redactDocumentLines(text: string): string[] {
           // A flow list, element by element. If it goes on over the next lines, the last flag
           // may wait for its value there.
           const flow = redactFlowItems(value, cmdCarry, true);
-          if (flow.closed) { delete cmdCarry.pending; delete cmdCarry.redis; }
+          if (flow.closed) { resetCarry(cmdCarry); }
           else { cmdIndent = indent; cmdFlow = true; cmdItemIndent = -1; cmdScriptIndent = -1; }
           push(`${head}${flow.text}${trail}`);
           if (flow.closed) swallowRest();
         } else {
-          delete cmdTextCarry.pending; delete cmdTextCarry.redis;
+          resetCarry(cmdTextCarry);
           push(`${lead}${keyText}${sep}${redactYamlCommand(value, cmdTextCarry)}${trail}`);
           cmdTextIndent = keyColumn;
         }
