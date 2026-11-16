@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as api from '../src/index.js';
 import { HARNESS_VERSION, TESTED_COOLIFY, compareVersions, compatibilityWarning, coolifyCompatibility } from '../src/version.js';
@@ -85,5 +85,25 @@ describe('public surface', () => {
     expect(pkg.bin['coolify-harness']).toBe('./dist/cli/main.js');
     // A git install must run no build script: pnpm and Bun both refuse or skip them.
     for (const hook of ['prepare', 'preinstall', 'install', 'postinstall', 'prepack']) expect(pkg.scripts[hook], hook).toBeUndefined();
+  });
+});
+
+describe('start-up budget', () => {
+  const src = fileURLToPath(new URL('../src/', import.meta.url));
+  const files = (dir: string): string[] => readdirSync(dir, { withFileTypes: true })
+    .flatMap((e) => (e.isDirectory() ? files(`${dir}${e.name}/`) : e.name.endsWith('.ts') ? [`${dir}${e.name}`] : []));
+
+  it('only client/schemas.ts imports zod, and nothing imports it eagerly', () => {
+    const offenders: string[] = [];
+    for (const file of files(src)) {
+      const text = readFileSync(file, 'utf8');
+      const rel = file.slice(src.length);
+      if (/from 'zod/.test(text) && rel !== 'client/schemas.ts') offenders.push(`${rel}: imports zod`);
+      // A value import of schemas.js would load zod (and its ~60 locale files) at start-up.
+      for (const m of text.matchAll(/^(import|export) (?!type\b)[^;]*from '[^']*\/schemas\.js';/gm)) {
+        if (rel !== 'client/schemas.ts') offenders.push(`${rel}: ${m[0].slice(0, 60)}`);
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });

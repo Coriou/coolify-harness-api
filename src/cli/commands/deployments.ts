@@ -1,6 +1,6 @@
 import type { ParsedArgs } from '../args.js';
 import type { Deployment, DeploymentCancel } from '../../client/schemas.js';
-import { isTerminalDeploymentStatus } from '../../client/schemas.js';
+import { isTerminalDeploymentStatus } from '../../client/deployment-status.js';
 import { audited, print, printJson, requireInstance, type CmdDeps, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
 import { EXIT } from '../exit.js';

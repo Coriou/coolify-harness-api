@@ -108,15 +108,11 @@ export const ApplicationSchema = z.looseObject({
   updated_at: z.string().nullish(),
 });
 export type Application = z.infer<typeof ApplicationSchema>;
+export const ApplicationListSchema = z.array(ApplicationSchema);
 
-/** Every status Coolify's ApplicationDeploymentStatus enum defines (unchanged from 4.5.0 to 4.7.5). */
-export const DEPLOYMENT_STATUSES = ['queued', 'in_progress', 'finished', 'failed', 'cancelled-by-user'] as const;
-export type KnownDeploymentStatus = (typeof DEPLOYMENT_STATUSES)[number];
-/** Statuses after which a deployment never changes again. */
-export const TERMINAL_DEPLOYMENT_STATUSES: readonly string[] = ['finished', 'failed', 'cancelled-by-user'];
-export function isTerminalDeploymentStatus(status: string): boolean {
-  return TERMINAL_DEPLOYMENT_STATUSES.includes(status);
-}
+export {
+  DEPLOYMENT_STATUSES, TERMINAL_DEPLOYMENT_STATUSES, isTerminalDeploymentStatus, type KnownDeploymentStatus,
+} from './deployment-status.js';
 
 // A deployment row (ApplicationDeploymentQueue). Coolify creates the row as soon as a deploy is
 // queued, BEFORE the build has read the commit — so a queued/in-progress row has
@@ -177,6 +173,7 @@ export const ServiceSchema = z.looseObject({
   updated_at: z.string().nullish(),
 });
 export type Service = z.infer<typeof ServiceSchema>;
+export const ServiceListSchema = z.array(ServiceSchema);
 
 export const ServiceUpdateResponseSchema = z.looseObject({ uuid: z.string().nullish(), domains: z.array(z.string()).nullish() });
 export type ServiceUpdateResponse = z.infer<typeof ServiceUpdateResponseSchema>;
@@ -193,6 +190,7 @@ export const ServerSchema = z.looseObject({
   settings: z.record(z.string(), z.unknown()).nullish(),
 });
 export type Server = z.infer<typeof ServerSchema>;
+export const ServerListSchema = z.array(ServerSchema);
 
 export const ServerResourceSchema = z.looseObject({
   uuid: z.string(),
@@ -201,10 +199,12 @@ export const ServerResourceSchema = z.looseObject({
   status: z.string().nullish(),
 });
 export type ServerResource = z.infer<typeof ServerResourceSchema>;
+export const ServerResourceListSchema = z.array(ServerResourceSchema);
 
 export const ServerDomainsSchema = z.array(
   z.looseObject({ ip: z.string().nullish(), domains: z.array(z.string()) }),
 );
+export type ServerDomains = z.infer<typeof ServerDomainsSchema>;
 
 /**
  * GET/PATCH /servers/{uuid}/proxy and PUT .../proxy/configuration. `configuration` (the raw proxy
@@ -249,6 +249,7 @@ export const DatabaseSchema = z.looseObject({
   updated_at: z.string().nullish(),
 });
 export type Database = z.infer<typeof DatabaseSchema>;
+export const DatabaseListSchema = z.array(DatabaseSchema);
 
 /**
  * The subset of `PATCH /databases/{uuid}` fields the harness exposes. Changing `is_public` (or
@@ -286,6 +287,7 @@ export const BackupConfigSchema = z.looseObject({
   executions: z.array(BackupExecutionSchema).nullish(),
 });
 export type BackupConfig = z.infer<typeof BackupConfigSchema>;
+export const BackupConfigListSchema = z.array(BackupConfigSchema);
 
 export const BackupExecutionsResponseSchema = z.looseObject({ executions: z.array(BackupExecutionSchema) });
 

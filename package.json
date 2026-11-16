@@ -60,7 +60,7 @@
     "clean": "rm -rf dist node_modules/.cache",
     "prepublishOnly": "eslint . && tsc --noEmit && vitest run && rm -rf dist && tsc -p tsconfig.json && git diff --exit-code -- dist"
   },
-  "dependencies": { "zod": "^4.6.7" },
+  "dependencies": { "zod": "^4.0.0" },
   "devDependencies": {
     "@types/node": "^24.19.2",
     "@vitest/coverage-v8": "^5.1.0",

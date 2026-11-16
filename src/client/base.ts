@@ -2,6 +2,7 @@ import { CircuitBreaker, httpRequest, type FetchLike, type HttpResult } from './
 import type { Logger } from '../logging/index.js';
 import { CoolifyAuthError, CoolifyNotFoundError, CoolifyRequestError } from '../errors/index.js';
 import { REDACTED, redactUrlCredentials } from './redact.js';
+import { preloadSchemasOnceRequestIsSent } from './lazy-schemas.js';
 
 export interface CoolifyClientDeps {
   fetchImpl: FetchLike;
@@ -87,6 +88,8 @@ export class CoolifyApi {
   async request(path: string, method: string, jsonBody?: unknown, opts: RequestOptions = {}): Promise<HttpResult> {
     const fullUrl = this.url(path);
     const d = this.deps;
+    // Load the validators while Coolify is answering, not before the request leaves.
+    preloadSchemasOnceRequestIsSent();
     const res = await httpRequest(
       fullUrl,
       {

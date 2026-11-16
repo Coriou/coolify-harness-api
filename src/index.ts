@@ -23,7 +23,7 @@ export type {
   ServerResource, Database, DatabaseUpdate, BackupConfig, BackupExecution, DeploymentCancel, MessageAck,
   EnvVar, EnvWriteItem,
 } from './client/schemas.js';
-export { DEPLOYMENT_STATUSES, TERMINAL_DEPLOYMENT_STATUSES, isTerminalDeploymentStatus } from './client/schemas.js';
+export { DEPLOYMENT_STATUSES, TERMINAL_DEPLOYMENT_STATUSES, isTerminalDeploymentStatus } from './client/deployment-status.js';
 export type { WaitOptions } from './client/wait.js';
 export { waitForDeployment } from './client/wait.js';
 

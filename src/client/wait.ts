@@ -1,4 +1,5 @@
-import { isTerminalDeploymentStatus, type Deployment } from './schemas.js';
+import { isTerminalDeploymentStatus } from './deployment-status.js';
+import type { Deployment } from './schemas.js';
 import {
   CoolifyAuthError, CoolifyAuthScopeError, CoolifyContractError, CoolifyNotFoundError, CoolifyRequestError,
   CoolifyWaitTimeoutError,
