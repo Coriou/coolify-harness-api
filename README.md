@@ -72,7 +72,7 @@ pnpm add -D coolify-harness
 For reproducible git dependency (recommended):
 
 ```bash
-pnpm add -D coolify-harness@github:Coriou/coolify-harness-api#v0.4.0
+pnpm add -D coolify-harness@github:Coriou/coolify-harness-api#v0.4.1
 ```
 
 Requires **Node.js >= 24**, **pnpm**, ESM, Zod 3.24+.
@@ -352,6 +352,7 @@ await inst.updateDatabase(dbUuid, { is_public: false });
 - **Bulk merge** — `env apply` uses Coolify's bulk upsert endpoint. On a Coolify upgrade, re-record fixtures and re-run live-smoke to confirm the bulk endpoint contract has not changed.
 - **Build-time flag rename** — Coolify ≥ 4.0.0-beta.463 renamed the env-var build-time flag on reads from `is_build_time` to `is_buildtime` (and added `is_runtime`). The read schema accepts either and normalizes to a canonical `is_build_time`. Build-time is **not settable via the API** — the write endpoints reject any build-time field with HTTP 422 — so the harness never sends one.
 - **Nullable columns** — Coolify sends unset fields as JSON `null` (e.g. `git_full_url`, `health_check_port`, and `commit_message` on a queued deployment). All response schemas accept `null`, which is what fixed `status`, `deploy --wait` and `deployment` on 4.3.16+.
+- **Null env values** — Coolify 4.7 stores a compose-declared blank variable (`${VAR:-}`) as `value: null`. The harness reads it as an empty value flagged `value_null` (`env list`: `len=0 (null)`); it is distinct from a value withheld for lack of `read:sensitive` (`len=hidden`, JSON `value_length: null`) and never produces a diff against an empty desired value.
 - **Redeploy reuses images** — an unchanged commit redeploys from the cached image; use `deploy --force`.
 - **Compose changes do not restart** — `compose set` / `proxy set` save; `--restart` applies.
 

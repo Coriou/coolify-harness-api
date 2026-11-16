@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-11-16
+
+### Fixed
+- **`env list` / `env diff` / `env apply` / `env delete` failed with `Coolify response (listEnvs)
+  failed contract validation` on Coolify 4.7.** Coolify 4.7.5 stores a compose-declared blank
+  variable (`${VAR:-}`) with no value and serialises `value: null` (also `real_value: null`,
+  `order: null`); the read schema only accepted a string or an absent key. `value` is now
+  `nullish`: a null value reads as `''` and the row carries `value_null: true`.
+  - A null value is **not** a withheld one. `value_hidden` still means only "the token lacks
+    `read:sensitive`" (key absent); `env diff` / `env apply` are refused (exit 5) for withheld
+    values only.
+  - A null row compares equal to an empty desired value: `KEY=` in `--from-file` / `--set KEY=`
+    against a null row is `unchanged`, never an update, and a null row next to an empty-string row
+    of the same key and scope is not duplicate-key drift.
+  - `env list` prints `len=0 (null)` and `--json` rows gain `value_null` (boolean, additive);
+    `value_length` stays `null` for withheld values only.
+
+### Added
+- `EnvVar.value_null` (optional in the type, always set by the parser).
+- `test/fixtures/coolify/v4.7/envs-compose-blank.json`: synthetic, 4.7.5-shaped env payload.
+
+[0.4.1]: https://github.com/Coriou/coolify-harness-api/compare/v0.4.0...v0.4.1
+
 ## [0.4.0] - 2026-10-26
 
 Verified against **Coolify 4.5.0** (two live instances, read-only). Endpoint coverage, scopes and
