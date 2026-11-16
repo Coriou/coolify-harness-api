@@ -87,14 +87,20 @@ No command or flag was removed. The config file is unchanged, with one condition
 - `--out FILE` refuses to write through a symlink and sets mode 0600 before writing; the audit
   log is 0600 (also when an older version created it).
 - The config refuses an instance URL with credentials and a `tokenEnv` that is not a variable name.
-- Found by three rounds of adversarial review and covered by `test/redaction-*.test.ts`: the
-  value of a flag on the next list item or continuation line, flow lists wrapped over lines,
-  quoted `-pSECRET`, header flags in every form, `Bearer` / `Basic` tokens, values nested under a
+- Found by four rounds of adversarial review and covered by `test/redaction-*.test.ts`: the
+  value of a flag on the next list item or continuation line, command lists read one argument
+  at a time (block and flow style), quoted `-pSECRET`, header flags, `Bearer` / `Basic` tokens,
+  `$(…)` and backtick substitutions, quoted parts glued by the shell, values nested under a
   sensitive key, scalars folded or quoted over several lines, lone CR line breaks, comments,
   Dockerfile continuations, `-e name=value` and leading shell assignments whatever the case,
-  build `args:` and `x-…environment` blocks, password hashes, webhook URLs, Go DSNs. A PEM marker
-  in a label no longer hides the rest of a document from a diff. Every scan is linear in the
-  input (several patterns took seconds to minutes on a hostile 100 kB line).
+  build `args:` and `x-…environment` blocks, password hashes, webhook URLs, Go DSNs, PEM blocks
+  with headers or pasted between quotes. Every scan is linear in the input (several patterns took
+  seconds to minutes on a hostile 100 kB line).
+- Redaction also had to stop hiding what a reviewer must see: a PEM marker in a label or a
+  comment, or an env item holding a lone quote, no longer hides the rest of a document from a
+  diff (a new `privileged: true` or docker.sock mount showed as `[REDACTED]`); flow-style
+  `volumes:` are shown; a service named `test` or `env`, `set -e`, `sed -e`, and
+  `- shared_buffers=256MB` arguments stay readable.
 - A `--key NAME=value` given to `env delete`, a value after `--token-file`, `--timeout` or
   `--public`, and an unknown flag that does not read like one are no longer echoed.
 - `--out FILE` is written to a new 0600 file that then replaces the target (an existing
