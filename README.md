@@ -172,8 +172,9 @@ up to 10 s more). Give the shell that runs it a longer timeout than that, or pas
   do (exit 0, unless the request could not be carried out anyway: an unknown key, a locked
   variable, a missing ability). Add `--apply` to do it.
 - `deploy` (and `deploy --restart`) acts immediately; `deploy --dry-run` sends nothing.
-- `--help` wins wherever it stands on the line: nothing else runs. `--version` stands alone;
-  beside a command it is refused (exit 2) and nothing runs.
+- `--help` wins wherever it stands on the line: nothing else runs. `--version` stands alone
+  (global flags such as `--token-file` aside); beside a command it is refused (exit 2) and
+  nothing runs.
 - Env changes do nothing until a redeploy. That step is always explicit.
 - `compose get` / `proxy get` print a redacted document. `--out FILE` writes the real one (mode
   0600): keep it out of git and out of your context.

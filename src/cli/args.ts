@@ -111,6 +111,9 @@ const BOOLEAN_FLAGS = new Set([
   '--fail-on-changes', '--no-logs', '--offline',
 ]);
 
+/** Flags that say how to run, not what: allowed next to `--version`. */
+const GLOBAL_FLAGS = new Set(['--json', '--config', '--token-file']);
+
 const usage = (message: string): UsageError => new UsageError(message);
 const own = <T>(map: Record<string, T>, key: string): T | undefined => (Object.hasOwn(map, key) ? map[key] : undefined);
 /** A flag NAME is vocabulary, but something very long after `--` is more likely a pasted value. */
@@ -138,13 +141,6 @@ function normalize(argv: string[]): { words: string[]; flags: string[] } {
   // `--json` still decides the format.
   const json = argv.includes('--json') ? ['--json'] : [];
   if (argv.some((t) => t === '-h' || t === '--help')) return { words: ['help'], flags: json };
-  // `--version` / `-v` stand alone. Beside a command they are refused, and nothing runs:
-  // `deploy --app x --version` used to deploy, and answering it with a version line and exit 0
-  // would let `env apply … --apply -v` ("verbose"?) pass for a write that never happened.
-  if (argv.some((t) => t === '-v' || t === '--version')) {
-    if (argv.every((t) => t === '-v' || t === '--version' || t === '--json')) return { words: [], flags: ['--version', ...json] };
-    throw usage('--version (-v) stands alone: `coolify-harness --version`. Nothing was run. (There is no verbose flag.)');
-  }
   const tokens: string[] = [];
   for (const t of argv) {
     const eq = t.startsWith('--') ? t.indexOf('=') : -1;
@@ -155,6 +151,7 @@ function normalize(argv: string[]): { words: string[]; flags: string[] } {
   const flags: string[] = [];
   for (let i = 0; i < tokens.length; i += 1) {
     const t = tokens[i]!;
+    if (t === '-v') { flags.push('--version'); continue; }
     if (t.startsWith('--')) {
       flags.push(t);
       if (VALUE_FLAGS.has(t)) {
@@ -169,6 +166,21 @@ function normalize(argv: string[]): { words: string[]; flags: string[] } {
       continue;
     }
     words.push(t.startsWith(EQ) ? t.slice(EQ.length) : t);
+  }
+  // `--version` / `-v` stand alone — next to global flags at most (`--config`, `--token-file`,
+  // `--json`: a wrapper script adds those). Beside a command or any other flag they are refused,
+  // and nothing runs: `deploy --app x --version` used to deploy, and answering it with a version
+  // line and exit 0 would let `env apply … --apply -v` ("verbose"?) pass for a write that never
+  // happened.
+  if (flags.includes('--version')) {
+    let alone = words.length === 0;
+    for (let k = 0; k < flags.length && alone; k += 1) {
+      const flag = flags[k]!; // reason: k < flags.length
+      if (flag === '--version') continue;
+      if (!GLOBAL_FLAGS.has(flag)) alone = false;
+      else if (VALUE_FLAGS.has(flag)) k += 1; // its value
+    }
+    if (!alone) throw usage('--version (-v) stands alone: `coolify-harness --version`. Nothing was run. (There is no verbose flag.)');
   }
   return { words, flags };
 }

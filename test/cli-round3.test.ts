@@ -94,9 +94,11 @@ describe('--help wins; --version stands alone', () => {
     expect(await main(['deploy', '--app', 'web', '--version', '--config', join(dir, 'does-not-exist.ts')])).toBe(2);
     expect(stdout()).toBe('');
     out = []; err = [];
-    for (const argv of [['--version'], ['-v'], ['--version', '--json']]) {
+    // Global flags are fine next to it: a wrapper script adds `--token-file .env` or `--config`.
+    for (const argv of [['--version'], ['-v'], ['--version', '--json'], ['--config', 'x.config.ts', '--version'], ['--token-file', '.env', '-v'], ['--token-file=.env', '--version', '--json']]) {
       expect(parseArgs(argv)).toMatchObject({ command: 'help', version: true });
     }
+    expect(usageMessage(['--version', '--apply'])).toMatch(/stands alone/);
     expect(await main(['--version'])).toBe(0);
     expect(stdout()).toMatch(/^coolify-harness \d+\.\d+\.\d+ /);
   });
