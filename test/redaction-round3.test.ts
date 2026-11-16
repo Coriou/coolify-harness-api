@@ -388,6 +388,17 @@ describe('linear time on hostile input', { timeout: 120_000 }, () => {
       linear(`document ${JSON.stringify(unit)}`, (n) => redactDocument(unit.repeat(n)));
     }
   });
+  it('substitutions, glued quotes and flow lists', () => {
+    for (const unit of ['$("x") ', '$(', '$(a ', '`a b` ', "'a'\\''", '"a b"; ', 'x\\\n', '-H"a: b" ', 'a = b ']) {
+      linear(`command ${JSON.stringify(unit)}`, (n) => redactCommandLine(unit.repeat(n / unit.length)));
+    }
+    linear('flow list, one line', (n) => redactDocument(`    command: [${'"a", b c, '.repeat(n / 10)}"z"]`));
+    linear('flow list, many lines', (n) => redactDocument(`    command: [\n${'      "--flag", # note\n'.repeat(n / 20)}    ]`));
+    linear('block list', (n) => redactDocument(`    command:\n${'      - --flag=value with blanks\n'.repeat(n / 30)}`));
+    linear('key lines with comments', (n) => redactDocument('    API_KEY: # note\n'.repeat(n / 20)));
+    linear('pem headers', (n) => redactDocument(`-----BEGIN PRIVATE KEY-----\n${'Comment: x\n'.repeat(n / 11)}`));
+  });
+
   it('many short lines', () => {
     linear('lines', (n) => redactDocument('      - KEY=value\n'.repeat(n / 10)));
     linear('open quote', (n) => redactDocument(`A: "open\n${'x\n'.repeat(n / 2)}`));
