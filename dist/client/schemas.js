@@ -13,8 +13,12 @@ const EnvVarReadSchema = z
     .object({
     uuid: z.string(),
     key: z.string(),
-    // Absent when the token lacks read:sensitive: Coolify then hides `value` and `real_value`.
-    value: z.string().optional(),
+    // Two different "no string" cases, kept apart downstream:
+    // - ABSENT when the token lacks read:sensitive (Coolify hides `value` and `real_value`);
+    // - JSON `null` for a row that has no value at all. Coolify 4.7 stores a compose-declared
+    //   blank variable (`${VAR:-}`) that way, and `.optional()` rejected it: `env list` failed the
+    //   contract on every resource with such a variable.
+    value: z.string().nullish(),
     is_preview: z.boolean(),
     is_build_time: z.boolean().optional(), // Coolify < beta.463
     is_buildtime: z.boolean().optional(), // Coolify >= beta.463
@@ -23,11 +27,20 @@ const EnvVarReadSchema = z
     is_shown_once: z.boolean(),
 })
     .passthrough();
+/**
+ * `value_null` is always set by the parser, but optional in the `EnvVar` type so rows built by hand
+ * (tests, library callers of `planEnvWrite`) stay valid without it.
+ */
+const nullFlag = (isNull) => ({ value_null: isNull });
 export const EnvVarSchema = EnvVarReadSchema.transform((row) => ({
     ...row,
-    // Never undefined downstream; `value_hidden` tells a withheld value apart from an empty one.
+    // Never null/undefined downstream: a withheld or null value reads as ''.
     value: row.value ?? '',
+    // True when Coolify WITHHELD the value (token lacks read:sensitive): the value is unknown.
     value_hidden: row.value === undefined,
+    // True when Coolify sent `value: null`: the row exists and is known to be empty, so it compares
+    // equal to '' in diffs and is never reported as hidden.
+    ...nullFlag(row.value === null),
     // Canonical, always-present build-time flag. Prefer the older explicit name if a server ever
     // sends both; fall back to the newer name; default false when neither is present.
     is_build_time: row.is_build_time ?? row.is_buildtime ?? false,

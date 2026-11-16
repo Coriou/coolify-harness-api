@@ -117,7 +117,10 @@ export async function envList(args, deps) {
         uuid: e.uuid,
         key: e.key,
         scope: scopeOf(e),
+        // null = withheld (no read:sensitive). A row whose value is JSON null is known and empty:
+        // length 0 with value_null, never "hidden".
         value_length: e.value_hidden ? null : e.value.length,
+        value_null: e.value_null === true,
         is_build_time: e.is_build_time,
         is_runtime: flag(e, 'is_runtime'),
         is_literal: e.is_literal,
@@ -133,7 +136,8 @@ export async function envList(args, deps) {
     for (const v of view) {
         const flags = ['build_time', 'runtime', 'literal', 'multiline', 'shown_once', 'coolify']
             .filter((f) => v[`is_${f}`] === true); // reason: iterating the boolean flag columns built just above
-        print(`${v.key}  [${v.scope}]  len=${v.value_length ?? 'hidden'}${flags.length ? `  ${flags.join(',')}` : ''}  ${v.uuid}`);
+        const len = v.value_length === null ? 'hidden' : `${v.value_length}${v.value_null ? ' (null)' : ''}`;
+        print(`${v.key}  [${v.scope}]  len=${len}${flags.length ? `  ${flags.join(',')}` : ''}  ${v.uuid}`);
     }
     print(`${view.length} variable row(s). Values are never printed${view.some((v) => v.value_length === null) ? '; lengths need read:sensitive' : ''}.`);
     return EXIT.ok;

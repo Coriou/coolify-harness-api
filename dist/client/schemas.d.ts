@@ -2,7 +2,7 @@ import { z } from 'zod';
 export declare const EnvVarSchema: z.ZodEffects<z.ZodObject<{
     uuid: z.ZodString;
     key: z.ZodString;
-    value: z.ZodOptional<z.ZodString>;
+    value: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     is_preview: z.ZodBoolean;
     is_build_time: z.ZodOptional<z.ZodBoolean>;
     is_buildtime: z.ZodOptional<z.ZodBoolean>;
@@ -12,7 +12,7 @@ export declare const EnvVarSchema: z.ZodEffects<z.ZodObject<{
 }, "passthrough", z.ZodTypeAny, z.objectOutputType<{
     uuid: z.ZodString;
     key: z.ZodString;
-    value: z.ZodOptional<z.ZodString>;
+    value: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     is_preview: z.ZodBoolean;
     is_build_time: z.ZodOptional<z.ZodBoolean>;
     is_buildtime: z.ZodOptional<z.ZodBoolean>;
@@ -22,7 +22,7 @@ export declare const EnvVarSchema: z.ZodEffects<z.ZodObject<{
 }, z.ZodTypeAny, "passthrough">, z.objectInputType<{
     uuid: z.ZodString;
     key: z.ZodString;
-    value: z.ZodOptional<z.ZodString>;
+    value: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     is_preview: z.ZodBoolean;
     is_build_time: z.ZodOptional<z.ZodBoolean>;
     is_buildtime: z.ZodOptional<z.ZodBoolean>;
@@ -30,9 +30,10 @@ export declare const EnvVarSchema: z.ZodEffects<z.ZodObject<{
     is_multiline: z.ZodBoolean;
     is_shown_once: z.ZodBoolean;
 }, z.ZodTypeAny, "passthrough">>, {
+    is_build_time: boolean;
+    value_null?: boolean;
     value: string;
     value_hidden: boolean;
-    is_build_time: boolean;
     uuid: string;
     key: string;
     is_preview: boolean;
@@ -43,7 +44,7 @@ export declare const EnvVarSchema: z.ZodEffects<z.ZodObject<{
 }, z.objectInputType<{
     uuid: z.ZodString;
     key: z.ZodString;
-    value: z.ZodOptional<z.ZodString>;
+    value: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     is_preview: z.ZodBoolean;
     is_build_time: z.ZodOptional<z.ZodBoolean>;
     is_buildtime: z.ZodOptional<z.ZodBoolean>;
@@ -131,7 +132,7 @@ export type BulkRequest = z.infer<typeof BulkRequestSchema>;
 export declare const BulkResponseSchema: z.ZodArray<z.ZodEffects<z.ZodObject<{
     uuid: z.ZodString;
     key: z.ZodString;
-    value: z.ZodOptional<z.ZodString>;
+    value: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     is_preview: z.ZodBoolean;
     is_build_time: z.ZodOptional<z.ZodBoolean>;
     is_buildtime: z.ZodOptional<z.ZodBoolean>;
@@ -141,7 +142,7 @@ export declare const BulkResponseSchema: z.ZodArray<z.ZodEffects<z.ZodObject<{
 }, "passthrough", z.ZodTypeAny, z.objectOutputType<{
     uuid: z.ZodString;
     key: z.ZodString;
-    value: z.ZodOptional<z.ZodString>;
+    value: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     is_preview: z.ZodBoolean;
     is_build_time: z.ZodOptional<z.ZodBoolean>;
     is_buildtime: z.ZodOptional<z.ZodBoolean>;
@@ -151,7 +152,7 @@ export declare const BulkResponseSchema: z.ZodArray<z.ZodEffects<z.ZodObject<{
 }, z.ZodTypeAny, "passthrough">, z.objectInputType<{
     uuid: z.ZodString;
     key: z.ZodString;
-    value: z.ZodOptional<z.ZodString>;
+    value: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     is_preview: z.ZodBoolean;
     is_build_time: z.ZodOptional<z.ZodBoolean>;
     is_buildtime: z.ZodOptional<z.ZodBoolean>;
@@ -159,9 +160,10 @@ export declare const BulkResponseSchema: z.ZodArray<z.ZodEffects<z.ZodObject<{
     is_multiline: z.ZodBoolean;
     is_shown_once: z.ZodBoolean;
 }, z.ZodTypeAny, "passthrough">>, {
+    is_build_time: boolean;
+    value_null?: boolean;
     value: string;
     value_hidden: boolean;
-    is_build_time: boolean;
     uuid: string;
     key: string;
     is_preview: boolean;
@@ -172,7 +174,7 @@ export declare const BulkResponseSchema: z.ZodArray<z.ZodEffects<z.ZodObject<{
 }, z.objectInputType<{
     uuid: z.ZodString;
     key: z.ZodString;
-    value: z.ZodOptional<z.ZodString>;
+    value: z.ZodOptional<z.ZodNullable<z.ZodString>>;
     is_preview: z.ZodBoolean;
     is_build_time: z.ZodOptional<z.ZodBoolean>;
     is_buildtime: z.ZodOptional<z.ZodBoolean>;
