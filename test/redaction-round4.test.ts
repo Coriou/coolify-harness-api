@@ -411,3 +411,86 @@ describe('sixth pass', () => {
     hides(redactDocument(doc('    key: |', '      -----BEGIN PGP PRIVATE KEY BLOCK-----', ...headers, '', `      ${KEY}`, '      -----END PGP PRIVATE KEY BLOCK-----')), KEY);
   });
 });
+
+/** Seventh pass: a marker that is a list item or a flow element, and very long blocks. */
+describe('seventh pass', () => {
+  const KEY = 'MIIEs3cr3tAAAA1111bbbb2222';
+  const base = doc('services:', '  app:', '    image: nginx:1.27', '    restart: always');
+  const EVIL = ['image: evil/miner:latest', 'privileged: true', 'pid: host', '/var/run/docker.sock:/var/run/docker.sock'];
+  const shows = (after: string): void => {
+    const diff = formatRedactedDiff(base, after).join('\n');
+    for (const line of EVIL) expect(diff, line).toContain(line);
+  };
+  const rest = ['    image: evil/miner:latest', '    privileged: true', '    pid: host', '    volumes:', '    - /var/run/docker.sock:/var/run/docker.sock'];
+
+  it('a marker as an item of a list written at its key\'s indent hides nothing after the list', () => {
+    shows(doc('services:', '  app:', '    labels:', '    - -----BEGIN X-----', ...rest, '    # -----END X-----', '    restart: always'));
+    shows(doc('services:', '  app:', '    command:', '    - "-----BEGIN X-----"', ...rest, '    x-end: -----END X-----'));
+    // A later real certificate is not the end of that item either.
+    shows(doc('services:', '  app:', '    dns_search:', '    - -----BEGIN X-----', ...rest, 'configs:', '  ca:', '    content: |', '      -----BEGIN CERTIFICATE-----', '      MIIDdzCCAl+gAwIBAgIEAgAAuTANBgkq', '      -----END CERTIFICATE-----'));
+    shows(doc('x-notes:', '- -----BEGIN X-----', 'services:', '  app:', ...rest, '# -----END X-----'));
+  });
+
+  it('sibling items after a marker item stay readable', () => {
+    const out = redactDocument(doc('    labels:', '      - -----BEGIN X-----', '      - traefik.enable=true', '      - traefik.http.routers.app.rule=Host(`a.example.com`)', '      - -----END X-----'));
+    expect(out).toContain('traefik.enable=true');
+    expect(out).toContain('Host(`a.example.com`)');
+  });
+
+  it('a marker as a key of a mapping hides no sibling key', () => {
+    const out = redactDocument(doc('    labels:', '      -----BEGIN X-----: note', '      traefik.enable: "true"', '    privileged: true', '    # -----END X-----'));
+    expect(out).toContain('traefik.enable: "true"');
+    expect(out).toContain('privileged: true');
+  });
+
+  it('a marker as an element of a flow list ends with the list', () => {
+    shows(doc('services:', '  app:', '    x-notes: [', '    -----BEGIN X-----', '    ]', ...rest, '    # -----END X-----'));
+    shows(doc('services:', '  app:', '    x-notes: [ a,', '    -----BEGIN X-----, b ]', ...rest, '    # -----END X-----'));
+    shows(doc('x-notes: [', '-----BEGIN X-----', 'more text ]', 'services:', '  app:', ...rest, '# -----END X-----'));
+  });
+
+  it('a real block as a list item, at either indent, is still hidden whole', () => {
+    for (const dash of ['    - ', '  - ']) {
+      const out = redactDocument(doc('  certs:', `${dash}-----BEGIN PRIVATE KEY-----`, `      X-Note: ${S}`, `      ${KEY}`, '      -----END PRIVATE KEY-----', `${dash}other`));
+      hides(out);
+      hides(out, KEY);
+      expect(out).toContain('other');
+    }
+    hides(redactDocument(doc('{', '  "cert": [', '    "-----BEGIN PRIVATE KEY-----",', `    "${KEY}",`, '    "-----END PRIVATE KEY-----"', '  ]', '}')), KEY);
+  });
+
+  it('a bracket inside a block is a character of the block', () => {
+    const out = redactDocument(doc('  k: |', '    -----BEGIN PRIVATE KEY-----', `    X-Note: mine } ${S}`, `    ${KEY}`, '    -----END PRIVATE KEY-----', '  image: x'));
+    hides(out);
+    hides(out, KEY);
+    expect(out).toContain('image: x');
+    hides(redactDocument(doc('-----BEGIN PGP PRIVATE KEY BLOCK-----', `Comment: see ] ${S}`, '', KEY, '-----END PGP PRIVATE KEY BLOCK-----')));
+  });
+
+  it('a block longer than the look-ahead stays hidden to its end', () => {
+    const body = Array.from({ length: 450 }, (_, i) => `${KEY}${String(i).padStart(4, '0')}`);
+    const out = redactDocument(doc('-----BEGIN PRIVATE KEY-----', ...body, '-----END PRIVATE KEY-----', 'OTHER_SETTING=1'));
+    hides(out, KEY);
+    expect(out).toContain('OTHER_SETTING=');
+    const nested = redactDocument(doc('x-thing:', '  cert: |', '    -----BEGIN PRIVATE KEY-----', ...body.map((l) => `    ${l}`), '    -----END PRIVATE KEY-----', 'x-other: plain'));
+    hides(nested, KEY);
+    expect(nested).toContain('x-other: plain');
+  });
+});
+
+describe('seventh pass: long blocks written with escaped line breaks', () => {
+  const KEY = 'MIIEs3cr3tAAAA1111bbbb2222';
+  const body = (indent: string): string[] => Array.from({ length: 450 }, (_, i) => `${indent}${KEY}${String(i).padStart(4, '0')}\\n\\`);
+
+  it('in a quoted value under a key that says nothing', () => {
+    const out = redactDocument(doc('  cert: "x', '    -----BEGIN PRIVATE KEY-----\\n\\', ...body('    '), '    -----END PRIVATE KEY-----"', '  image: x'));
+    hides(out, KEY);
+    expect(out).toContain('image: x');
+  });
+
+  it('written out by a continued command', () => {
+    const out = redactDocument(doc('    command: "sh -c \'printf %b \\"\\', '      -----BEGIN PRIVATE KEY-----\\n\\', ...body('      '), '      -----END PRIVATE KEY-----\\" > /k\'"', '    image: x'));
+    hides(out, KEY);
+    expect(out).toContain('image: x');
+  });
+});

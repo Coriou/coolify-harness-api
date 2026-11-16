@@ -94,18 +94,19 @@ No command or flag was removed. The config file is unchanged, with one condition
 - `--out FILE` refuses to write through a symlink and sets mode 0600 before writing; the audit
   log is 0600 (also when an older version created it).
 - The config refuses an instance URL with credentials and a `tokenEnv` that is not a variable name.
-- Found by five rounds of adversarial review and covered by `test/redaction-*.test.ts`: the
+- Found by six rounds of adversarial review and covered by `test/redaction-*.test.ts`: the
   value of a flag on the next list item or continuation line, command lists read one argument
   at a time (block and flow style), quoted `-pSECRET`, header flags, `Bearer` / `Basic` tokens,
   `$(…)` and backtick substitutions, quoted parts glued by the shell, values nested under a
   sensitive key, scalars folded or quoted over several lines, lone CR line breaks, comments,
   Dockerfile continuations, `-e name=value` and leading shell assignments whatever the case,
   build `args:` and `x-…environment` blocks, password hashes, webhook URLs, Go DSNs, PEM blocks
-  with headers or pasted between quotes. Every scan is linear in the input (several patterns took
-  seconds to minutes on a hostile 100 kB line).
-- Redaction also had to stop hiding what a reviewer must see: a PEM marker in a label or a
-  comment, or an env item holding a lone quote, no longer hides the rest of a document from a
-  diff (a new `privileged: true` or docker.sock mount showed as `[REDACTED]`); flow-style
+  with headers, pasted between quotes, written out by a command over several lines, or longer
+  than 400 lines. Every scan is linear in the input (several patterns took seconds to minutes on
+  a hostile 100 kB line).
+- Redaction also had to stop hiding what a reviewer must see: a PEM marker in a label, a list
+  item or a comment, or an env item holding a lone quote, no longer hides the rest of a document
+  from a diff (a new `privileged: true` or docker.sock mount showed as `[REDACTED]`); flow-style
   `volumes:` are shown; a service named `test` or `env`, `set -e`, `sed -e`,
   `- shared_buffers=256MB` arguments and the lines that continue an inline `command:` stay
   readable.
