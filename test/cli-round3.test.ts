@@ -307,6 +307,41 @@ describe('document commands', () => {
     expect(client.restart).not.toHaveBeenCalled();
   });
 
+  it('compose set says how many added lines the diff hides whole, and where to read them', async () => {
+    const file = join(dir, 'hidden.yml');
+    // A line the redactor hides whole (a PEM marker in a trailing comment), next to plain ones.
+    writeFileSync(file, `${COMPOSE}    privileged: true # -----BEGIN X-----\n    restart: always\n`);
+    const client = { getService: vi.fn(async () => service(COMPOSE)), updateServiceCompose: vi.fn() };
+    expect(await composeSet(parseArgs(['compose', 'set', '--app', 'svc', '--from-file', file]), cmdDeps(client, svcTarget).deps)).toBe(0);
+    expect(stdout()).toContain('+     [REDACTED]');
+    expect(stdout()).toContain('+     restart: always');
+    expect(stdout()).toMatch(/NOTE: 1 added line is hidden whole by redaction .*--from-file document: read them there before --apply/);
+    expect(client.updateServiceCompose).not.toHaveBeenCalled();
+  });
+
+  it('compose set --json carries the count (0 when nothing is hidden)', async () => {
+    const file = join(dir, 'hidden-json.yml');
+    writeFileSync(file, `${COMPOSE}    privileged: true # -----BEGIN X-----\n    pid: host # -----BEGIN X-----\n`);
+    const client = { getService: vi.fn(async () => service(COMPOSE)), updateServiceCompose: vi.fn() };
+    await composeSet(parseArgs(['compose', 'set', '--app', 'svc', '--from-file', file, '--json']), cmdDeps(client, svcTarget).deps);
+    expect(oneJson()).toMatchObject({ dryRun: true, changed: true, hiddenAddedLines: 2 });
+    out.length = 0;
+    const plain = join(dir, 'plain.yml');
+    writeFileSync(plain, `${COMPOSE}    restart: always\n`);
+    await composeSet(parseArgs(['compose', 'set', '--app', 'svc', '--from-file', plain, '--json']), cmdDeps(client, svcTarget).deps);
+    expect(oneJson()).toMatchObject({ changed: true, hiddenAddedLines: 0 });
+  });
+
+  it('proxy set says it too', async () => {
+    const file = join(dir, 'proxy-hidden.yml');
+    writeFileSync(file, 'services:\n  traefik:\n    image: traefik:v3.1\n    privileged: true # -----BEGIN X-----\n');
+    const inst = { getServerProxy: vi.fn(async () => ({ configuration: 'services:\n  traefik:\n    image: traefik:v3.1\n' })), saveServerProxyConfiguration: vi.fn() };
+    const deps = { ...cmdDeps({}).deps, instanceFor: () => ({ name: 'prod', client: inst as never }) };
+    expect(await proxySet(parseArgs(['proxy', 'set', '--instance', 'prod', '--server', 's1', '--from-file', file]), deps)).toBe(0);
+    expect(stdout()).toMatch(/NOTE: 1 added line is hidden whole by redaction/);
+    expect(inst.saveServerProxyConfiguration).not.toHaveBeenCalled();
+  });
+
   it('proxy set refuses --image together with --from-file (the image was dropped without a word)', async () => {
     const inst = { getServerProxy: vi.fn(), saveServerProxyConfiguration: vi.fn() };
     const deps = { ...cmdDeps({}).deps, instanceFor: () => ({ name: 'prod', client: inst as never }) };

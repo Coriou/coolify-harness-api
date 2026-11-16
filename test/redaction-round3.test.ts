@@ -274,8 +274,11 @@ describe('PEM blocks', () => {
     expect(diff).toContain('evil.example');
   });
 
-  it('a real block is hidden to its END, also when its body is not base64, commented out, or on one line', () => {
-    hides(redactDocument(doc('    content: |', '      -----BEGIN PRIVATE KEY-----', `      ${S}`, '      MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', '      -----END PRIVATE KEY-----', '  other: 1')));
+  it('a real block is hidden to its END, also commented out or on one line', () => {
+    const block = redactDocument(doc('    content: |', '      -----BEGIN PRIVATE KEY-----', '      MIIEs3cr3tAAAA1111bbbb2222', '      MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', '      -----END PRIVATE KEY-----', '  other: 1'));
+    hides(block, 'MIIEs3cr3tAAAA1111bbbb2222');
+    hides(block, 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC');
+    expect(block).toContain('other: 1');
     const commented = redactDocument(doc('# -----BEGIN PRIVATE KEY-----', '# MIIEs3cr3tAAAA1111', '# -----END PRIVATE KEY-----', 'name: web'));
     hides(commented, 'MIIEs3cr3tAAAA1111');
     expect(commented).toContain('name: web');

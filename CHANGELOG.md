@@ -101,15 +101,21 @@ No command or flag was removed. The config file is unchanged, with one condition
   sensitive key, scalars folded or quoted over several lines, lone CR line breaks, comments,
   Dockerfile continuations, `-e name=value` and leading shell assignments whatever the case,
   build `args:` and `x-…environment` blocks, password hashes, webhook URLs, Go DSNs, PEM blocks
-  with headers, pasted between quotes, written out by a command over several lines, or longer
-  than 400 lines. Every scan is linear in the input (several patterns took seconds to minutes on
-  a hostile 100 kB line).
-- Redaction also had to stop hiding what a reviewer must see: a PEM marker in a label, a list
-  item or a comment, or an env item holding a lone quote, no longer hides the rest of a document
-  from a diff (a new `privileged: true` or docker.sock mount showed as `[REDACTED]`); flow-style
-  `volumes:` are shown; a service named `test` or `env`, `set -e`, `sed -e`,
-  `- shared_buffers=256MB` arguments and the lines that continue an inline `command:` stay
-  readable.
+  with armor headers, pasted between quotes, written out by a command over several lines, as a
+  JSON array of lines, or of any length. Every scan is linear in the input (several patterns took
+  seconds to minutes on a hostile 100 kB line).
+- Redaction also had to stop hiding what a reviewer must see. A PEM marker used to hide
+  everything up to the next END marker, or the rest of the document: put in a label, a list item,
+  a flow collection or a comment, it hid a new `privileged: true` or a docker.sock mount from a
+  `compose set` diff. A marker now hides only what a key block is made of — base64 lines and the
+  armor headers (`Proc-Type`, `DEK-Info`, `Version`, `Comment`…) — up to its END marker; any
+  other line is shown (after a header of an unknown name, the long base64 lines of the key still
+  are not). An env item holding a lone quote no longer hides what follows; flow-style `volumes:`
+  are shown; a service named `test` or `env`, `set -e`, `sed -e`, `- shared_buffers=256MB`
+  arguments and the lines that continue an inline `command:` stay readable.
+- `compose set` and `proxy set` say how many added lines their diff shows as `[REDACTED]`
+  (`hiddenAddedLines` with `--json`, a `NOTE:` line otherwise) and where to read them: a hidden
+  line is a change nobody reviewed.
 - What the redactor does not claim: it is a heuristic over text, not a parser. A password given
   as a bare positional argument (`rabbitmqctl add_user u PASS`), in free prose, or under a
   lower-case key that says nothing (`pw`, `k`) is not recognised. Keep secrets in env variables

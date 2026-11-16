@@ -37,9 +37,11 @@ describe('document redaction', () => {
   });
 
   it('redacts a PEM block wherever it appears', () => {
-    const doc = ['configs:', '  key:', '    content: |', '      -----BEGIN PRIVATE KEY-----', `      ${SECRET}`, '      -----END PRIVATE KEY-----', '  other: 1'].join('\n');
+    // The body of a PEM block is base64 (RFC 7468): that is what marks its lines.
+    const body = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7sup3rs3cretvalue';
+    const doc = ['configs:', '  key:', '    content: |', '      -----BEGIN PRIVATE KEY-----', `      ${body}`, '      -----END PRIVATE KEY-----', '  other: 1'].join('\n');
     const out = redactDocument(doc);
-    expect(out).not.toContain(SECRET);
+    expect(out).not.toContain(body);
     expect(out).not.toContain('BEGIN PRIVATE KEY');
     expect(out).toContain('  other: 1');
   });

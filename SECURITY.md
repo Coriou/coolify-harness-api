@@ -40,6 +40,15 @@ So keep literal secrets out of compose files and commands: put them in env varia
 reference them (`${VAR}`). References are always shown; values never are. `compose get --out` and
 `proxy get --out` write the unredacted document on purpose: keep those files out of git.
 
+A key block (`-----BEGIN … PRIVATE KEY-----`) is recognised by what it is made of: its marker
+lines, the armor headers (`Proc-Type`, `DEK-Info`, `Version`, `Comment`…) and base64 lines. Text
+between two markers that is neither is shown — a marker can also be a label or a note, and it
+must not hide the rest of a service from a diff.
+
+The other direction matters as much: a diff that hides a line hides a change. `compose set` and
+`proxy set` count the added lines they show as `[REDACTED]` (`hiddenAddedLines`) and tell you to
+read them in your own file before `--apply`.
+
 A shape of a real compose file that prints its secret is a bug worth reporting (above), as is
 redaction hiding a change a reviewer must see in a `compose set` / `proxy set` diff.
 
