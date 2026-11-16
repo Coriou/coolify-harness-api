@@ -56,8 +56,11 @@ const AUTH_HEADER_RE = /(authorization["']?[ \t]*[:=][ \t]*(?:\\?["'])?)(basic|t
 const BLOCK_SCALAR_RE = /^[|>][+-]?\d*[+-]?\s*(#.*)?$/;
 const PEM_BEGIN_RE = /-----BEGIN [A-Z0-9 ]+-----/;
 const PEM_END_RE = /-----END [A-Z0-9 ]+-----/;
-/** A base64 line (the body of a PEM block), possibly commented out or quoted. */
-const PEM_B64_RE = /^[\s#>]*[A-Za-z0-9+/=]+\s*$/;
+/**
+ * A base64 line (the body of a PEM block), possibly commented out, quoted, an element of a JSON
+ * array (`"…",`) or written with its line break escaped (`…\n\`).
+ */
+const PEM_B64_RE = /^[\s#>]*["']?[A-Za-z0-9+/=]+(?:\\[nr])*\\?["']?,?\s*$/;
 /** A header line of a PEM / OpenPGP block, by its real names (RFC 1421, RFC 4880). */
 const PEM_HEADER_RE = /^[\s#>]*(Proc-Type|DEK-Info|Content-Domain|Version|Comment|MessageID|Hash|Charset):[ \t]*\S/;
 /** How far ahead the END marker of a block is looked for. */
@@ -1192,9 +1195,10 @@ export function redactDocumentLines(text) {
                 // A block inside a comment ends with the comment.
                 ? blank || /^\s*#/.test(line)
                 // A block whose END follows is hidden whole, whatever its lines look like (headers of any
-                // name, a body that is not plain base64). A BEGIN without END is a truncated key or mere
-                // text: only what can be a key — base64, the armor headers — is hidden, and not for long.
-                : pemToEnd || blank || ((PEM_B64_RE.test(line) || PEM_HEADER_RE.test(line)) && (pemLines += 1) <= PEM_MAX_LINES);
+                // name, a body that is not plain base64). A BEGIN without END in sight is a truncated or
+                // very long key, or mere text: only what can be a key is hidden — base64 lines, and a
+                // bounded number of armor headers.
+                : pemToEnd || blank || PEM_B64_RE.test(line) || (PEM_HEADER_RE.test(line) && (pemLines += 1) <= PEM_MAX_LINES);
             if (stays) {
                 hide();
                 continue;
@@ -1272,19 +1276,45 @@ export function redactDocumentLines(text) {
             pemComment = /^\s*#/.test(line);
             // A block, or a marker that is mere text (a label, a note)? A block has its END marker
             // ahead, with nothing in between left of where its lines may sit: at the marker's indent
-            // when it stands alone on its line, deeper when it is the value of a key (the lines at the
-            // key's own indent are the next keys).
-            const alone = /^[\s#>]*(-\s+)?["']?$/.test(line.slice(0, pem.index));
+            // when it stands alone on its line, deeper when it is the value of a key or a list item
+            // (the lines at the key's or the dash's own indent are the next keys and items: in a list
+            // written at its key's indent they are the rest of the service).
+            const rest = line.slice(pem.index + pem[0].length);
+            const alone = /^[\s#>]*["']?$/.test(line.slice(0, pem.index)) && !/^["']?\s*:(\s|$)/.test(rest);
             const floor = alone ? indent : indent + 1;
-            pemToEnd = false;
-            for (let k = idx + 1; k < pieces.length && k <= idx + PEM_MAX_LINES; k += 1) {
-                const next = pieces[k] ?? '';
-                if (PEM_END_RE.test(next)) {
-                    pemToEnd = true;
-                    break;
+            // An element of a flow collection written over several lines (the line before ends with
+            // `[`, `{` or `,`): the collection ends at the first closing bracket with no opener since
+            // the marker, and a block with it. Elsewhere a bracket is just a character of the block.
+            let before = idx - 1;
+            while (before >= 0 && (pieces[before] ?? '').trim() === '')
+                before -= 1;
+            const inFlow = /[[{,]\s*$/.test(pieces[before] ?? '');
+            let brackets = 0;
+            const closesFlow = (s) => {
+                if (!/[[\]{}]/.test(s))
+                    return false;
+                for (let c = 0; c < s.length; c += 1) {
+                    const ch = s.charAt(c);
+                    if (ch === '[' || ch === '{')
+                        brackets += 1;
+                    else if ((ch === ']' || ch === '}') && (brackets -= 1) < 0)
+                        return true;
                 }
-                if (next.trim() !== '' && indentOf(next) < floor)
-                    break;
+                return false;
+            };
+            pemToEnd = false;
+            if (!closesFlow(rest)) {
+                for (let k = idx + 1; k < pieces.length && k <= idx + PEM_MAX_LINES; k += 1) {
+                    const next = pieces[k] ?? '';
+                    if (PEM_END_RE.test(next)) {
+                        pemToEnd = true;
+                        break;
+                    }
+                    if (next.trim() !== '' && indentOf(next) < floor)
+                        break;
+                    if (inFlow && closesFlow(next))
+                        break;
+                }
             }
             continue;
         }
