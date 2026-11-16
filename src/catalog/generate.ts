@@ -1,13 +1,13 @@
 import { writeFile as fsWriteFile } from 'node:fs/promises';
-import { z } from 'zod';
-import { walkEnvSchema, mergeCatalogs, type CatalogModel } from './walk.js';
+import { walkEnvSchema, mergeCatalogs, type AnyZodSchema, type CatalogModel } from './walk.js';
 import { emitMarkdown } from './emit-markdown.js';
 import { emitJson } from './emit-json.js';
 import { emitDotenv } from './emit-dotenv.js';
 
 export interface SchemaInput {
   service: string;
-  schema: z.ZodTypeAny;
+  /** A zod 3, zod 4 or zod mini object schema (possibly refined, intersected or wrapped). */
+  schema: AnyZodSchema;
 }
 
 export interface CatalogArtifacts {
