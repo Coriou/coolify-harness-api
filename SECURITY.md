@@ -23,6 +23,26 @@ the bug, rotate it first (Coolify → Keys & Tokens).
 You will get an answer within a few days. Fixes ship as a patch release with a `### Security`
 section in the CHANGELOG.
 
+## What redaction covers, and what it cannot know
+
+Two different guarantees:
+
+- **Structured data is exact.** Env values (`env list` / `diff` / `apply`), tokens, and every
+  field of a Coolify payload whose name says it is secret are never printed, whatever they hold.
+- **Free-form documents are a heuristic.** A docker-compose file, a proxy configuration, a
+  Dockerfile or a start command is text. The redactor recognises the shapes these really take
+  (assignments, `environment:` blocks, secret-named keys and flags, command lists, URL
+  credentials, `Bearer` tokens, PEM blocks, password hashes…) and errs on the side of hiding. It
+  cannot recognise a password that nothing marks as one: a bare positional argument
+  (`rabbitmqctl add_user admin PASS`), free prose, a value under a key such as `pw` or `k`.
+
+So keep literal secrets out of compose files and commands: put them in env variables and
+reference them (`${VAR}`). References are always shown; values never are. `compose get --out` and
+`proxy get --out` write the unredacted document on purpose: keep those files out of git.
+
+A shape of a real compose file that prints its secret is a bug worth reporting (above), as is
+redaction hiding a change a reviewer must see in a `compose set` / `proxy set` diff.
+
 ## Supported versions
 
 Only the latest release gets fixes. Consumers pin a tag, so upgrading is a one-line change.

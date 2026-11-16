@@ -30,7 +30,12 @@ No command or flag was removed. The config file is unchanged, with one condition
 - **A plain `deploy` of an application makes one more request** (`GET /deployments/{uuid}`, at
   most 10 s, needs `read`; without it the check is skipped) and exits 1 with `DEPLOY_NOT_QUEUED`
   when Coolify answered "queued" for a deployment it does not have.
-- `env delete --key` refuses a value holding `=` or a blank (it is not a name).
+- `env delete --key` refuses a value holding `=` or a blank (it is not a name), and a key that
+  was not found is echoed (text and `notFound` in the JSON) only when it reads like a variable
+  name: otherwise it is `<N-character key>`. An unreadable `--from-file` / `--token-file` path
+  is described the same way when it does not read like a path.
+- A `deploy` interrupted (Ctrl-C, SIGTERM) while it checks or waits exits 130 with its document;
+  a deploy Coolify did not queue leaves two audit records (the request, then its failure).
 - **`flag set --redeploy` without `--apply` no longer deploys**, and `flag set` without `--set` /
   `--from-file` is a usage error (it was a bare deploy with `--redeploy --apply`).
 - `--preview` on a service or a database is exit 2 (it wrote the production row); `--take 0` and
@@ -60,7 +65,9 @@ No command or flag was removed. The config file is unchanged, with one condition
   returns `{ confirmed: false, confirmError }` when the re-read fails (it threw). `upsertEnvs`
   refuses `is_preview` items on a service or database, and a key with edge whitespace.
   `waitForDeployment` defaults changed: the interval grows from 2 s to 5 s, 5 failed polls are
-  tolerated (was 3), a 4xx is fatal at once; `getLatestDeployment` prefers a production row.
+  tolerated (was 3), a 4xx is fatal at once, and NaN or negative `timeoutMs` / `intervalMs` /
+  `pollGraceMs` / `maxConsecutiveErrors` throw a `RangeError`; `getLatestDeployment` prefers a
+  production row.
 
 ### Security
 - **`env diff --json` and `env apply --json` printed env values in clear**: the desired values
@@ -87,7 +94,7 @@ No command or flag was removed. The config file is unchanged, with one condition
 - `--out FILE` refuses to write through a symlink and sets mode 0600 before writing; the audit
   log is 0600 (also when an older version created it).
 - The config refuses an instance URL with credentials and a `tokenEnv` that is not a variable name.
-- Found by four rounds of adversarial review and covered by `test/redaction-*.test.ts`: the
+- Found by five rounds of adversarial review and covered by `test/redaction-*.test.ts`: the
   value of a flag on the next list item or continuation line, command lists read one argument
   at a time (block and flow style), quoted `-pSECRET`, header flags, `Bearer` / `Basic` tokens,
   `$(…)` and backtick substitutions, quoted parts glued by the shell, values nested under a
@@ -99,8 +106,13 @@ No command or flag was removed. The config file is unchanged, with one condition
 - Redaction also had to stop hiding what a reviewer must see: a PEM marker in a label or a
   comment, or an env item holding a lone quote, no longer hides the rest of a document from a
   diff (a new `privileged: true` or docker.sock mount showed as `[REDACTED]`); flow-style
-  `volumes:` are shown; a service named `test` or `env`, `set -e`, `sed -e`, and
-  `- shared_buffers=256MB` arguments stay readable.
+  `volumes:` are shown; a service named `test` or `env`, `set -e`, `sed -e`,
+  `- shared_buffers=256MB` arguments and the lines that continue an inline `command:` stay
+  readable.
+- What the redactor does not claim: it is a heuristic over text, not a parser. A password given
+  as a bare positional argument (`rabbitmqctl add_user u PASS`), in free prose, or under a
+  lower-case key that says nothing (`pw`, `k`) is not recognised. Keep secrets in env variables
+  and reference them (`$VAR`): references are always shown, values never.
 - A `--key NAME=value` given to `env delete`, a value after `--token-file`, `--timeout` or
   `--public`, and an unknown flag that does not read like one are no longer echoed.
 - `--out FILE` is written to a new 0600 file that then replaces the target (an existing

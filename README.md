@@ -14,6 +14,8 @@ vars, edit service composes, the proxy (Traefik) and databases.
   `deploy` is the one exception: running it *is* the explicit step (preview it with `--dry-run`).
 - **Secrets never printed.** Env values are never shown, only their length. Every output is
   redacted: tokens, webhook secrets, URL passwords, literals in compose files, basic-auth hashes.
+  (Redaction of free-form documents is a heuristic: see [SECURITY.md](SECURITY.md) for what it
+  covers and what it cannot know.)
 - **Built for agents.** `--json` prints exactly one document. Errors are typed, with precise exit
   codes. Every mutation is appended to a local audit log (keys only, never values).
 - **Knows Coolify's traps.** No auto-redeploy on env change, production vs preview rows,
@@ -218,7 +220,7 @@ up to 10 s more). Give the shell that runs it a longer timeout than that, or pas
 | 6 | Refused to delete an env var Coolify would re-create | Remove it from the compose first, or `--force` |
 | 7 | `deploy --wait`: the deployment failed or was cancelled | `logs --build` |
 | 8 | `deploy --wait`: timed out (`--timeout`, default 600 s) | The deployment is still running: `deployment <uuid>` |
-| 130 | `deploy --wait` interrupted (Ctrl-C or SIGTERM) | The deployment is still running; the message says how to follow or cancel it |
+| 130 | `deploy` interrupted while it checks or waits (Ctrl-C or SIGTERM) | The deployment is still running; the message says how to follow or cancel it |
 
 **Copy-paste for your `CLAUDE.md` / `AGENTS.md`**
 
