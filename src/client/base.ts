@@ -44,6 +44,22 @@ export interface RequestOptions {
 const MAX_SERVER_MESSAGE = 400;
 
 /**
+ * The strings of a document (compose, proxy configuration) that a server error must not quote
+ * back: the document itself, each of its lines, and each assigned value. A parse error typically
+ * cites the offending line, which is where the literal secrets are.
+ */
+export function documentSecrets(document: string): string[] {
+  const out = new Set<string>([document]);
+  for (const raw of document.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.length >= 4) out.add(line);
+    const value = /^(?:-\s*)?['"]?[^=:'"]+['"]?\s*[=:]\s*(.+)$/.exec(line)?.[1]?.trim().replace(/^(['"])(.*)\1$/, '$2');
+    if (value !== undefined && value.length >= 4 && !/^(true|false|yes|no|on|off|null|\d+)$/i.test(value)) out.add(value);
+  }
+  return [...out];
+}
+
+/**
  * Make a server-supplied message safe to print and audit: drop anything that repeats a secret we
  * sent, strip credentials inside URLs, collapse whitespace and bound the length.
  */
@@ -114,6 +130,14 @@ export class CoolifyApi {
   }
 
   private assertOk(res: HttpResult, ctx: string, secrets: readonly string[]): void {
+    if (res.status >= 300 && res.status < 400) {
+      let to = '';
+      try { to = res.location ? ` to ${new URL(res.location, this.instanceUrl).origin}` : ''; } catch { /* unparseable Location */ }
+      throw new CoolifyRequestError(
+        `Coolify answered ${ctx} with a redirect (${res.status})${to}. Redirects are not followed: set the instance url in the config to the final address (https, no trailing path).`,
+        { status: res.status },
+      );
+    }
     if (res.status < 400) return;
     const { message, fields } = serverMessage(res.body, secrets);
     if (res.status === 401 || res.status === 403) {
@@ -132,5 +156,26 @@ export class CoolifyApi {
       `Coolify request ${ctx} failed with status ${res.status}${detail ? ` — ${detail}` : ''}`,
       { status: res.status, fields },
     );
+  }
+}
+
+/** `message` of a JSON acknowledgement, read without a schema. */
+export function rawMessage(body: unknown): string {
+  const m = body && typeof body === 'object' ? (body as { message?: unknown }).message : undefined; // reason: narrowed by the object guard; read defensively
+  return typeof m === 'string' ? m : '';
+}
+
+/**
+ * Parse the acknowledgement of a mutation Coolify has ALREADY accepted (2xx). If the body does
+ * not match the schema — or the validators cannot even be loaded — the write still happened:
+ * reporting it as a failure would make an agent repeat it (a second deployment, a second delete).
+ * So an unreadable acknowledgement is logged and replaced by a best-effort one.
+ */
+export async function ackAfterWrite<T>(deps: CoolifyClientDeps, ctx: string, parse: () => Promise<T> | T, fallback: () => T): Promise<T> {
+  try {
+    return await parse();
+  } catch (err) {
+    deps.logger.warn('coolify.ack.unrecognised', { ctx, error: err instanceof Error ? err.message : String(err) });
+    return fallback();
   }
 }
