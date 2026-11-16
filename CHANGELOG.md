@@ -109,13 +109,15 @@ No command or flag was removed. The config file is unchanged, with one condition
   a flow collection or a comment, it hid a new `privileged: true` or a docker.sock mount from a
   `compose set` diff. A marker now hides only what a key block is made of — base64 lines and the
   armor headers (`Proc-Type`, `DEK-Info`, `Version`, `Comment`…) — up to its END marker; any
-  other line is shown (after a header of an unknown name, the long base64 lines of the key still
-  are not). An env item holding a lone quote no longer hides what follows; flow-style `volumes:`
+  other line is shown, minus the rows of the key it may hold (after a header of an unknown name,
+  or written one `echo '…' >> key` per row, the long base64 rows are still hidden). An env item
+  holding a lone quote no longer hides what follows; flow-style `volumes:`
   are shown; a service named `test` or `env`, `set -e`, `sed -e`, `- shared_buffers=256MB`
   arguments and the lines that continue an inline `command:` stay readable.
-- `compose set` and `proxy set` say how many added lines their diff shows as `[REDACTED]`
-  (`hiddenAddedLines` with `--json`, a `NOTE:` line otherwise) and where to read them: a hidden
-  line is a change nobody reviewed.
+- `compose set` and `proxy set` say how many added or changed lines their diff shows as
+  `[REDACTED]` (`hiddenAddedLines` with `--json`, a `NOTE:` line otherwise) and where to read
+  them: a hidden line is a change nobody reviewed. A lone CR inside a diff line is printed as
+  `\r` instead of overprinting the line.
 - What the redactor does not claim: it is a heuristic over text, not a parser. A password given
   as a bare positional argument (`rabbitmqctl add_user u PASS`), in free prose, or under a
   lower-case key that says nothing (`pw`, `k`) is not recognised. Keep secrets in env variables

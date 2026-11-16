@@ -81,6 +81,13 @@ const PEM_HEADER_RE = /^[\s#>]*["']?(Proc-Type|DEK-Info|Content-Domain|Originato
 const PEM_MAX_LINES = 400;
 /** A body line of a real key is 64 to 76 characters; a word of a compose file is not. */
 const PEM_LONG_LINE = 40;
+/**
+ * A row of a key standing as a word in a line (`echo 'MIIE…' >> key &&`): 40+ base64 characters.
+ * Only when it holds upper case, lower case and a digit — a hex digest or a long path does not.
+ */
+const PEM_WORD_RE = /[A-Za-z0-9+/]{40,}={0,2}/g;
+/** The last row of a key is shorter; taken for one only in the line right after a hidden row. */
+const PEM_TAIL_WORD_RE = /[A-Za-z0-9+/]{12,}={0,2}/g;
 /** Compose keys whose value is a command line (inline or as a list of arguments). */
 const COMMAND_YAML_KEY_RE = /^(command|entrypoint|test)$/i;
 /** Flow collections under these keys carry no secret and are worth reading. */
@@ -1059,7 +1066,7 @@ export function redactDocumentLines(text: string): string[] {
   let inPem = false;
   let pemLines = 0; // header lines hidden since the BEGIN marker
   let pemWeak = 0; // lines left to follow a block that another line cut short (0: none)
-  let pemRun = false; // the line before was hidden as the body of such a block
+  let pemRun = false; // the line before was, or held, a row of such a block
   let pemComment = false; // the BEGIN marker stood in a comment
   let continues: '' | 'run' | 'env' = ''; // inside a Dockerfile instruction continued with `\`
   const runCarry: Carry = { flag: '' };
@@ -1098,7 +1105,18 @@ export function redactDocumentLines(text: string): string[] {
 
   for (let idx = 0; idx < pieces.length; idx += 1) {
     const line = pieces[idx] ?? '';
-    const push = (s: string): void => { done.push(s); };
+    // Rows of a key inside a line that is otherwise shown (see the block cut short, below):
+    // 0 none looked for, 1 full rows, 2 also the shorter last row.
+    let keyRows: 0 | 1 | 2 = 0;
+    const push = (s: string): void => {
+      if (keyRows === 0) { done.push(s); return; }
+      const tail = keyRows === 2;
+      const shown = s.replace(tail ? PEM_TAIL_WORD_RE : PEM_WORD_RE, (word) => (
+        /[a-z]/.test(word) && /[A-Z]/.test(word) && (tail || /\d/.test(word)) ? REDACTED : word
+      ));
+      if (shown !== s) pemRun = true;
+      done.push(shown);
+    };
     const blank = line.trim() === '';
     const indent = indentOf(line);
     const hide = (): void => { push(blank ? line : `${line.slice(0, indent)}${REDACTED}`); };
@@ -1135,11 +1153,15 @@ export function redactDocumentLines(text: string): string[] {
       pemWeak -= 1;
       if (PEM_END_RE.test(line)) {
         pemWeak = 0;
+        pemRun = false;
       } else if (PEM_B64_RE.test(line) && (pemRun || line.trim().length >= PEM_LONG_LINE)) {
         pemRun = true;
         hide();
         continue;
       } else {
+        // A key written one row per command (`echo 'MIIE…' >> key &&`): the row is a word of a
+        // line that is otherwise shown as it is.
+        keyRows = pemRun ? 2 : 1;
         pemRun = false;
       }
     }

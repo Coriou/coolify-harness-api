@@ -565,3 +565,58 @@ describe('eighth pass: a marker never hides the rest of a service', () => {
     hides(redactDocument(doc('KEY=-----BEGIN PRIVATE KEY-----', LINE, '-----END PRIVATE KEY-----', 'OTHER=1')), LINE);
   });
 });
+
+/** Ninth pass: a key written one row per command, and what the diff notice counts. */
+describe('ninth pass: a key written one row per command', () => {
+  const ROW1 = 'MIIEs3cr3t0001AbCdEfGh0123456789+/AbCdEfGh0123456789+/AbCdEfGh01';
+  const ROW2 = 'MIIEs3cr3t0002AbCdEfGh0123456789+/AbCdEfGh0123456789+/AbCdEfGh01';
+  const TAIL = 'AbCd1111EfGh2222==';
+  const hidesKey = (out: string): void => { for (const row of [ROW1, ROW2, TAIL]) hides(out, row); };
+
+  it('in a command continued over several lines', () => {
+    const out = redactDocument(doc(
+      '    command: sh -c "echo \'-----BEGIN OPENSSH PRIVATE KEY-----\' > /root/.ssh/id &&',
+      `      echo '${ROW1}' >> /root/.ssh/id &&`,
+      `      echo '${ROW2}' >> /root/.ssh/id &&`,
+      `      echo '${TAIL}' >> /root/.ssh/id &&`,
+      '      echo \'-----END OPENSSH PRIVATE KEY-----\' >> /root/.ssh/id && exec app"',
+      '    image: alpine:3.20',
+    ));
+    hidesKey(out);
+    // The command around the rows stays readable.
+    expect(out).toContain("echo '[REDACTED]' >> /root/.ssh/id &&");
+    expect(out).toContain('>> /root/.ssh/id && exec app"');
+    expect(out).toContain('image: alpine:3.20');
+  });
+
+  it('in a script (an entrypoint item, a config file) and in a Dockerfile', () => {
+    const script = (indent: string): string[] => [
+      `${indent}echo "-----BEGIN OPENSSH PRIVATE KEY-----" > /root/.ssh/id`,
+      `${indent}echo "${ROW1}" >> /root/.ssh/id`,
+      `${indent}echo "${ROW2}" >> /root/.ssh/id`,
+      `${indent}echo "${TAIL}" >> /root/.ssh/id`,
+      `${indent}echo "-----END OPENSSH PRIVATE KEY-----" >> /root/.ssh/id`,
+      `${indent}exec app`,
+    ];
+    const entrypoint = redactDocument(doc('    entrypoint:', '      - sh', '      - -c', '      - |', ...script('        ')));
+    hidesKey(entrypoint);
+    const config = redactDocument(doc('configs:', '  init:', '    content: |', '      #!/bin/sh', ...script('      ')));
+    hidesKey(config);
+    expect(config).toContain('exec app');
+    const dockerfile = redactDocument(doc('FROM alpine:3.20', 'RUN echo "-----BEGIN OPENSSH PRIVATE KEY-----" > /k && \\', `    echo "${ROW1}" >> /k && \\`, `    echo "${ROW2}" >> /k && \\`, '    echo "-----END OPENSSH PRIVATE KEY-----" >> /k', 'CMD ["app"]'));
+    hides(dockerfile, ROW1);
+    hides(dockerfile, ROW2);
+    expect(dockerfile).toContain('CMD ["app"]');
+  });
+
+  it('a digest, a long path and a hex string after a text marker are not rows of a key', () => {
+    const lines = [
+      '    image: ghcr.io/org/app@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      '    volumes:',
+      '      - /srv/data/projects/customer/application/storage/uploads/public:/data',
+      '    x-fingerprint: 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF',
+    ];
+    const out = redactDocument(doc('    x-note: -----BEGIN X-----', ...lines));
+    for (const line of lines) expect(out, line).toContain(line);
+  });
+});

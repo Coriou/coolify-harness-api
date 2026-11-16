@@ -13,6 +13,7 @@ import { deployCmd } from '../src/cli/commands/deploy.js';
 import { envApply, envDelete } from '../src/cli/commands/env.js';
 import { composeSet } from '../src/cli/commands/compose.js';
 import { proxySet } from '../src/cli/commands/proxy.js';
+import { countHiddenAdditions, printableDiffLine } from '../src/client/compose.js';
 import { configDoctor } from '../src/cli/commands/config-doctor.js';
 import { deploymentsCmd, withoutLogs } from '../src/cli/commands/deployments.js';
 import { CoolifyClient } from '../src/client/coolify.js';
@@ -315,7 +316,7 @@ describe('document commands', () => {
     expect(await composeSet(parseArgs(['compose', 'set', '--app', 'svc', '--from-file', file]), cmdDeps(client, svcTarget).deps)).toBe(0);
     expect(stdout()).toContain('+     [REDACTED]');
     expect(stdout()).toContain('+     restart: always');
-    expect(stdout()).toMatch(/NOTE: 1 added line is hidden whole by redaction .*--from-file document: read them there before --apply/);
+    expect(stdout()).toMatch(/NOTE: 1 added or changed line is hidden whole by redaction .*--from-file document: read them there before --apply/);
     expect(client.updateServiceCompose).not.toHaveBeenCalled();
   });
 
@@ -332,13 +333,36 @@ describe('document commands', () => {
     expect(oneJson()).toMatchObject({ changed: true, hiddenAddedLines: 0 });
   });
 
+  it('the count covers a hidden line that replaces a hidden line, and every piece of a line broken by a lone CR', () => {
+    expect(countHiddenAdditions([
+      '- [REDACTED]',
+      '~ [REDACTED]   (redacted value changed)',
+      '~ KEY: [REDACTED]   (redacted value changed)',
+      '+     restart: always',
+      '+     stop_grace_period: 5s\r    [REDACTED]',
+      '+       - [REDACTED]',
+    ])).toBe(3);
+    // A CR inside a line would send the cursor back and overprint its start.
+    expect(printableDiffLine('+     stop_grace_period: 5s\r    [REDACTED]')).toBe('+     stop_grace_period: 5s\\r    [REDACTED]');
+    expect(printableDiffLine('+     image: x\r')).toBe('+     image: x\r');
+  });
+
+  it('compose set counts lines hidden on both sides of a change', async () => {
+    const before = 'services:\n  app:\n    image: nginx:1\n    environment:\n      TLS_CERT: |\n        -----BEGIN CERTIFICATE-----\n        MIIDdzCCAl+gAwIBAgIEAgAAuTANBgkq\n        hkiG9w0BAQUFADBaMQswCQYDVQQGEwJJ\n        -----END CERTIFICATE-----\n';
+    const file = join(dir, 'both-sides.yml');
+    writeFileSync(file, 'services:\n  app:\n    image: nginx:1\n    environment:\n      TLS_CERT: x\n  sidecar:\n        image: evil/miner:latest # -----BEGIN X-----\n        privileged: true # -----BEGIN X-----\n        pid: host # -----BEGIN X-----\n');
+    const client = { getService: vi.fn(async () => service(before)), updateServiceCompose: vi.fn() };
+    await composeSet(parseArgs(['compose', 'set', '--app', 'svc', '--from-file', file, '--json']), cmdDeps(client, svcTarget).deps);
+    expect(oneJson()).toMatchObject({ changed: true, hiddenAddedLines: 3 });
+  });
+
   it('proxy set says it too', async () => {
     const file = join(dir, 'proxy-hidden.yml');
     writeFileSync(file, 'services:\n  traefik:\n    image: traefik:v3.1\n    privileged: true # -----BEGIN X-----\n');
     const inst = { getServerProxy: vi.fn(async () => ({ configuration: 'services:\n  traefik:\n    image: traefik:v3.1\n' })), saveServerProxyConfiguration: vi.fn() };
     const deps = { ...cmdDeps({}).deps, instanceFor: () => ({ name: 'prod', client: inst as never }) };
     expect(await proxySet(parseArgs(['proxy', 'set', '--instance', 'prod', '--server', 's1', '--from-file', file]), deps)).toBe(0);
-    expect(stdout()).toMatch(/NOTE: 1 added line is hidden whole by redaction/);
+    expect(stdout()).toMatch(/NOTE: 1 added or changed line is hidden whole by redaction/);
     expect(inst.saveServerProxyConfiguration).not.toHaveBeenCalled();
   });
 

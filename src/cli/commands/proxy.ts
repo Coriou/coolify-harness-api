@@ -1,6 +1,6 @@
 import type { ParsedArgs } from '../args.js';
 import {
-  countHiddenAdditions, formatRedactedDiff, isValidImageRef, listServiceImages, setServiceImage, sha256, splitImageRef,
+  countHiddenAdditions, formatRedactedDiff, isValidImageRef, listServiceImages, printableDiffLine, setServiceImage, sha256, splitImageRef,
 } from '../../client/compose.js';
 import { redactDocument } from '../../client/redact.js';
 import type { ServerProxy } from '../../client/schemas.js';
@@ -110,7 +110,7 @@ export async function proxySet(args: ParsedArgs, deps: CmdDeps): Promise<number>
   if (!args.json) {
     for (const c of changes) print(`proxy image ${c.service}: ${c.from ?? '(none)'} -> ${c.to ?? '(removed)'}`);
     for (const w of warnings) print(`WARNING: ${w}`);
-    for (const line of diff) print(line);
+    for (const line of diff) print(printableDiffLine(line));
     if (hiddenAddedLines > 0) print(hiddenAdditionsNote(hiddenAddedLines, args.fromFile !== undefined, `coolify-harness proxy get --instance ${args.instance ?? '<name>'} --server ${uuid} --out FILE`));
   }
   if (before === after || !args.apply) {

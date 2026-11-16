@@ -46,8 +46,9 @@ between two markers that is neither is shown — a marker can also be a label or
 must not hide the rest of a service from a diff.
 
 The other direction matters as much: a diff that hides a line hides a change. `compose set` and
-`proxy set` count the added lines they show as `[REDACTED]` (`hiddenAddedLines`) and tell you to
-read them in your own file before `--apply`.
+`proxy set` count the added or changed lines they show whole as `[REDACTED]` (`hiddenAddedLines`)
+and tell you to read them in your own file before `--apply`. A line hidden in part
+(`KEY: [REDACTED]`) is not counted: its name is there to read.
 
 A shape of a real compose file that prints its secret is a bug worth reporting (above), as is
 redaction hiding a change a reviewer must see in a `compose set` / `proxy set` diff.

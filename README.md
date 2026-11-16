@@ -339,9 +339,9 @@ coolify-harness compose set --app my-svc --from-file svc.yml [--apply]
   images. Nothing changed means nothing saved and nothing restarted (the output says so).
 - `--from-file` must be a compose document (a top-level `services:`); anything else is refused.
 - The dry-run prints a diff with secrets redacted on both sides. A line shown as `+ [REDACTED]`
-  is an added line you cannot review there: the output says how many there are
-  (`"hiddenAddedLines"` with `--json`, a `NOTE:` line otherwise). Read them in your own
-  `--from-file` document before `--apply`. `proxy set` does the same.
+  (or `~ [REDACTED]`) is an added or changed line you cannot review there: the output says how
+  many there are (`"hiddenAddedLines"` with `--json`, a `NOTE:` line otherwise). Read them in
+  your own `--from-file` document before `--apply`. `proxy set` does the same.
 - If the save fails with a 5xx or a dropped connection, the stored compose is read back and the
   error says whether it is the new one (`"stored": "new" | "old" | "changed" | "unknown"`):
   Coolify saves before it re-parses, so a 500 can leave the new document in place.
