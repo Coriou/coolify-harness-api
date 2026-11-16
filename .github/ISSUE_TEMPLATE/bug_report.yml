@@ -1,0 +1,53 @@
+name: Bug report
+description: A command failed, printed something wrong, or Coolify changed its API
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste a token, an env value, a hostname you want private, or an unredacted compose file.**
+        A leak of a secret by the tool itself is a security issue: report it privately (see SECURITY.md).
+  - type: input
+    id: harness
+    attributes:
+      label: coolify-harness version
+      description: Output of `coolify-harness --version`
+      placeholder: coolify-harness 0.5.0 (Coolify API tested on 4.5.0–4.7.5)
+    validations:
+      required: true
+  - type: input
+    id: coolify
+    attributes:
+      label: Coolify version
+      description: Output of `coolify-harness instance info --instance <name>`
+      placeholder: "4.7.5"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Runtime and package manager
+      placeholder: Node 24.20 + pnpm 12, or Bun 1.3
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and output
+      description: The exact command, its exit code, and stdout / stderr (with `--json` if you can). Contract errors contain field names and types only, so they are safe to paste.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Target kind
+      options: [application, service, database, instance-wide (servers / proxy), local (catalog / config)]
+    validations:
+      required: true

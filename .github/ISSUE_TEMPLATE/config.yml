@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security issue (a leaked token or env value)
+    url: https://github.com/Coriou/coolify-harness-api/security/advisories/new
+    about: Private report. Please do not open a public issue for a leak.
+  - name: Coolify itself
+    url: https://github.com/coollabsio/coolify/issues
+    about: Bugs in Coolify or its API belong upstream.

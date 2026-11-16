@@ -1,10 +1,12 @@
 # Coolify API Verified Facts (for AI Agents + coolify-harness)
 
-> **Superseded for Coolify 4.5.0 by [`coolify-4.5-api-coverage.md`](coolify-4.5-api-coverage.md)** (2026-10-26).
-> Points below that no longer hold on 4.5.0: lifecycle endpoints are POST-only (GET answers
+> **Historical (2026-07, harness 0.2.0).** Superseded by
+> [`coolify-api-coverage.md`](coolify-api-coverage.md), which tracks the current pinned contract
+> (Coolify 4.7.5). Points below that no longer hold: lifecycle endpoints are POST-only (GET answers
 > "This endpoint has changed to a POST request"); services DO have logs
 > (`GET /services/{uuid}/logs?sub_service_name=`); `GET /deployments/applications/{uuid}` returns
-> `{ count, deployments }`; many response fields are `null`, not absent.
+> `{ count, deployments }`; many response fields are `null`, not absent; every `DELETE` route
+> needs the `delete` ability since 4.7.
 
 **Date:** 2026-07-09  
 **Version context:** Coolify v4 (openapi from main + v4.x; harness contract pinned to v4.1.2)  

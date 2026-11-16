@@ -1,5 +1,11 @@
 # coolify-harness-api — Design Spec
 
+> **Historical.** This is the original design (2026-06, v0.1). It explains why the harness is a
+> library + thin CLI, dry-run by default and audited — that still holds. Details have moved on
+> (env delete exists with a lock guard, instance-wide commands, zod 4, a structural catalog
+> walker for zod 3 and 4). For the current behaviour read the [README](../../README.md) and
+> [`coolify-api-coverage.md`](../coolify-api-coverage.md).
+
 > **Date:** 2026-06-17
 > **Status:** Approved design (hands-free brainstorm run) — ready for implementation plan.
 > **Repo:** new standalone project at `~/Projects/coolify-harness-api`.
@@ -55,7 +61,7 @@ invoke via Bash. No server to run. Works inside any repo's Claude Code session. 
 
 ## 2. Package layout
 
-Single npm package, ESM-only, Node 24 LTS, pnpm 10. **Not** a monorepo (user: "don't over-engineer").
+Single package, ESM-only, Node 24 LTS, pnpm. **Not** a monorepo (user: "don't over-engineer").
 Clean internal module boundaries via **subpath exports** so it can graduate to a workspace later without
 a consumer-facing change.
 

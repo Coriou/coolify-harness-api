@@ -1,449 +1,447 @@
 # coolify-harness
 
 [![CI](https://github.com/Coriou/coolify-harness-api/actions/workflows/ci.yml/badge.svg)](https://github.com/Coriou/coolify-harness-api/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Coriou/coolify-harness-api)](https://github.com/Coriou/coolify-harness-api/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/Coriou/coolify-harness-api/blob/main/LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-339933?logo=node.js)](https://nodejs.org/)
 
-**Coolify harness for AI agents.** A lightweight CLI + fully-typed TypeScript library that gives agents (Claude Code, Cursor, Windsurf, Aider, etc.) working *inside your project directory* a super clean, safe, and auditable way to interact with Coolify: manage env vars, trigger (force) deploys/restarts and wait for them, edit service composes, change the proxy (Traefik) version, toggle database exposure, inspect status + logs, and generate living env catalogs directly from your Zod schemas.
+**An agent control plane for [Coolify](https://coolify.io).** A small CLI and typed TypeScript
+library that lets an AI agent (Claude Code, Cursor, Codex, …) or a human operate the apps you host
+on Coolify from inside the project directory: deploy and wait, read status and logs, manage env
+vars, edit service composes, the proxy (Traefik) and databases.
 
-- **Safe by default**: every mutation except `deploy` is a dry-run unless you pass `--apply`. Every mutation is audit-logged (keys only, never values). Redeploy is always an explicit separate step.
-- **Secrets never printed**: env values are never shown; every JSON output (and human compose/proxy output) is redacted — webhook secrets, tokens, basic-auth hashes, URL passwords and literal env values in compose documents.
-- **Env catalogs from code**: Walk live Zod schemas → committed Markdown + JSON + `.env.example`. CI gate ensures they never go stale.
-- **Agent-first primitives**: `--json` everywhere, `wait`, latest-deployment SHA comparison to avoid redundant deploys, typed `CoolifyClient`, rich error taxonomy.
-- **Works with real Coolify hazards**: no auto-redeploy on env change, compose-locked vars, duplicate-key drift detection + repair, bulk upsert quirks — all encoded.
+- **Safe by default.** Every command that changes Coolify is a dry-run until you add `--apply`.
+  `deploy` is the one exception: running it *is* the explicit step (preview it with `--dry-run`).
+- **Secrets never printed.** Env values are never shown, only their length. Every output is
+  redacted: tokens, webhook secrets, URL passwords, literals in compose files, basic-auth hashes.
+- **Built for agents.** `--json` prints exactly one document. Errors are typed, with precise exit
+  codes. Every mutation is appended to a local audit log (keys only, never values).
+- **Knows Coolify's traps.** No auto-redeploy on env change, production vs preview rows,
+  compose-locked variables, duplicate keys, cached images: all encoded, all tested.
+- **Light.** One runtime dependency (zod). No daemon, no server.
 
-Not a full MCP server (see comparison below). Complements the excellent community Coolify MCP tools (e.g. [StuMason/coolify-mcp](https://github.com/StuMason/coolify-mcp)) and Coolify's built-in read-only MCP.
+It also generates an env catalog (Markdown + JSON + `.env.example`) from your Zod schemas, zod 3
+or zod 4.
 
----
+## Compatibility
 
-> **Pinned contract:** Coolify API **4.5.0** (verified 2026-10-26 against two live instances; fixtures in `test/fixtures/coolify/v4.5/`). Endpoint-by-endpoint coverage, scopes and what the API does *not* expose: [`docs/coolify-4.5-api-coverage.md`](docs/coolify-4.5-api-coverage.md). If you upgrade Coolify, re-record the fixtures and re-verify before cutting a release.
+| coolify-harness | Coolify verified live | Tested range | Notes |
+|---|---|---|---|
+| **0.5.0** | 4.7.5 | 4.5.0 – 4.7.5 | `env delete` needs the `delete` token ability on Coolify ≥ 4.7 |
+| 0.4.1 | 4.7.5 (env commands) | 4.5.0 | fixes env rows with `value: null` (Coolify 4.7) |
+| 0.4.0 | 4.5.0 | 4.5.0 | env commands fail on Coolify 4.7 when a variable is blank in the compose file |
+| 0.3.0 | — | 4.1 – 4.3.15 | `status` and `deploy --wait` fail from Coolify 4.3.16 |
 
----
-
-## Quick start for agents (and humans)
-
-```bash
-# In your project
-pnpm add -D coolify-harness
-
-# Create coolify-harness.config.ts (see full example below)
-# Set COOLIFY_PROD_TOKEN in your shell / agent env / CI secrets
-
-# Read what would change (always safe)
-coolify-harness env diff --app my-app --from-file .env
-
-# Actually write (with audit + confirmation)
-coolify-harness env apply --app my-app --from-file .env --apply
-
-# Redeploy (explicit!) — exits 7 if the deployment fails
-coolify-harness deploy --app my-app --wait --json
-# Rebuild without cache (e.g. to pick up a patched base image)
-coolify-harness deploy --app my-app --force --wait
-
-# Inspect (read-only, great for agents)
-coolify-harness status --app my-app --json
-coolify-harness logs --app my-app --json
-
-# Instance-level: version, servers, proxy (Traefik) version change
-coolify-harness instance info --instance prod
-coolify-harness proxy set --instance prod --server <uuid> --image traefik:v3.6.4          # dry-run diff
-coolify-harness proxy set --instance prod --server <uuid> --image traefik:v3.6.4 --apply --restart
-
-coolify-harness help
-```
-
-Generate + gate your env catalog:
-
-```bash
-coolify-harness catalog gen
-coolify-harness catalog check   # exits 3 if stale (perfect CI gate)
-```
-
-See the full config + command reference below.
-
----
+The harness has its own version number: it does **not** follow Coolify's. The range it is tested
+against is exported (`TESTED_COOLIFY`), printed by `coolify-harness --version`, and checked at
+runtime: `instance info` and `config doctor` warn when the live Coolify is outside it. A warning is
+not a failure; it tells you where to look first if a command reports a contract error. Details:
+[Versioning](#versioning-and-compatibility), [`docs/coolify-api-coverage.md`](docs/coolify-api-coverage.md).
 
 ## Install
 
-```bash
-pnpm add -D coolify-harness
-```
-
-For reproducible git dependency (recommended):
+The package is installed from GitHub (it is not on a package registry). Pin a tag:
 
 ```bash
-pnpm add -D coolify-harness@github:Coriou/coolify-harness-api#v0.4.1
+pnpm add -D coolify-harness@github:Coriou/coolify-harness-api#v0.5.0
 ```
 
-Requires **Node.js >= 24**, **pnpm**, ESM, Zod 3.24+.
+```bash
+bun add -d coolify-harness@github:Coriou/coolify-harness-api#v0.5.0
+```
 
-See `CHANGELOG.md` for release notes.
+Needs **Node.js ≥ 24** (or Bun). The repository ships its built `dist/`, so the install runs no
+build script: nothing to allow-list in pnpm, nothing for Bun to block.
 
----
+## Quick start (5 minutes)
 
-## Config file
+**1. Create an API token** in Coolify (*Keys & Tokens → API tokens*; the API must be enabled in the
+instance settings). Abilities: `read`, `read:sensitive`, `write`, `deploy`, and `delete` if you
+want `env delete` (Coolify ≥ 4.7). Put it in a git-ignored `.env`:
 
-Create `coolify-harness.config.ts` at the root of your project:
+```bash
+# .env — quoted: Coolify tokens contain a "|"
+COOLIFY_PROD_TOKEN="12|xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+```
+
+**2. Describe your instance and apps** in `coolify-harness.config.ts` at the project root:
 
 ```ts
 import { defineConfig } from 'coolify-harness/config';
-import type { SchemaInput } from 'coolify-harness/catalog';
-import { MyAppEnvSchema } from './src/env.js';
 
-// Default export — instance + target registry
 export default defineConfig({
   instances: {
-    prod: {
-      url: 'https://coolify.example.com',
-      // tokenEnv holds the NAME of the env var that contains the API token.
-      // Never put the token value here.
-      tokenEnv: 'COOLIFY_PROD_TOKEN',
-    },
+    // tokenEnv is the NAME of the env var holding the token. Never the token itself.
+    prod: { url: 'https://coolify.example.com', tokenEnv: 'COOLIFY_PROD_TOKEN' },
   },
   targets: {
-    'my-app': {
-      instance: 'prod',
-      kind: 'application',  // 'application' | 'service' | 'database'
-      uuid: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
-    },
+    // kind: 'application' | 'service' | 'database'. The uuid is in the resource's URL in Coolify.
+    'my-app': { instance: 'prod', kind: 'application', uuid: 'xxxxxxxxxxxxxxxxxxxxxxxx' },
   },
 });
-
-// Named export — catalog schema configuration
-export const catalog = {
-  schemas: [
-    { service: 'MyApp', schema: MyAppEnvSchema },
-  ] satisfies SchemaInput[],
-  out: {
-    markdown: 'docs/env-catalog.md',
-    json: 'docs/env-catalog.json',
-    dotenvExample: '.env.example',
-  },
-};
 ```
 
-- `instances` — one entry per Coolify instance. `tokenEnv` is the name of an environment variable that holds the API token at runtime; the secret is never stored in the config file.
-- `targets` — one entry per Coolify application, service or standalone database. `kind` must match the Coolify resource type (`application`, `service` or `database`); `uuid` comes from the Coolify UI (or `coolify-harness databases --instance prod` / `servers` for discovery).
-- Instance-wide commands (`instance info`, `servers`, `proxy …`, `databases`, `deployments --instance`) take `--instance <name>` — a key of `instances` — or infer it from `--app`.
+`.mts`, `.mjs` and `.js` configs work too (`coolify-harness.config.mjs`, same content without types).
 
----
+**3. Add a script** to `package.json` so the token is loaded and the command is short:
 
-## Catalog flow
+```jsonc
+{
+  "scripts": {
+    // Node: loads .env itself
+    "coolify": "node --env-file-if-exists=.env node_modules/coolify-harness/dist/cli/main.js"
+    // Bun (loads .env on its own):
+    // "coolify": "bun node_modules/coolify-harness/dist/cli/main.js"
+  }
+}
+```
 
-### Generate
+**4. Check the wiring, then look around:**
 
 ```bash
-# Writes docs/env-catalog.md, docs/env-catalog.json, .env.example
-coolify-harness catalog gen [--config coolify-harness.config.ts]
+pnpm coolify config doctor          # config valid? token present? instance reachable? version tested?
+pnpm coolify status --app my-app    # state + latest deployment
+pnpm coolify env list --app my-app  # keys, flags and value LENGTHS — never values
+pnpm coolify help
 ```
 
-Walks all Zod schemas listed in `catalog.schemas`, merges entries, and emits the configured output files.
+With Bun: `bun run coolify config doctor`, and so on.
 
-### Check (CI gate)
+<details>
+<summary>Alternative: a tiny entry script (handy when you want to load env your own way)</summary>
+
+```ts
+// scripts/coolify.ts
+import { main } from 'coolify-harness/cli';
+
+process.exitCode = await main(process.argv.slice(2));
+```
+
+Run it with `bun scripts/coolify.ts status --app my-app` (Bun loads `.env`), or
+`node --env-file=.env scripts/coolify.ts status --app my-app` (Node ≥ 24 runs TypeScript natively).
+
+</details>
+
+## For AI agents
+
+Everything an agent needs to drive a deployment safely. The examples write `coolify-harness`; use
+the script from the quick start (`pnpm coolify …`) so the token is loaded.
+
+**The loop**
 
 ```bash
-# Exits 0 if artifacts are fresh, exits 3 if stale
-coolify-harness catalog check [--config coolify-harness.config.ts]
+coolify-harness config doctor --app my-app --json      # 1. wiring OK? (exit 0)
+coolify-harness status --app my-app --json --no-logs   # 2. what is running, last deployment
+coolify-harness env diff --app my-app --from-file .env.production --fail-on-changes
+                                                       # 3. exit 0 = in sync, exit 4 = changes pending
+coolify-harness env apply --app my-app --from-file .env.production --apply --json
+                                                       # 4. write (check "confirmed": true)
+coolify-harness deploy --app my-app --wait --json --no-logs
+                                                       # 5. exit 0 finished · 7 failed · 8 timed out
+coolify-harness logs --app my-app --build              #    on failure: the build log
 ```
 
-Add this to CI after `pnpm build`. Exit code 3 means the catalog is out of date; regenerate with `catalog gen` and commit the updated artifacts.
+**Safety model**
 
----
+- A command marked `*` in `help` changes Coolify. Without `--apply` it only reports what it would
+  do, and exits 0. Add `--apply` to do it.
+- `deploy` (and `deploy --restart`) acts immediately; `deploy --dry-run` sends nothing.
+- Env changes do nothing until a redeploy. That step is always explicit.
+- `compose get` / `proxy get` print a redacted document. `--out FILE` writes the real one (mode
+  0600): keep it out of git and out of your context.
+- The harness never prints a token or an env value, and never SSHes into a server.
+- Every mutation is appended to `.coolify-harness/audit.jsonl` (who, what, which keys, outcome).
+  Git-ignore that directory.
 
-## Env / deploy flow
+**Output contract**
 
-### Read and diff
+- `--json`: stdout is exactly one JSON document (redacted). Nothing else is written to stdout.
+- On failure with `--json`, stderr is one JSON document:
+  `{ "error": { "code": "COOLIFY_AUTH_SCOPE", "message": "…", "exitCode": 5 } }`.
+- Build logs are large (hundreds of kB per deployment). Use `--no-logs` on `status`, `deployments`,
+  `deployment` and `deploy --wait`; you get `logs_length` instead.
+
+**Exit codes**
+
+| Code | Meaning | What to do |
+|---|---|---|
+| 0 | Success (including a clean dry-run) | — |
+| 1 | Coolify answered with an error, could not be reached, or sent an unexpected payload | Read `error.code`: `COOLIFY_REQUEST`, `COOLIFY_NOT_FOUND`, `COOLIFY_NETWORK`, `COOLIFY_CONTRACT` |
+| 2 | Bad command, flag, config, or something the Coolify API cannot do | Fix the invocation; `help` lists everything |
+| 3 | Catalog is stale | `catalog gen`, commit |
+| 4 | Drift: duplicate keys (`--fail-on-drift`) or pending changes (`--fail-on-changes`) | Review the plan |
+| 5 | Token missing, rejected, or lacking an ability | The message names the ability |
+| 6 | Refused to delete an env var Coolify would re-create | Remove it from the compose first, or `--force` |
+| 7 | `deploy --wait`: the deployment failed or was cancelled | `logs --build` |
+| 8 | `deploy --wait`: timed out (`--timeout`, default 600 s) | The deployment is still running: `deployment <uuid>` |
+
+**Copy-paste for your `CLAUDE.md` / `AGENTS.md`**
+
+```md
+## Deploys (Coolify)
+
+This project is operated with `coolify-harness` (config: `coolify-harness.config.ts`, token in the
+git-ignored `.env`). Run it as `pnpm coolify <command>`; `pnpm coolify help` lists everything.
+
+- Look first: `pnpm coolify config doctor`, `pnpm coolify status --app <target> --json --no-logs`.
+- Env: `env list` shows keys and lengths only. `env diff --from-file <file>` shows what would
+  change; `env apply … --apply` writes it. Env changes are inert until a redeploy.
+- Deploy: `pnpm coolify deploy --app <target> --wait` (exit 0 finished, 7 failed, 8 timed out;
+  `--force` rebuilds without the Docker cache). On failure: `pnpm coolify logs --app <target> --build`.
+- Commands that change Coolify are a dry-run without `--apply`. `deploy` is the exception: it acts
+  immediately. Ask before deploying to production unless told otherwise.
+- Never print, log or commit a token or an env value. Never write `compose get --out` /
+  `proxy get --out` files inside the repository.
+- Exit codes: 0 ok, 1 Coolify/network error, 2 usage/config, 4 drift, 5 auth, 6 locked env var,
+  7 deploy failed, 8 wait timeout. With `--json`, errors are `{ "error": { "code", "message" } }` on stderr.
+```
+
+## Commands
+
+Targets come from the config (`--app <target>`). Instance-wide commands take `--instance <name>`
+(a key of `instances`) or infer it from `--app`. `--config <path>` picks another config file.
+The parser accepts `--flag=value`, `env-diff` / `env:diff` spellings and flags before the command.
+
+### Env vars
 
 ```bash
-# Keys, scope (prod/preview), flags and value LENGTH — values are never printed
-coolify-harness env list --app my-app [--json]
-
-# Shows a diff between your desired env (from --from-file and/or --set) and what Coolify has live
-coolify-harness env diff --app my-app [--from-file .env] [--set KEY=VALUE] [--json] [--fail-on-drift]
+coolify-harness env list   --app my-app [--json]
+coolify-harness env diff   --app my-app [--from-file .env] [--set KEY=VALUE]... [--preview] [--fail-on-changes] [--fail-on-drift]
+coolify-harness env apply  --app my-app [--from-file .env] [--set KEY=VALUE]... [--preview] [--apply]
+coolify-harness env delete --app my-app --key OLD_KEY [--key OTHER]... [--preview] [--force] [--apply]
+coolify-harness flag set   --app my-app --set KEY=VALUE [--apply] [--redeploy [--wait]]
 ```
 
-- `env diff` is **read-only**. It never writes anything.
-- `--from-file <path>` loads a `.env` file as the desired base.
-- `--set K=V` overrides individual keys (applied on top of `--from-file`).
-- `--fail-on-drift` causes exit 4 if any drift is detected.
-- `--json` emits machine-readable JSON output.
-- `env diff` / `env apply` need `read:sensitive`; without it Coolify withholds values and the harness exits 5 rather than planning against empty values.
-- **Production and preview rows are separate.** Coolify keeps a key's production row and its preview-deployment row apart, and a bulk write touches exactly one scope. `env diff` / `env apply` compare and write **production** rows by default, and `--preview` switches to preview rows. When the other scope's row of a key you are writing holds a different value, it is listed as `not written (preview row differs): KEY` (JSON: `otherScope`). It is never silently counted as a change.
+- `env list` prints the key, scope, flags and value **length**. `len=0 (null)` is a variable with
+  no value at all (Coolify 4.7 stores a compose-declared `${VAR:-}` that way); `len=hidden` means
+  the token lacks `read:sensitive`; `len=locked` is a variable locked in Coolify ("shown once").
+- `env diff` is read-only. The desired values come from `--from-file` (dotenv; quotes around a
+  value are removed, an unquoted value is taken as is), overridden by `--set`.
+- `env apply` upserts by key. Keys you do not mention are left alone (use `env delete`). After
+  `--apply` it re-reads to confirm. With `--json` the document has `dryRun`, `applied`, `confirmed`.
+- **Production and preview rows are separate.** `env diff` / `apply` / `delete` work on
+  production rows; `--preview` switches to preview rows (applications only: services and databases
+  have none). A differing row in the other scope is reported as "not written", never changed.
+- `env delete` refuses (exit 6) a key that Coolify manages or that the compose file still
+  references: Coolify would re-create it. Remove the reference first, or pass `--force`.
+- `flag set` is `env apply` plus, with `--redeploy`, a deploy — only when run with `--apply`.
+- `env diff` / `apply` need `read:sensitive`; without it Coolify withholds values and the harness
+  stops (exit 5) instead of planning against blanks.
 
-### Apply (write env vars)
+### Deploy
 
 ```bash
-# Dry-run by default — shows what would change, writes nothing
-coolify-harness env apply --app my-app [--from-file .env] [--set KEY=VALUE] [--json]
-
-# Actually write (upsert-by-key, atomic bulk)
-coolify-harness env apply --app my-app --from-file .env --apply [--yes]
+coolify-harness deploy --app my-app [--force] [--wait [--timeout SEC]] [--dry-run] [--json]
+coolify-harness deploy --app my-svc --restart [--latest]
 ```
 
-- **Dry-run is the default.** Without `--apply`, `env apply` prints what it would do and exits 0.
-- `--apply` performs the actual bulk upsert. Coolify variables are upserted by key — existing keys are updated, missing keys are inserted. Keys that exist in Coolify but are absent from your desired set are left untouched (use `env delete`).
-- Every mutation is audit-logged to `.coolify-harness/audit.jsonl` — keys only, never values.
-- After `--apply`, the tool re-reads to confirm the write landed. A confirmation mismatch is reported on stdout but still exits 0 (the write itself succeeded).
+- Applications: queues a build. Services and databases: starts them. `--restart` restarts instead.
+- `--force` rebuilds an application **without the Docker cache**. A plain redeploy of an unchanged
+  commit reuses the image, so use `--force` to pick up a patched base image.
+- `--restart --latest` pulls fresh images for a service.
+- `--wait` follows an application deployment to its end, printing status changes on stderr.
+  Ctrl-C stops the wait, not the deployment, and prints how to follow or cancel it.
+- A network error or a 5xx on a deploy request is **not** retried: Coolify may have queued it.
+  Check `deployments --app my-app` before running it again.
 
-### Delete env vars
+### Status, logs, deployment history (read-only)
 
 ```bash
-coolify-harness env delete --app my-app --key OLD_KEY [--key OTHER] [--preview]          # dry-run
-coolify-harness env delete --app my-app --key OLD_KEY --apply
+coolify-harness status --app my-app [--json] [--no-logs]
+coolify-harness logs --app my-app [--lines 200] [--timestamps]            # runtime logs
+coolify-harness logs --app my-svc --service postgresql                    # a service needs --service
+coolify-harness logs --app my-app --build [--deployment UUID]             # build log
+coolify-harness deployments --app my-app [--take 5] [--skip 0] [--no-logs]
+coolify-harness deployments --instance prod                               # queued + in progress, whole team
+coolify-harness deployment UUID (--app my-app | --instance prod) [--no-logs]
+coolify-harness deployment cancel UUID (--app my-app | --instance prod) [--apply]
 ```
 
-- Deletes the production rows of each key (`--preview` targets preview rows instead); duplicate rows of a key are all deleted.
-- **Refuses with exit 6** when a key is Coolify-managed (`is_coolify`) or still referenced by the resource's docker-compose (`${KEY}`, `KEY=`, `KEY:`, `- KEY`): Coolify re-creates such rows on its next parse, so the delete would not stick. Remove the reference first (`compose set`), or pass `--force`.
-- Coolify injects **every** row in a service's env list into the container whether or not the compose references it — deleting stale rows is the only way to get rid of them.
-
-### Safe-write discipline
-
-```
-env diff        (read-only, always safe)
-  ↓
-env apply       (dry-run by default; --apply to write)
-  ↓
-deploy          (EXPLICIT separate step — env changes are inert until redeploy)
-```
-
-Coolify does **not** auto-redeploy on env change. You must explicitly trigger a redeploy.
-
-### Redeploy / restart
+### Service compose
 
 ```bash
-coolify-harness deploy --app my-app [--force] [--wait [--timeout SEC]] [--json]   # application build
-coolify-harness deploy --app my-svc --restart [--latest]                          # service restart (--latest pulls images)
+coolify-harness compose get --app my-svc [--out svc.yml]
+coolify-harness compose set --app my-svc --image umami=ghcr.io/umami-software/umami:3.4.0 [--apply] [--restart]
+coolify-harness compose set --app my-svc --from-file svc.yml [--apply]
 ```
 
-- `deploy` triggers a redeploy (applications) or a start (services, databases). It is the one mutation that is not dry-run: invoking it *is* the explicit step.
-- `--force` rebuilds an application **without the Docker cache**. A plain redeploy of an unchanged commit reuses the existing image — use `--force` when the point is to pick up a patched base image. (Digest-pinned `FROM …@sha256:` bases never change, forced or not.)
-- `--restart` restarts instead; for services, `--latest` pulls fresh images first. `--force` on a service or `--latest` on an application is a usage error (exit 2) and nothing is sent.
-- `--wait` polls the application deployment until it is `finished`, `failed` or `cancelled-by-user`, printing transitions on stderr. Exit **7** if it did not finish successfully, **8** on timeout (default 10 min). Services and databases create no deployment record, so `--wait` says so and returns.
+- `--image` rewrites only that service's `image:` line; comments, quoting and order survive.
+- Coolify saves and re-parses the compose but does not restart; `--restart` restarts with fresh images.
+- For services only. A docker-compose *application* deploys its compose from git.
 
-### Live status, logs, and deployment history (read-only)
-
-```bash
-# Current resource details + latest deployment summary (services: every sub-container's status/image)
-coolify-harness status --app my-app [--json]
-
-# Runtime (container) logs — requires read:sensitive
-coolify-harness logs --app my-app [--lines 200] [--timestamps] [--json]
-coolify-harness logs --app my-compose-app --service clickhouse        # one compose service
-coolify-harness logs --app my-svc --service postgresql                # services: sub-service name required
-
-# Build / deploy logs from the latest (or specific) deployment
-coolify-harness logs --app my-app --build [--deployment DEPLOY_UUID] [--json]
-
-# Recent deployments (build history) / everything queued or running on the instance
-coolify-harness deployments --app my-app [--take 5] [--skip 0] [--json]
-coolify-harness deployments --instance prod [--json]
-
-# Full details + logs for one deployment; cancel one
-coolify-harness deployment DEPLOY_UUID (--app my-app | --instance prod) [--json]
-coolify-harness deployment cancel DEPLOY_UUID --instance prod [--apply]
-```
-
-**Important notes for agents:**
-- Always prefer `--json` — every command prints exactly one JSON document (redacted), no prose.
-- `status` + `getLatestDeployment` (via library) lets agents avoid redundant deploys by comparing `git_commit_sha`.
-- `deployment cancel` on a deployment that already ended is reported and exits 0.
-- The parser accepts `--flag=value`, `env-diff` / `env:diff` spellings and flags before the command.
-
----
-
-## Service compose
+### Instance, servers, proxy (Traefik)
 
 ```bash
-coolify-harness compose get --app my-svc                  # redacted compose + image summary
-coolify-harness compose get --app my-svc --out svc.yml    # raw document to a 0600 file (keep it out of git)
-
-# Bump an image: dry-run shows a redacted diff; --apply saves and confirms by re-reading
-coolify-harness compose set --app my-svc --image umami=ghcr.io/umami-software/umami:3.4.0
-coolify-harness compose set --app my-svc --image umami=ghcr.io/umami-software/umami:3.4.0 --apply --restart
-
-# Or replace the whole document
-coolify-harness compose set --app my-svc --from-file svc.yml --apply
-```
-
-- Only `image:` lines are rewritten for `--image`, so comments, quoting and ordering survive byte for byte.
-- Coolify validates and re-parses the compose but **does not restart**; `--restart` restarts with `latest=true` so the new tag is pulled.
-- `compose set` is for services. A `dockercompose` *application* deploys its compose from git — change it in the repository.
-- Back up any database a service runs before an image bump that may migrate it (e.g. `pg_dump`).
-
----
-
-## Instance, servers and proxy (Traefik)
-
-```bash
-coolify-harness instance info --instance prod          # Coolify version + health (alias: version)
+coolify-harness instance info --instance prod            # Coolify version, health, tested-range check
 coolify-harness servers --instance prod
-coolify-harness server get --instance prod --server <uuid>     # resources, proxy type/status/image
-
-coolify-harness proxy get --instance prod --server <uuid> [--out proxy.yml]
-coolify-harness proxy set --instance prod --server <uuid> --image traefik:v3.6.4               # dry-run
-coolify-harness proxy set --instance prod --server <uuid> --image traefik:v3.6.4 --apply --restart
-coolify-harness proxy restart --instance prod --server <uuid> --apply
+coolify-harness server get --instance prod --server UUID
+coolify-harness proxy get --instance prod --server UUID [--out proxy.yml]
+coolify-harness proxy set --instance prod --server UUID --image traefik:v3.6.4 [--apply] [--restart]
+coolify-harness proxy restart --instance prod --server UUID [--apply]
 ```
 
-- **Changing the Traefik version is possible through the API**, but not through `PATCH /servers/{uuid}/proxy` (that only takes redirect / exact-labels / cert-resolver / proxy type). The image lives in the proxy docker-compose: `proxy set` fetches it, edits only the `image:` line, `PUT`s it back (Coolify keeps 10 backups of the old file) and, with `--restart`, restarts the proxy, which pulls the new image. Warns on a repository or major-version change.
-- A proxy restart briefly interrupts **every site on that server**.
-- The proxy configuration is only returned to a `read:sensitive` token whose user is a team admin/owner.
+- The Traefik version is changed by editing the proxy compose: `proxy set --image` fetches it,
+  changes the `image:` line and saves it; `--restart` pulls and runs it. A proxy restart briefly
+  interrupts **every site on that server**.
+- The proxy configuration is only returned to a `read:sensitive` token of a team admin/owner.
 
-### What the Coolify API does not expose
-
-The dashboard also nags you to **update Coolify**, **install server package updates** and **reboot**. Coolify 4.5.0 has **no API endpoint** for any of these — they are dashboard-only actions:
-
-| Need | Where |
-|---|---|
-| Update Coolify | Settings → Updates (`/settings/updates`) |
-| Server package updates | Servers → *server* → Security → Patches (`/server/<uuid>/security/patches`) |
-| Reboot server | the same Patches page |
-
-`coolify-harness server patch`, `server reboot` and `instance upgrade` exist only to say this (exit 2). The harness never SSHes into servers or writes Coolify's database to fake a missing endpoint.
-
----
-
-## Standalone databases
+### Standalone databases
 
 ```bash
 coolify-harness databases --instance prod
-coolify-harness database get --instance prod --database <uuid>        # or --app <target of kind database>
-coolify-harness database set --instance prod --database <uuid> --public false             # dry-run
-coolify-harness database set --instance prod --database <uuid> --public false --apply
-coolify-harness database backups --instance prod --database <uuid>
-coolify-harness database backup  --instance prod --database <uuid> [--backup <uuid>] --apply   # run a schedule now
+coolify-harness database get     --instance prod --database UUID      # or --app <database target>
+coolify-harness database set     --instance prod --database UUID --public false [--public-port N] [--image REF] [--apply]
+coolify-harness database backups --instance prod --database UUID
+coolify-harness database backup  --instance prod --database UUID [--backup UUID] [--apply]   # run a schedule now
 ```
 
-- `database set` supports `--public true|false`, `--public-port N` and `--image REF`. Changing `is_public` needs the `deploy` ability too (Coolify starts/stops the public port proxy).
-- `env list/diff/apply/delete`, `deploy` / `--restart` and `logs` also work on `database` targets.
-- Databases that belong to a service (a template's postgres) use different endpoints and are not covered yet.
+`env …`, `deploy` / `--restart` and `logs` also work on `database` targets. Databases inside a
+service (a template's postgres) use other endpoints and are not covered yet.
 
----
+### What the Coolify API cannot do
 
-**Library usage (for MCP adapters, direct import, or advanced scripts):**
+Coolify (checked up to 4.7.5) has **no API** to update Coolify itself, install server package
+updates, or reboot a server. `instance upgrade`, `server patch` and `server reboot` exist only to
+say so (exit 2) and point to the dashboard page. The harness will not SSH into servers or write
+Coolify's database to fake them. There is also no API to wait for a deployment (the harness polls)
+or to read one without its build log (`--no-logs` only trims the output).
+
+### Env catalog from Zod schemas
 
 ```ts
-import { CoolifyClient, CoolifyInstanceClient, redactDeep } from 'coolify-harness';
+// coolify-harness.config.ts
+import type { SchemaInput } from 'coolify-harness/catalog';
+import { ApiEnvSchema } from './src/env.ts';
 
-const client = new CoolifyClient(target, { fetchImpl: globalThis.fetch, logger: myLogger });
-const app = await client.get();                    // status + git info + fqdn etc. (contains secrets → redactDeep before printing)
-const ack = await client.deploy({ force: true });  // no-cache rebuild
-const final = await client.waitForDeployment(ack.deploymentUuid!, { timeoutMs: 900_000, onStatus: console.error });
-await client.restart({ latest: true });            // services: pull images
-await client.deleteEnv(envUuid);
-const logs = await client.getRuntimeLogs(100, { service: 'umami' });
-
-const inst = client.instance();                    // or new CoolifyInstanceClient({ instanceUrl, token }, deps)
-await inst.getVersion();                           // '4.5.0'
-const proxy = await inst.getServerProxy(serverUuid);
-await inst.saveServerProxyConfiguration(serverUuid, setServiceImage(proxy.configuration!, 'traefik', 'traefik:v3.6.4'));
-await inst.restartServerProxy(serverUuid);
-await inst.updateDatabase(dbUuid, { is_public: false });
+export const catalog = {
+  schemas: [{ service: 'api', schema: ApiEnvSchema }] satisfies SchemaInput[],
+  out: { markdown: 'docs/env-catalog.md', json: 'docs/env-catalog.json', dotenvExample: '.env.example' },
+};
 ```
 
----
+```bash
+coolify-harness catalog gen     # writes the three files
+coolify-harness catalog check   # exit 3 when they are stale: a CI gate
+```
 
+The walker reads your schema objects directly, so it works with **zod 4, zod mini and zod 3**,
+whatever zod the harness itself uses. It follows defaults, optionals, coercion, enums, transforms,
+pipes, refinements and intersections, and takes descriptions from `.describe()` / `.meta()`.
+The config is loaded by your runtime: if it imports TypeScript sources with `.js` specifiers, run
+the CLI through Bun or `tsx`.
+
+## Token abilities
+
+| Command | Abilities |
+|---|---|
+| `config doctor`, `instance info`, `status`, `deployments`, `deployment`, `servers`, `server get`, `databases`, `database get/backups` | `read` |
+| `env list` | `read` (`read:sensitive` to see value lengths) |
+| `env diff`, `logs` (runtime or build) | `read` + `read:sensitive` |
+| `env apply` | `read` + `read:sensitive` + `write` |
+| `env delete` | `read` + `delete` (Coolify ≥ 4.7; `write` on older versions) |
+| `deploy`, `deploy --restart`, `deployment cancel` | `deploy` (+ `read` for `--wait`) |
+| `compose get` / `compose set` | `read` / `write` (+ `deploy` for `--restart`) |
+| `proxy get` | `read`; the configuration needs `read:sensitive` and a team admin/owner user |
+| `proxy set` | `read:sensitive` + `write` + `deploy` |
+| `proxy restart` | `deploy` |
+| `database set` | `write` (+ `deploy` when changing `--public`) |
+| `database backup` | `write` + `deploy` |
+| `catalog gen` / `catalog check`, `help`, `--version` | none (local) |
+
+`read:sensitive` only works when the token's user is an admin or owner of the team. A token
+limited to some projects cannot use server-level commands (`servers`, `server get`, `proxy …`).
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Coolify response (listEnvs) failed contract validation` on `env list` | coolify-harness ≤ 0.4.0 with Coolify 4.7: a variable left blank in the compose (`${VAR:-}`) comes back as `value: null` | Upgrade to ≥ 0.4.1. It is listed as `len=0 (null)` |
+| `… failed contract validation: <field>: …` on another command | Coolify changed a payload | Run `instance info`: is the version outside the tested range? Upgrade coolify-harness, or open an issue with the message (it contains field names and types only) |
+| Exit 5, `Coolify refused the request (403) … Missing required permissions: delete` | Coolify ≥ 4.7 needs the `delete` ability for `env delete` | Create a token that has `delete` |
+| Exit 5, `… lacks 'read:sensitive'` although the token has it | `read:sensitive` needs an admin/owner user | Create the token as a team admin/owner |
+| Exit 5, `This API token is limited to selected projects…` | Scoped token on a server-level command | Use a team-wide token for `servers` / `proxy` |
+| Exit 5, `Env var 'X' … is not set` | The token is not in the environment | Load `.env` (`node --env-file=.env`, Bun does it itself) |
+| Exit 6 on `env delete` | Coolify manages the key or the compose still references it | Remove the reference (`compose set` or git), or `--force` |
+| `env apply` says "confirmation mismatch" | Two rows of the same key in one scope: Coolify updates only one | `env list`, then `env delete` the extra row |
+| `env diff` keeps listing a key as an update | The key is locked (`len=locked`): Coolify never returns its value, so it cannot be compared | Expected; it is rewritten each time |
+| Env changed but the app did not | Coolify never redeploys on an env change | `deploy --app … --wait` |
+| Redeploy did not pick up a new base image | An unchanged commit reuses the cached image | `deploy --force` |
+| `Cannot reach Coolify at …` (exit 1, `COOLIFY_NETWORK`) | DNS, TLS, VPN, or Coolify is restarting | Retry reads freely. For a deploy, check `deployments` first |
+| `Could not load config …` | The runtime cannot import the config | Node ≥ 24 runs a self-contained `.ts`; otherwise use Bun / `tsx`, or a `.mjs` config |
+| pnpm: `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` installing ≤ 0.4.1 | Old versions had a `prepare` script | Install ≥ 0.5.0 |
+
+Set `COOLIFY_HARNESS_DEBUG=1` to print a stack trace with an error.
 
 ## Coolify hazards encoded
 
-- **No auto-redeploy on env change** — env changes are inert until you explicitly run `deploy`.
-- **Compose-locked vars** — `env delete` refuses (exit 6) to delete a var the compose still references or Coolify manages, because Coolify would re-create it on the next parse.
-- **Duplicate-key drift** — two rows of the same key *in the same scope* (production or preview) with different values are detected and surfaced. Coolify's bulk write updates only one of them (`where('key')->first()`), so the apply reports a confirmation mismatch until the extras are removed with `env delete`. A production + preview pair is not drift.
-- **Bulk merge** — `env apply` uses Coolify's bulk upsert endpoint. On a Coolify upgrade, re-record fixtures and re-run live-smoke to confirm the bulk endpoint contract has not changed.
-- **Build-time flag rename** — Coolify ≥ 4.0.0-beta.463 renamed the env-var build-time flag on reads from `is_build_time` to `is_buildtime` (and added `is_runtime`). The read schema accepts either and normalizes to a canonical `is_build_time`. Build-time is **not settable via the API** — the write endpoints reject any build-time field with HTTP 422 — so the harness never sends one.
-- **Nullable columns** — Coolify sends unset fields as JSON `null` (e.g. `git_full_url`, `health_check_port`, and `commit_message` on a queued deployment). All response schemas accept `null`, which is what fixed `status`, `deploy --wait` and `deployment` on 4.3.16+.
-- **Null env values** — Coolify 4.7 stores a compose-declared blank variable (`${VAR:-}`) as `value: null`. The harness reads it as an empty value flagged `value_null` (`env list`: `len=0 (null)`); it is distinct from a value withheld for lack of `read:sensitive` (`len=hidden`, JSON `value_length: null`) and never produces a diff against an empty desired value.
-- **Redeploy reuses images** — an unchanged commit redeploys from the cached image; use `deploy --force`.
-- **Compose changes do not restart** — `compose set` / `proxy set` save; `--restart` applies.
+- **No auto-redeploy on env change.** Env changes are inert until you run `deploy`.
+- **Compose-locked variables.** A variable the compose references, or that Coolify manages, comes
+  back after a delete; `env delete` refuses it (exit 6).
+- **Production vs preview rows.** A bulk write touches one scope. Plans and confirmations are
+  scoped the same way; services and databases have no preview rows at all.
+- **Duplicate keys.** Two rows of a key in one scope with different values are reported as drift;
+  Coolify's bulk write updates only one of them.
+- **Null and locked values.** `value: null` is an empty value, not a hidden one; a locked row is
+  never returned and never compared.
+- **Flags on update.** Coolify 4.5 reset `is_literal` / `is_multiline` / the lock when a bulk
+  update omitted them; the harness sends back the flags a row has set.
+- **Redeploy reuses images.** Use `deploy --force`.
+- **Compose and proxy saves do not restart.** `--restart` applies them.
+- **Lost answers.** A mutation whose HTTP answer was lost is not replayed; reads and idempotent
+  writes are retried with backoff. Every request has a 30 s timeout.
 
----
-
-## Token scope table
-
-Abilities come from Coolify's `routes/api.php` middleware (4.5.0).
-
-| Operation | Required token abilities |
-|---|---|
-| `env list` | `read` (`read:sensitive` to see value lengths) |
-| `env diff` | `read` + `read:sensitive` |
-| `env apply` / `env delete` | `read` + `read:sensitive` + `write` |
-| `deploy` / `--restart` / `deployment cancel` | `deploy` (+ `read` for `--wait`) |
-| `status`, `deployments`, `deployment`, `servers`, `server get`, `databases`, `database get/backups`, `instance info` | `read` |
-| `logs` (runtime or build) | `read` + `read:sensitive` |
-| `compose get` / `compose set` | `read` / `write` (+ `deploy` for `--restart`) |
-| `proxy get` | `read`; the configuration (image) needs `read:sensitive` **and** a team admin/owner user |
-| `proxy set` | `read:sensitive` + `write` + `deploy` |
-| `proxy restart` | `deploy` |
-| `database set` | `write`; `+ deploy` when changing `--public` |
-| `database backup` | `write` + `deploy` |
-| `catalog gen` / `catalog check` | No token required (local only) |
-| `config doctor` | none (checks config + token presence) |
-
-`tokenEnv` in the config holds the **name** of the env var, never the token value itself. Set the actual token in your shell or CI secrets.
-
-See CHANGELOG.md for detailed release notes and history.
-
----
-
-## Exit codes
-
-| Code | Meaning |
-|---|---|
-| 0 | Success; dry-run clean; catalog fresh |
-| 1 | Internal / Coolify request error (the server's message is included) |
-| 2 | Usage / argument / config error; operation not supported by the Coolify API |
-| 3 | Catalog stale (re-run `catalog gen`) |
-| 4 | Drift detected (with `--fail-on-drift`) |
-| 5 | Auth / scope error (token missing, rejected or lacking an ability) |
-| 6 | Refused to delete a compose-locked / Coolify-managed env var (`env delete` without `--force`) |
-| 7 | `deploy --wait`: the deployment ended `failed` or `cancelled-by-user` |
-| 8 | `deploy --wait`: timed out (`--timeout`, default 600 s) |
-
----
-
-## Positioning vs Coolify MCP servers
-
-coolify-harness is **not an MCP server** and is **not redundant** with Coolify's ecosystem tools:
-
-- **Official Coolify MCP** (v4.1+): built-in read-only instance visibility tools (~10 tools) exposed at the Coolify server's `/mcp` endpoint.
-- **Community MCP servers** (StuMason/coolify-mcp and forks): full-featured, long-running stdio/SSE servers with dozens of tools for natural-language management of your whole Coolify instance from Claude Desktop, Cursor, Windsurf, Claude Code, etc.
-
-**coolify-harness** is the *in-repo harness* for agents that are already editing code in your directory. It is deliberately lightweight (no daemon), project-specific, and obsessively safe for the operations agents do most often on a single app/service:
-
-- Dry-run-by-default env writes + keys-only audit logs
-- Explicit separate deploy step (Coolify does not auto-redeploy)
-- Zod schema → committed, CI-gated env catalog (Markdown/JSON/.env.example)
-- Agent-ergonomic observability (`--json`, `wait`, SHA diffing to skip redundant deploys)
-
-Use MCP servers for broad chat-driven overview and cross-resource actions. Use coolify-harness (shell or library) when the agent needs *precise, safe, auditable* control of *this project's* deployment surface with strong guardrails and documentation that lives in code.
-
-The core was designed with an "MCP adapter seam" — any MCP server can import the same functions (`CoolifyClient`, catalog generators, `planEnvWrite`/`applyEnvWrite`, etc.) instead of reimplementing.
-
-## MCP adapter seam (library surface)
-
-All capabilities are implemented as pure-ish typed library functions importable without touching `cli/`:
+## Library
 
 ```ts
-import { CoolifyClient } from 'coolify-harness/client';
-import { generateCatalog, buildArtifacts } from 'coolify-harness/catalog';
-import { defineConfig, loadConfigModule } from 'coolify-harness/config';
-import { planEnvWrite, applyEnvWrite, buildAuditRecord, waitForDeployment } from 'coolify-harness';
-import { CoolifyInstanceClient, redactDeep, setServiceImage, isTerminalDeploymentStatus } from 'coolify-harness';
-import type { Application, Deployment, Service, Server, ServerProxy, Database } from 'coolify-harness';
+import { CoolifyClient, CoolifyInstanceClient, redactDeep, TESTED_COOLIFY } from 'coolify-harness';
+
+const client = new CoolifyClient(target, { fetchImpl: globalThis.fetch, logger: myLogger });
+const app = await client.get();                    // contains secrets → redactDeep() before printing
+const ack = await client.deploy({ force: true });  // no-cache rebuild
+const final = await client.waitForDeployment(ack.deploymentUuid!, { timeoutMs: 900_000, onStatus: console.error });
+await client.restart({ latest: true });            // services: pull images
+const logs = await client.getRuntimeLogs(100, { service: 'umami' });
+
+const inst = client.instance();                    // or new CoolifyInstanceClient({ instanceUrl, token }, deps)
+await inst.getVersion();                           // '4.7.5'
+await inst.updateDatabase(dbUuid, { is_public: false });
 ```
 
-The CLI (`coolify-harness/cli`) is a thin orchestration layer. An MCP adapter (or custom script) can import directly from the subpath exports.
+`planEnvWrite` / `applyEnvWrite` (the env planner and writer), `waitForDeployment`, the compose
+helpers, the catalog functions and every typed error are exported from the package root. Errors
+extend `CoolifyHarnessError` and carry a stable `code`.
 
-**v0.4.0:** Coolify 4.5 contract fixes, `CoolifyInstanceClient` (servers, proxy, databases, deployments), force deploy, env delete, service compose edits and output redaction. See CHANGELOG.md.
-
----
-
-## Subpath exports
-
-| Import | Entry point |
+| Import | Contents |
 |---|---|
-| `coolify-harness` | `dist/index.js` — full public surface |
-| `coolify-harness/client` | `dist/client/coolify.js` — `CoolifyClient` (instance client via `client.instance()`; `CoolifyInstanceClient` from the root) |
-| `coolify-harness/catalog` | `dist/catalog/generate.js` — catalog generation |
-| `coolify-harness/config` | `dist/config/load.js` — `defineConfig`, `loadConfigModule` |
-| `coolify-harness/cli` | `dist/cli/main.js` — CLI entry point |
+| `coolify-harness` | everything |
+| `coolify-harness/client` | `CoolifyClient` |
+| `coolify-harness/catalog` | `generateCatalog`, `buildArtifacts`, `SchemaInput` |
+| `coolify-harness/config` | `defineConfig`, `loadConfigModule`, `resolveTarget`, … |
+| `coolify-harness/cli` | `main(argv)`, `EXIT`, `errorToExitCode` |
+
+## Versioning and compatibility
+
+- coolify-harness follows semver on its own surface: commands and flags, `--json` shapes, exit
+  codes and the exported API. Its version does not mirror Coolify's: a Coolify patch release must
+  not force a harness release, and a harness fix must not wait for one.
+- Each release states the Coolify version it was verified against (CHANGELOG, GitHub release,
+  the table at the top) and the range it is tested against: `TESTED_COOLIFY` in code,
+  `coolify-harness --version` on the command line.
+- At runtime, `instance info` and `config doctor` compare the live version with that range and
+  warn outside it. Coolify payloads are validated at the boundary, so drift shows up as a
+  `COOLIFY_CONTRACT` error naming the field, never as silently wrong data.
+- On a Coolify upgrade: re-record the fixtures, re-verify, bump `TESTED_COOLIFY` (see
+  [CONTRIBUTING](CONTRIBUTING.md)).
+
+## Not an MCP server
+
+coolify-harness is a CLI and a library, not an MCP server. It complements Coolify's built-in MCP
+endpoint and community servers such as [StuMason/coolify-mcp](https://github.com/StuMason/coolify-mcp):
+use those for chat-driven overviews of a whole instance, and this for precise, guarded, auditable
+control of one project's deployment surface from the repository. The library is importable on its
+own, so an MCP adapter can reuse the same functions.
+
+## Contributing, security, license
+
+[CONTRIBUTING.md](CONTRIBUTING.md) · [SECURITY.md](SECURITY.md) (how to report a leak of a token or
+env value) · [CHANGELOG.md](CHANGELOG.md) · MIT license.
