@@ -1,7 +1,7 @@
 import { CoolifyInstanceClient } from '../../client/instance.js';
 import { loadConfigModule, resolveInstance } from '../../config/load.js';
 import { configPathFor } from '../config-path.js';
-import { ConfigError, CoolifyAuthError, CoolifyHarnessError, MissingTokenError } from '../../errors/index.js';
+import { ConfigError, CoolifyAuthError, CoolifyHarnessError, MissingTokenError, UsageError } from '../../errors/index.js';
 import { noopLogger } from '../../logging/index.js';
 import { HARNESS_VERSION, TESTED_COOLIFY, compatibilityWarning, coolifyCompatibility } from '../../version.js';
 import { emitError, print, printJson, warn } from '../deps.js';
@@ -22,7 +22,8 @@ const liveVersion = (instance) => new CoolifyInstanceClient(instance, {
  * Exit code (0 means "you can use what was checked"):
  * - an instance whose token is set but which cannot be reached, or rejects the token → 1 / 5;
  * - the instance you named (`--app` / `--instance`) has no token → 5;
- * - no instance at all has a token → 5 (nothing is usable);
+ * - no instance at all has a token → 5 (nothing is usable) — except with `--offline`, which keeps
+ *   the 0.4 local check: only the named target's token matters;
  * - otherwise 0: an instance without a token is only reported when another one works, so a
  *   machine that holds one of several tokens is not an error.
  */
@@ -39,7 +40,11 @@ export async function configDoctor(args, deps = {}) {
     if (args.app && !targets[args.app]) {
         throw new ConfigError(`Unknown target '${args.app}'. Known targets: ${Object.keys(targets).join(', ')}`);
     }
-    const focus = args.instance ?? (args.app ? targets[args.app]?.instance : undefined);
+    const appInstance = args.app ? targets[args.app]?.instance : undefined;
+    if (args.instance !== undefined && appInstance !== undefined && args.instance !== appInstance) {
+        throw new UsageError(`--app ${args.app ?? ''} is on instance '${appInstance}', not '${args.instance}': pass one of --app / --instance, or matching ones`);
+    }
+    const focus = args.instance ?? appInstance;
     if (focus !== undefined && !instances[focus]) {
         throw new ConfigError(`Unknown instance '${focus}'. Known instances: ${Object.keys(instances).join(', ')}`);
     }
@@ -72,12 +77,14 @@ export async function configDoctor(args, deps = {}) {
         }
         return report;
     }));
+    const missingFiles = deps.missingTokenFiles ?? [];
+    const fileHint = missingFiles.length > 0 ? ` (and --token-file ${missingFiles.join(', ')} does not exist)` : '';
     const missing = reports.filter((r) => !r.envVarSet);
-    if (missing.length > 0 && (focus !== undefined || missing.length === reports.length)) {
+    if (missing.length > 0 && (focus !== undefined || (missing.length === reports.length && !args.offline))) {
         const m = missing[0];
         failures.push(new MissingTokenError(missing.length === 1
-            ? `Env var '${m.envVar}' (token for instance '${m.name}') is not set`
-            : `No API token is set: ${missing.map((r) => `'${r.envVar}' (${r.name})`).join(', ')}`, { tokenEnv: m.envVar }));
+            ? `Env var '${m.envVar}' (token for instance '${m.name}') is not set${fileHint}`
+            : `No API token is set: ${missing.map((r) => `'${r.envVar}' (${r.name})`).join(', ')}${fileHint}`, { tokenEnv: m.envVar }));
     }
     const failure = failures[0];
     const ok = failure === undefined;
@@ -88,6 +95,7 @@ export async function configDoctor(args, deps = {}) {
             testedCoolify: TESTED_COOLIFY,
             config: path,
             offline: args.offline === true,
+            ...(missingFiles.length > 0 ? { missingTokenFiles: missingFiles } : {}),
             instances: reports,
             targets: Object.entries(targets).map(([name, t]) => ({ name, instance: t.instance, kind: t.kind, uuid: t.uuid })),
             ...(args.app ? { target: args.app } : {}),

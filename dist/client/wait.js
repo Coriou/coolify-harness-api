@@ -3,6 +3,7 @@ import { CoolifyAuthError, CoolifyAuthScopeError, CoolifyContractError, CoolifyN
 const DEFAULT_INTERVAL_MS = 2000;
 const DEFAULT_MAX_INTERVAL_MS = 5000;
 const INTERVAL_GROWTH = 1.25;
+const MAX_TIMER_MS = 2 ** 31 - 1;
 function isFatal(err, seen) {
     if (err instanceof CoolifyAuthError || err instanceof CoolifyAuthScopeError)
         return true;
@@ -19,6 +20,9 @@ function isFatal(err, seen) {
 const isCircuitOpen = (err) => err instanceof CoolifyNetworkError && err.reason === 'circuit-open';
 /** `promise`, or a rejection with `timeoutError()` once `ms` have passed. The timer never holds the process. */
 function withDeadline(promise, ms, timeoutError) {
+    // setTimeout fires at once above 2^31-1 ms: a deadline that far away (or Infinity) needs no timer.
+    if (!(ms <= MAX_TIMER_MS))
+        return promise;
     return new Promise((resolve, reject) => {
         const timer = setTimeout(() => { reject(timeoutError()); }, Math.max(0, ms));
         timer.unref?.();
@@ -29,8 +33,18 @@ function abortError(signal) {
     const reason = signal.reason;
     return reason instanceof Error ? reason : new Error('waitForDeployment aborted');
 }
+/** The default sleep: its timer is cleared on abort, so an interrupted wait does not keep the process alive. */
+function timerSleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+        const onAbort = () => { clearTimeout(timer); reject(abortError(signal)); }; // reason: only registered when signal is defined
+        const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, Math.min(ms, MAX_TIMER_MS));
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+}
 /** Sleep that ends early (rejecting) when the signal aborts. */
 function sleepOrAbort(sleep, ms, signal) {
+    if (!sleep)
+        return timerSleep(ms, signal);
     if (!signal)
         return sleep(ms);
     return new Promise((resolve, reject) => {
@@ -54,7 +68,7 @@ export async function waitForDeployment(getDeployment, deploymentUuid, opts = {}
     const firstInterval = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
     const maxInterval = fixed ? firstInterval : Math.max(firstInterval, opts.maxIntervalMs ?? DEFAULT_MAX_INTERVAL_MS);
     const timeoutMs = opts.timeoutMs ?? 10 * 60 * 1000;
-    const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    const sleep = opts.sleep;
     const now = opts.now ?? (() => Date.now());
     const maxErrors = opts.maxConsecutiveErrors ?? 5;
     const signal = opts.signal;

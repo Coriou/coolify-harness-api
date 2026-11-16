@@ -12,7 +12,7 @@ const defaultReadFile = (path) => nodeReadFile(path, 'utf8');
 const COOLIFY_KEY_RE = /^[A-Za-z_][A-Za-z0-9_.]*$/;
 async function resolveValues(args, deps) {
     if (!args.fromFile) {
-        requireValidKeys(args, []);
+        requireValidKeys(args, {});
         return args.set;
     }
     let fileText;
@@ -24,7 +24,7 @@ async function resolveValues(args, deps) {
         throw new UsageError(`Cannot read --from-file ${args.fromFile}${typeof code === 'string' ? ` (${code})` : ''}`);
     }
     const fileValues = parseDotenv(fileText);
-    requireValidKeys(args, Object.keys(fileValues));
+    requireValidKeys(args, fileValues);
     // --set overrides file values for the same key
     return { ...fileValues, ...args.set };
 }
@@ -51,13 +51,17 @@ function scopeFor(args, target) {
  * written and the whole command reported as failed. The key is not echoed: a "key" that fails
  * this test is often a stray line of a secret (a wrapped base64 value in a dotenv file).
  */
-function requireValidKeys(args, fileKeys) {
-    const badSet = Object.keys(args.set).filter((k) => !COOLIFY_KEY_RE.test(k)).length;
-    const badFile = fileKeys.filter((k) => !COOLIFY_KEY_RE.test(k)).length;
+function requireValidKeys(args, fileValues) {
+    const invalid = (k) => !COOLIFY_KEY_RE.test(k) || k.length > 255;
+    // The tail of a wrapped base64 value (`…Zm9v==`) parses as a "name" with the value `=`: a long
+    // mixed-case, digit-bearing name whose value is nothing but `=` is that, not a variable.
+    const remnant = (k, v) => /^=*$/.test(v) && k.length >= 16 && /[a-z]/.test(k) && /[A-Z]/.test(k) && /\d/.test(k);
+    const badSet = Object.keys(args.set).filter(invalid).length;
+    const badFile = Object.entries(fileValues).filter(([k, v]) => invalid(k) || remnant(k, v)).length;
     if (badSet + badFile === 0)
         return;
     const where = [badSet > 0 ? `${badSet} from --set` : '', badFile > 0 ? `${badFile} from ${args.fromFile ?? '--from-file'}` : ''].filter(Boolean).join(', ');
-    throw new UsageError(`${badSet + badFile} variable name(s) are not valid (${where}): a name starts with a letter or _ and contains only letters, digits, _ and . — nothing was sent. (Names are not echoed: a multi-line value that is not quoted reads as extra names.)`);
+    throw new UsageError(`${badSet + badFile} variable name(s) are not valid (${where}): a name starts with a letter or _, contains only letters, digits, _ and ., and is at most 255 characters — nothing was sent. (Names are not echoed: a multi-line value that is not quoted reads as extra names.)`);
 }
 function printPlanText(plan) {
     print(`scope: ${plan.scope ?? 'production'}`);
@@ -127,13 +131,28 @@ export async function runEnvApply(args, deps) {
             print('Dry-run. Re-run with --apply to write.');
         return { code: EXIT.ok, doc: { ...base, dryRun: true, applied: [], confirmed: null } };
     }
-    const result = await withScope('write', () => applyEnvWrite(plan, {
-        client, logger: createLogger({ sink: () => { } }),
-        target: { instanceUrl: target.instanceUrl, kind: target.kind, uuid: target.uuid },
-        actor: deps.actor,
-        writeAudit: (record) => writeAuditSafely(deps, record),
-        ...(deps.now ? { now: deps.now } : {}),
-    }));
+    let result;
+    try {
+        result = await withScope('write', () => applyEnvWrite(plan, {
+            client, logger: createLogger({ sink: () => { } }),
+            target: { instanceUrl: target.instanceUrl, kind: target.kind, uuid: target.uuid },
+            actor: deps.actor,
+            writeAudit: (record) => writeAuditSafely(deps, record),
+            ...(deps.now ? { now: deps.now } : {}),
+        }));
+    }
+    catch (err) {
+        // Coolify applies a bulk write item by item, with no transaction: when it rejects one, the
+        // keys before it are already written. Say so; `env diff` shows where things stand.
+        const note = 'Coolify writes a bulk request key by key: keys before the rejected one may have been written. Run `env diff` to see the current state.';
+        if (args.json)
+            printJson({ ...base, dryRun: false, applied: null, confirmed: null, failed: true, note });
+        else if (plan.creates.length + plan.updates.length > 1)
+            warn(`env apply failed. ${note}`);
+        if (err && typeof err === 'object')
+            Object.assign(err, { printed: true });
+        throw err;
+    }
     if (!args.json) {
         if (result.confirmError !== undefined)
             warn(`WARNING: the write succeeded but could not be re-read: ${result.confirmError}`);
@@ -292,6 +311,7 @@ export async function envDelete(args, deps) {
         throw err;
     }
     let confirmed = null;
+    let confirmError;
     let remaining = 0;
     try {
         const after = await withScope('read', () => client.listEnvs());
@@ -299,10 +319,12 @@ export async function envDelete(args, deps) {
         confirmed = remaining === 0;
     }
     catch (err) {
-        warn(`WARNING: the rows were deleted but the confirmation read failed: ${err instanceof Error ? err.message : String(err)}`);
+        confirmError = err instanceof Error ? err.message : String(err);
+        if (!args.json)
+            warn(`WARNING: the rows were deleted but the confirmation read failed: ${confirmError}`);
     }
     if (args.json) {
-        printJson({ dryRun: false, ...plan, deleted, confirmed });
+        printJson({ dryRun: false, ...plan, deleted, confirmed, ...(confirmError !== undefined ? { confirmError } : {}) });
     }
     else {
         if (confirmed === true)

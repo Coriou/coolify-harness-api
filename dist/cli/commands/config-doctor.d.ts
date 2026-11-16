@@ -1,6 +1,8 @@
 import type { ParsedArgs } from '../args.js';
 export interface DoctorDeps {
     env?: Record<string, string | undefined>;
+    /** `--token-file` files that do not exist (reported, not fatal). */
+    missingTokenFiles?: readonly string[];
     /** Injected in tests; the real one calls `GET /version` with the instance token. */
     getVersion?: (instance: {
         instanceUrl: string;
@@ -16,7 +18,8 @@ export interface DoctorDeps {
  * Exit code (0 means "you can use what was checked"):
  * - an instance whose token is set but which cannot be reached, or rejects the token → 1 / 5;
  * - the instance you named (`--app` / `--instance`) has no token → 5;
- * - no instance at all has a token → 5 (nothing is usable);
+ * - no instance at all has a token → 5 (nothing is usable) — except with `--offline`, which keeps
+ *   the 0.4 local check: only the named target's token matters;
  * - otherwise 0: an instance without a token is only reported when another one works, so a
  *   machine that holds one of several tokens is not an error.
  */

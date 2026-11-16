@@ -82,8 +82,12 @@ export interface ParsedArgs {
     noLogs?: boolean;
     /** `--offline`: `config doctor` checks the config and tokens only, without calling Coolify. */
     offline?: boolean;
-    /** `--env-file FILE` (repeatable): dotenv files to read API tokens from; the real environment wins. */
-    envFiles?: string[];
+    /**
+     * `--token-file FILE` (repeatable): dotenv files to read API tokens from; a variable set in the
+     * real environment wins. (Not `--env-file`: Node claims that flag for itself, wherever it sits
+     * on the command line.)
+     */
+    tokenFiles?: string[];
 }
 export declare function parseArgs(argv: string[]): ParsedArgs;
 export {};

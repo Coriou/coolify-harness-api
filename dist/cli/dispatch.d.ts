@@ -1,12 +1,18 @@
 import type { ParsedArgs } from './args.js';
 import { type ConfigModule } from '../config/load.js';
 import { type CmdDeps } from './deps.js';
+export interface TokenEnv {
+    env: Record<string, string | undefined>;
+    /** `--token-file` files that do not exist, to mention when a token turns out to be missing. */
+    missingFiles: string[];
+}
 /**
- * Where API tokens are looked up: the real environment, then the `--env-file` files. A file never
- * overrides the environment and is never copied into `process.env`.
+ * Where API tokens are looked up: the real environment, then the `--token-file` files. A variable
+ * that is set (and not blank) in the environment wins; the files are never copied into
+ * `process.env`.
  */
-export declare function tokenEnv(args: Pick<ParsedArgs, 'envFiles'>): Promise<Record<string, string | undefined>>;
-export declare function buildDepsFrom(mod: ConfigModule, env?: Record<string, string | undefined>): CmdDeps;
+export declare function tokenEnv(args: Pick<ParsedArgs, 'tokenFiles'>): Promise<TokenEnv>;
+export declare function buildDepsFrom(mod: ConfigModule, tokens?: TokenEnv): CmdDeps;
 /**
  * Route a parsed command. Each command module is imported only when it runs, so `status` does not
  * pay for the catalog walker or the compose differ.

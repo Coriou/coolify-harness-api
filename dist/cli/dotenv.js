@@ -4,8 +4,8 @@ import { UsageError } from '../errors/index.js';
  * Parse dotenv-style text into a record.
  * - blank lines and `#` comment lines are ignored; an optional `export ` prefix is dropped;
  * - a value wrapped in matching quotes loses them (`KEY="a b"` → `a b`), as every dotenv loader
- *   does; a double-quoted value also expands `\n`, `\r`, `\t`, `\"` and `\\`, and a quoted value
- *   may span several lines (PEM keys);
+ *   does; a double-quoted value also expands `\n` and `\r`, and a quoted value may span several
+ *   lines (PEM keys);
  * - an UNQUOTED value is taken verbatim up to the end of the line (no trimming, no inline-comment
  *   stripping: a secret containing ` #` must not be silently cut).
  * A line that is not `KEY=VALUE` is a usage error; its content is never echoed.
@@ -25,6 +25,9 @@ export function parseDotenv(text) {
             throw new UsageError(`Invalid dotenv line ${n + 1}: expected KEY=VALUE${eqIdx < 0 ? " (missing '=')" : ''}`);
         }
         let value = withoutExport.slice(eqIdx + 1);
+        // `KEY = "v"` / `KEY= "v"`: blanks before a quoted value are not part of it.
+        if (/^[ \t]+['"]/.test(value))
+            value = value.trimStart();
         const quote = value[0];
         if (quote === '"' || quote === "'") {
             // Find the closing quote, on this line or a later one (multi-line value).
@@ -62,25 +65,40 @@ function closingQuote(body, quote) {
     }
     return -1;
 }
+/** What dotenv loaders expand inside double quotes: `\n` and `\r`. Everything else is literal. */
 function unescapeDouble(body) {
-    return body.replace(/\\([nrt"\\])/g, (_m, c) => ({ n: '\n', r: '\r', t: '\t', '"': '"', '\\': '\\' })[c] ?? c);
+    return body.replace(/\\([nr])/g, (_m, c) => (c === 'n' ? '\n' : '\r'));
 }
 /**
- * Variables of the `--env-file` files, later files winning. Used only to look up API tokens: the
- * real environment always wins over a file, and nothing is written to `process.env`.
+ * Read API tokens from dotenv files (`--token-file`). Deliberately forgiving, unlike `parseDotenv`:
+ * the file is usually the project's whole `.env`, of which only the token lines matter. Lines
+ * that are not `KEY=VALUE` are skipped, values are trimmed, quotes and an inline ` # comment` are
+ * removed. A missing file is reported back, not thrown.
  */
-export async function readEnvFiles(paths) {
-    const out = {};
+export async function readTokenFiles(paths) {
+    const vars = {};
+    const missing = [];
     for (const path of paths) {
         let text;
         try {
             text = await readFile(path, 'utf8');
         }
         catch (err) {
-            const code = err.code; // reason: probing the optional errno code of an unknown error
-            throw new UsageError(`Cannot read --env-file ${path}${typeof code === 'string' ? ` (${code})` : ''}`);
+            if (err.code === 'ENOENT') {
+                missing.push(path);
+                continue;
+            } // reason: probing the optional errno code of an unknown error
+            const code = err.code; // reason: same
+            throw new UsageError(`Cannot read --token-file ${path}${typeof code === 'string' ? ` (${code})` : ''}`);
         }
-        Object.assign(out, parseDotenv(text));
+        for (const raw of text.split(/\r?\n/)) {
+            const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(raw);
+            if (!m)
+                continue;
+            const rest = (m[2] ?? '').trim();
+            const quoted = /^(['"])(.*?)\1/.exec(rest);
+            vars[m[1] ?? ''] = quoted ? (quoted[2] ?? '') : rest.replace(/\s+#.*$/, '').trim();
+        }
     }
-    return out;
+    return { vars, missing };
 }

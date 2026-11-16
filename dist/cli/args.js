@@ -39,7 +39,7 @@ export const COMMAND_NAMES = Object.keys(COMMANDS);
 const VALUE_FLAGS = new Set([
     '--config', '--app', '--from-file', '--set', '--lines', '--deployment', '--take', '--skip',
     '--instance', '--server', '--database', '--backup', '--timeout', '--key', '--out', '--image',
-    '--service', '--public', '--public-port', '--env-file',
+    '--service', '--public', '--public-port', '--token-file', '--env-file',
 ]);
 const usage = (message) => new UsageError(message);
 /**
@@ -47,8 +47,8 @@ const usage = (message) => new UsageError(message);
  * else may be a secret that slipped out of its flag (`--set KEY= value`): error text ends up in
  * logs and transcripts, so it is described, never quoted.
  */
-const VOCABULARY = new Set(Object.keys(COMMANDS).flatMap((c) => c.split(' ')));
-const show = (words) => words.map((w) => (VOCABULARY.has(w.toLowerCase().replace(/[-:].*$/, '')) || VOCABULARY.has(w.toLowerCase()) ? w : `<${w.length}-character word>`)).join(' ');
+const VOCABULARY = new Set(Object.keys(COMMANDS).flatMap((c) => [c, c.replace(' ', '-'), c.replace(' ', ':'), ...c.split(' ')]));
+const show = (words) => words.map((w) => (VOCABULARY.has(w.toLowerCase()) ? w : `<${w.length}-character word>`)).join(' ');
 /** Marks a value that came from `--flag=value`, so `--set K=--x` is not mistaken for a missing value. */
 const EQ = '\u0000=';
 /**
@@ -314,9 +314,12 @@ export function parseArgs(argv) {
             case '--offline':
                 out.offline = true;
                 break;
-            case '--env-file':
-                (out.envFiles ??= []).push(next());
+            case '--token-file':
+                (out.tokenFiles ??= []).push(next());
                 break;
+            // Node claims `--env-file` for itself wherever it appears (it even exits 9 when the file is
+            // missing, before this program starts), so the harness cannot offer a flag of that name.
+            case '--env-file': throw usage('Unknown flag: --env-file (Node reserves that name). Use --token-file <file>.');
             default:
                 throw usage(`Unknown flag: ${tok}`);
         }

@@ -7,7 +7,7 @@ import type { ServerDomains, Application, BackupConfig, BackupExecution, Databas
  *
  * Not exposed by the Coolify API (checked on 4.5.0 and 4.7.5) and therefore NOT here: upgrading Coolify itself,
  * checking/installing server OS package updates, and rebooting a server. Those exist only as
- * dashboard (Livewire) actions; see README "What the Coolify API does not expose".
+ * dashboard (Livewire) actions; see README "What the Coolify API cannot do".
  */
 export declare class CoolifyInstanceClient {
     private readonly api;

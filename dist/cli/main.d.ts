@@ -11,3 +11,12 @@ export declare function main(argv: string[]): Promise<number>;
  * realpaths on BOTH sides makes a symlinked argv[1] compare equal to the real module path.
  */
 export declare function isMainModule(metaUrl: string, argv1: string | undefined): boolean;
+/**
+ * `coolify-harness … | head`: the reader closed the pipe. That is no reason to crash, and no
+ * reason to STOP either: a mutation in flight must finish, be audited and set its real exit code.
+ * Further output to that stream is simply dropped.
+ */
+export declare function ignoreClosedPipe(stream: {
+    on(event: 'error', listener: (err: NodeJS.ErrnoException) => void): unknown;
+    write: unknown;
+}): void;

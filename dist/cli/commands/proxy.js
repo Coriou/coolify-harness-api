@@ -37,10 +37,14 @@ export async function proxyGet(args, deps) {
     if (args.out) {
         const conf = requireConfiguration(proxy);
         await (deps.writeFile ?? defaultWriteFile)(args.out, conf);
-        warn(`wrote the UNREDACTED proxy compose (${conf.length} bytes, mode 0600) to ${args.out} — do not commit it.`);
+        if (!args.json)
+            warn(`wrote the UNREDACTED proxy compose (${conf.length} bytes, mode 0600) to ${args.out} — do not commit it.`);
     }
     if (args.json) {
-        printJson({ ...proxy, images, ...(proxy.configuration ? { sha256: sha256(proxy.configuration) } : {}) });
+        printJson({
+            ...proxy, images, ...(proxy.configuration ? { sha256: sha256(proxy.configuration) } : {}),
+            ...(args.out && proxy.configuration ? { out: { path: args.out, bytes: proxy.configuration.length, unredacted: true } } : {}),
+        });
         return EXIT.ok;
     }
     print(`proxy: ${proxy.proxy_type ?? '?'} [${proxy.status ?? '?'}]  cert resolver: ${proxy.traefik_certificate_resolver ?? '(none)'}  redirect: ${proxy.redirect_enabled ? (proxy.redirect_url ?? 'default') : 'off'}`);
@@ -125,7 +129,8 @@ export async function proxySet(args, deps) {
     catch (err) {
         report['confirmed'] = null;
         report['confirmError'] = sanitizeErrorMessage(err);
-        warn(`WARNING: the proxy configuration was saved but could not be re-read: ${sanitizeErrorMessage(err)}`);
+        if (!args.json)
+            warn(`WARNING: the proxy configuration was saved but could not be re-read: ${sanitizeErrorMessage(err)}`);
     }
     if (!args.json) {
         print(report['confirmed'] === true

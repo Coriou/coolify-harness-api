@@ -83,22 +83,12 @@ export async function databaseSet(args, deps) {
     const changes = Object.keys(patch)
         .map((k) => ({ field: k, from: before[k] ?? null, to: patch[k] }))
         .filter((c) => c.from !== c.to);
-    const report = { dryRun: !args.apply, database: db.uuid, changes };
-    if (!args.json)
-        for (const c of changes)
-            print(`${c.field}: ${String(c.from)} -> ${String(c.to)}`);
-    if (changes.length === 0 || !args.apply) {
-        if (args.json)
-            printJson(report);
-        else
-            print(changes.length === 0 ? 'No changes.' : 'Dry-run. Re-run with --apply to update.');
-        return EXIT.ok;
-    }
     const effective = Object.fromEntries(changes.map((c) => [c.field, c.to]));
-    // Coolify starts (or moves) the public-port proxy only when ONE request carries both
-    // `is_public: true` and `public_port`. Sending just the field that changed flipped the column
-    // and left the proxy as it was.
+    // Coolify starts the public-port proxy only when ONE request carries both `is_public: true` and
+    // `public_port`, and only for a database that was not public yet. Sending just the field that
+    // changed flipped the column and left the port closed.
     const willBePublic = effective.is_public ?? before.is_public === true;
+    const notes = [];
     if (willBePublic && ('is_public' in effective || 'public_port' in effective)) {
         const port = effective.public_port ?? before.public_port ?? undefined;
         if (port === undefined) {
@@ -106,6 +96,23 @@ export async function databaseSet(args, deps) {
         }
         effective.is_public = true;
         effective.public_port = port;
+        if (before.is_public === true && 'public_port' in effective && before.public_port !== port) {
+            notes.push('Coolify does not move the port of a database that is already public: the new port is stored, but the proxy keeps the old one. To apply it, run `database set --public false --apply`, then `--public true --public-port <n> --apply`.');
+        }
+    }
+    const report = { dryRun: !args.apply, database: db.uuid, changes, ...(notes.length > 0 ? { notes } : {}) };
+    if (!args.json) {
+        for (const c of changes)
+            print(`${c.field}: ${String(c.from)} -> ${String(c.to)}`);
+        for (const n of notes)
+            print(`NOTE: ${n}`);
+    }
+    if (changes.length === 0 || !args.apply) {
+        if (args.json)
+            printJson(report);
+        else
+            print(changes.length === 0 ? 'No changes.' : 'Dry-run. Re-run with --apply to update.');
+        return EXIT.ok;
     }
     const scope = 'is_public' in effective ? 'write+deploy' : 'write';
     await audited(deps, {
@@ -121,7 +128,8 @@ export async function databaseSet(args, deps) {
     }
     catch (err) {
         report['confirmError'] = sanitizeErrorMessage(err);
-        warn(`WARNING: the database was updated but could not be re-read: ${sanitizeErrorMessage(err)}`);
+        if (!args.json)
+            warn(`WARNING: the database was updated but could not be re-read: ${sanitizeErrorMessage(err)}`);
     }
     report['confirmed'] = confirmed;
     if (args.json)
