@@ -11,7 +11,7 @@ import type { ResolvedTarget } from '../../config/schema.js';
 import { EXIT } from '../exit.js';
 import { withScope } from '../scope.js';
 import { audited, print, printJson, warn, writeAuditSafely, type CmdDeps, usageFail } from '../deps.js';
-import { parseDotenv } from '../dotenv.js';
+import { describePath, parseDotenv } from '../dotenv.js';
 
 export { parseDotenv } from '../dotenv.js';
 
@@ -34,7 +34,7 @@ async function resolveValues(args: ParsedArgs, deps: EnvCmdDeps): Promise<Record
     fileText = await (deps.readFile ?? defaultReadFile)(args.fromFile);
   } catch (err) {
     const code = (err as { code?: unknown }).code; // reason: probing the optional errno code of an unknown error
-    throw new UsageError(`Cannot read --from-file ${args.fromFile}${typeof code === 'string' ? ` (${code})` : ''}`);
+    throw new UsageError(`Cannot read --from-file ${describePath(args.fromFile)}${typeof code === 'string' ? ` (${code})` : ''}`);
   }
   const fileValues = parseDotenv(fileText);
   requireValidKeys(args, fileValues);

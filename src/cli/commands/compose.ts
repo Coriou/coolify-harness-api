@@ -9,6 +9,7 @@ import { sanitizeErrorMessage } from '../errors-out.js';
 import { audited, defaultWriteFile, print, printJson, warn, type CmdDeps, usageFail } from '../deps.js';
 import { withScope } from '../scope.js';
 import { noteStoredState } from '../write-outcome.js';
+import { describePath } from '../dotenv.js';
 import { EXIT } from '../exit.js';
 
 /** Re-throw a helper's input error (unknown service, bad ref) as a usage error (exit 2). */
@@ -26,7 +27,7 @@ export async function readInputFile(path: string, deps: CmdDeps): Promise<string
     return await (deps.readFile ?? ((p: string) => nodeReadFile(p, 'utf8')))(path);
   } catch (err) {
     const code = (err as { code?: unknown }).code; // reason: probing the optional errno code of an unknown error
-    throw new UsageError(`Cannot read --from-file ${path}${typeof code === 'string' ? ` (${code})` : ''}`);
+    throw new UsageError(`Cannot read --from-file ${describePath(path)}${typeof code === 'string' ? ` (${code})` : ''}`);
   }
 }
 

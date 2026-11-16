@@ -46,7 +46,7 @@ export interface RequestOptions {
 }
 
 const MAX_SERVER_MESSAGE = 400;
-const MAX_SCANNED_MESSAGE = 8000;
+const MAX_SCANNED_MESSAGE = 64_000;
 
 /**
  * The strings of a document (compose, proxy configuration) that a server error must not quote
@@ -77,12 +77,16 @@ export function documentSecrets(document: string): string[] {
  * sent, strip credentials inside URLs, collapse whitespace and bound the length.
  */
 export function sanitizeServerMessage(message: string, secrets: readonly string[] = []): string {
-  // Bounded before it is scanned: the answer is the server's, and may be megabytes of anything.
-  let out = message.length > MAX_SCANNED_MESSAGE ? message.slice(0, MAX_SCANNED_MESSAGE) : message;
   // Longest first so a secret that contains another is removed whole.
-  for (const secret of [...secrets].filter((s) => s.length >= 4).sort((a, b) => b.length - a.length)) {
-    out = out.split(secret).join(REDACTED);
+  const known = [...secrets].filter((s) => s.length >= 4).sort((a, b) => b.length - a.length);
+  let out = message;
+  // Bounded before it is scanned: the answer is the server's, and may be megabytes of anything.
+  // A cut can go through a secret, whose first part would then match nothing: what could be the
+  // beginning of one is dropped with the tail (a 9 kB compose echoed whole is itself "a secret").
+  if (out.length > MAX_SCANNED_MESSAGE) {
+    out = out.slice(0, Math.max(0, MAX_SCANNED_MESSAGE - Math.max(0, (known[0]?.length ?? 0) - 1)));
   }
+  for (const secret of known) out = out.split(secret).join(REDACTED);
   out = redactUrlCredentials(out).replace(/\s+/g, ' ').trim();
   return out.length > MAX_SERVER_MESSAGE ? `${out.slice(0, MAX_SERVER_MESSAGE)}…` : out;
 }
