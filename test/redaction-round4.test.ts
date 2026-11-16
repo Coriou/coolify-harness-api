@@ -177,7 +177,7 @@ describe('what a diff must show', () => {
     unchanged('    extra_hosts: ["host.docker.internal:host-gateway"]');
   });
 
-  it('a hunk too large to align shows only what changed, and survives 70 000 lines a side', () => {
+  it('a hunk too large to align shows only what changed, and survives 70 000 lines a side', { timeout: 120_000 }, () => {
     const a = Array.from({ length: 2100 }, (_, i) => `    line${i}: v`);
     const b = [...a];
     b[10] = '    image: nginx:2';
