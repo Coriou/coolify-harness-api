@@ -70,11 +70,28 @@ function groupByKey(current: EnvVar[]): Map<string, EnvVar[]> {
 
 const scopeOf = (row: EnvVar): EnvScope => (row.is_preview ? 'preview' : 'production');
 
-function withFlags(key: string, value: string, desired: DesiredEnv): EnvWriteItem {
-  const flags = desired.flags?.[key];
-  const item: EnvWriteItem = flags ? { key, value, ...flags } : { key, value };
+/** A row whose value Coolify never returns: locked (`is_shown_once`), whatever the token can read. */
+export const isLockedRow = (row: EnvVar): boolean => row.value_hidden === true && row.is_shown_once;
+
+/**
+ * Build the bulk item for one key. On an UPDATE, flags the row has SET (`is_literal`,
+ * `is_multiline`, a lock) are sent back explicitly: Coolify 4.5's bulk handler reset every flag
+ * the request left out (a value-only update silently turned a multiline or literal variable into
+ * a plain one, and unlocked a locked one). Coolify 4.7 keeps omitted flags, where sending them is
+ * a no-op; a flag that is off needs nothing on either version. Flags passed in `desired.flags`
+ * always win.
+ */
+function withFlags(key: string, value: string, desired: DesiredEnv, existing?: EnvVar): EnvWriteItem {
+  const kept: Partial<EnvFlags> = {
+    ...(existing?.is_literal ? { is_literal: true } : {}),
+    ...(existing?.is_multiline ? { is_multiline: true } : {}),
+    ...(existing?.is_shown_once ? { is_shown_once: true } : {}),
+  };
+  const item: EnvWriteItem = { key, value, ...kept, ...desired.flags?.[key] };
   // Production items omit is_preview (Coolify defaults it to false); preview items must carry it.
-  return desired.scope === 'preview' ? { ...item, is_preview: true } : item;
+  if (desired.scope === 'preview') return { ...item, is_preview: true };
+  const { is_preview: _dropped, ...production } = item;
+  return production;
 }
 
 export function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePlan {
@@ -93,8 +110,10 @@ export function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePl
   // Surface ALL duplicate-key drift, write or not. Drift identity is (key, is_preview): a prod
   // row and a preview row may legitimately share a key with different values, so they are NOT
   // drift. Only two rows in the SAME scope with the same key but differing values are drift.
+  // Rows whose value Coolify withheld are left out: an unknown value is not a different value.
   const byScopedKey = new Map<string, { key: string; values: string[] }>();
   for (const row of current) {
+    if (row.value_hidden === true) continue;
     const id = `${row.is_preview ? 'preview' : 'prod'} ${row.key}`;
     const entry = byScopedKey.get(id);
     if (entry) entry.values.push(row.value);
@@ -109,17 +128,13 @@ export function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePl
   const otherScope: OtherScopeDifference[] = [];
   for (const [key, value] of Object.entries(desired.values)) {
     const other = otherByKey.get(key);
-    if (other && other.some((r) => r.value !== value)) {
+    if (other && other.some((r) => r.value_hidden !== true && r.value !== value)) {
       otherScope.push({ key, scope: scope === 'production' ? 'preview' : 'production' });
     }
     const rows = byKey.get(key);
-    if (!rows || rows.length === 0) {
+    const first = rows?.[0];
+    if (!rows || !first) {
       creates.push(withFlags(key, value, desired));
-      continue;
-    }
-    const allSame = rows.every((r) => r.value === value);
-    if (allSame && rows.length === 1) {
-      unchanged.push(key);
       continue;
     }
     if (rows.length > 1) {
@@ -130,7 +145,30 @@ export function planEnvWrite(current: EnvVar[], desired: DesiredEnv): EnvWritePl
         message: `Key '${key}' has ${rows.length} ${scope} rows; the bulk write updates only one of them — remove the extras with \`env delete\` and re-apply`,
       });
     }
-    updates.push(withFlags(key, value, desired));
+    if (rows.some(isLockedRow)) {
+      warnings.push({
+        kind: 'locked-value',
+        message: `Key '${key}' is locked (shown once): Coolify never returns its value, so it cannot be compared and is rewritten`,
+      });
+      updates.push(withFlags(key, value, desired, first));
+      continue;
+    }
+    if (rows.some((r) => r.value_hidden === true)) {
+      warnings.push({
+        kind: 'hidden-value',
+        message: `Key '${key}': Coolify withheld the current value (the token lacks read:sensitive), so it is planned as an update without being compared`,
+      });
+      updates.push(withFlags(key, value, desired, first));
+      continue;
+    }
+    // Every row already holds the desired value: nothing to write, however many rows there are.
+    // (Duplicates with the same value used to be planned as an update on every run, so a diff
+    // never came back clean.)
+    if (rows.every((r) => r.value === value)) {
+      unchanged.push(key);
+      continue;
+    }
+    updates.push(withFlags(key, value, desired, first));
   }
 
   return { scope, otherScope, creates, updates, unchanged, duplicateKeyDrift, lockedSkips: [], warnings };
@@ -164,8 +202,11 @@ export interface AuditRecord {
 
 export interface EnvWriteResult {
   applied: EnvWriteItem[];
+  /** True when a re-read shows every written key holding its value in the written scope. */
   confirmed: boolean;
   audit: AuditRecord;
+  /** Set when the write succeeded but the confirmation re-read failed (then `confirmed` is false). */
+  confirmError?: string;
 }
 
 export interface ApplyDeps {
@@ -228,32 +269,45 @@ export async function applyEnvWrite(plan: EnvWritePlan, deps: ApplyDeps): Promis
     return { applied: [], confirmed: true, audit };
   }
 
+  const scope = plan.scope ?? 'production';
   try {
     await deps.client.upsertEnvs(items);
-    const after = await deps.client.listEnvs();
-    // Confirm against the written scope only, and require EVERY row of the key in that scope to
-    // hold the value (a surviving duplicate is a real mismatch).
-    const scope = plan.scope ?? 'production';
-    const inScope = groupByKey(after.filter((e) => scopeOf(e) === scope));
-    const confirmed = items.every((i) => {
-      const rows = inScope.get(i.key) ?? [];
-      return rows.length > 0 && rows.every((r) => r.value === i.value);
-    });
-    const audit = buildAuditRecord({
-      now, actor: deps.actor, target: deps.target, action: 'env.apply', plan, options: { scope: plan.scope ?? 'production' },
-      keysAffected, outcome: 'success',
-    });
-    deps.logger.info('coolify.env.apply', { action: 'env.apply', keysAffected, confirmed });
-    await deps.writeAudit(audit);
-    return { applied: items, confirmed, audit };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const audit = buildAuditRecord({
-      now, actor: deps.actor, target: deps.target, action: 'env.apply', plan, options: { scope: plan.scope ?? 'production' },
+      now, actor: deps.actor, target: deps.target, action: 'env.apply', plan, options: { scope },
       keysAffected, outcome: 'failure', error: message,
     });
     deps.logger.error('coolify.env.apply.failed', { action: 'env.apply', keysAffected, error: message });
     await deps.writeAudit(audit);
     throw err;
   }
+
+  // The write is done. A failing confirmation read must not turn it into a "failed" write (an
+  // agent would retry or roll back something that landed): report it as applied, not confirmed.
+  let confirmed = false;
+  let confirmError: string | undefined;
+  try {
+    const after = await deps.client.listEnvs();
+    // Confirm against the written scope only, and require EVERY row of the key in that scope to
+    // hold the value (a surviving duplicate is a real mismatch). A row whose value Coolify does
+    // not return (locked) can only be confirmed to exist.
+    const inScope = groupByKey(after.filter((e) => scopeOf(e) === scope));
+    confirmed = items.every((i) => {
+      const rows = inScope.get(i.key) ?? [];
+      return rows.length > 0 && rows.every((r) => r.value_hidden === true || r.value === i.value);
+    });
+  } catch (err) {
+    confirmError = err instanceof Error ? err.message : String(err);
+    deps.logger.warn('coolify.env.apply.unconfirmed', { action: 'env.apply', keysAffected, error: confirmError });
+  }
+  const audit = buildAuditRecord({
+    now, actor: deps.actor, target: deps.target, action: 'env.apply', plan, options: { scope, confirmed },
+    keysAffected, outcome: 'success',
+  });
+  deps.logger.info('coolify.env.apply', { action: 'env.apply', keysAffected, confirmed });
+  await deps.writeAudit(audit);
+  return confirmError === undefined
+    ? { applied: items, confirmed, audit }
+    : { applied: items, confirmed, audit, confirmError };
 }

@@ -1,0 +1,29 @@
+[
+  {
+    "id": 1,
+    "uuid": "res-1",
+    "name": "resource-1",
+    "type": "application",
+    "created_at": "2026-11-16T09:00:00.000000Z",
+    "updated_at": "2026-11-16T09:00:00.000000Z",
+    "status": "running:healthy"
+  },
+  {
+    "id": 1,
+    "uuid": "res-2",
+    "name": "resource-2",
+    "type": "application",
+    "created_at": "2026-11-16T09:00:00.000000Z",
+    "updated_at": "2026-11-16T09:00:00.000000Z",
+    "status": "running:healthy"
+  },
+  {
+    "id": 1,
+    "uuid": "res-3",
+    "name": "resource-3",
+    "type": "application",
+    "created_at": "2026-11-16T09:00:00.000000Z",
+    "updated_at": "2026-11-16T09:00:00.000000Z",
+    "status": "running:healthy"
+  }
+]

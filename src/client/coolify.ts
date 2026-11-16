@@ -8,12 +8,12 @@ import {
   DeployAckServiceSchema,
   ApplicationSchema,
   DeploymentSchema,
-  DeploymentCancelSchema,
   MessageAckSchema,
   RuntimeLogsResponseSchema,
   ServiceSchema,
   ServiceUpdateResponseSchema,
   DatabaseSchema,
+  parseInput,
   parseOrContractError,
   type DeployAck,
   type EnvVar,
@@ -32,8 +32,12 @@ import { toBase64 } from './compose.js';
 
 export type { CoolifyClientDeps } from './base.js';
 
-/** Default page size used for fetching recent deployments when determining "latest". */
-export const DEFAULT_LATEST_TAKE = 20;
+/**
+ * Page size used to find the latest deployment. Coolify returns an application's deployments
+ * newest first and embeds the full build log in every row (hundreds of kB each), so asking for
+ * more than the first row made `status` download megabytes it then threw away. Was 20 until 0.4.x.
+ */
+export const DEFAULT_LATEST_TAKE = 1;
 
 export interface DeployOptions {
   /** Rebuild without the Docker cache (applications only) — needed to pick up a patched base image. */
@@ -89,16 +93,32 @@ export class CoolifyClient {
     return parseOrContractError(BulkResponseSchema, res.body, 'listEnvs');
   }
 
+  /**
+   * Bulk upsert by key (`PATCH …/envs/bulk`). An item without `is_preview` touches the production
+   * row only. Services and databases have no preview rows: Coolify drops `is_preview` there and
+   * would write the production row, so a preview item is refused for them before anything is sent.
+   */
   async upsertEnvs(items: EnvWriteItem[]): Promise<EnvVar[]> {
-    // Validate + normalize the request at the boundary (design §3.2). This strips any field the
-    // Coolify write API does not accept — e.g. a build-time flag injected by an untyped caller —
-    // which would otherwise 422 ("This field is not allowed.") the entire bulk write.
-    const body = BulkRequestSchema.parse({ data: items });
-    const res = await this.api.request(`${this.base()}/envs/bulk`, 'PATCH', body);
+    // Validate + normalize the request at the boundary: unknown fields are stripped (Coolify would
+    // silently ignore them) and a malformed item fails here, before the wire.
+    const body = parseInput(BulkRequestSchema, { data: items }, 'env write');
+    if (this.target.kind !== 'application' && body.data.some((i) => i.is_preview === true)) {
+      throw new CoolifyFeatureNotSupportedError(
+        `Preview env rows only exist for applications (this target is a ${this.target.kind}).`,
+      );
+    }
+    // Upsert-by-key is idempotent, so it may be retried; the values must never be echoed in an error.
+    const res = await this.api.request(`${this.base()}/envs/bulk`, 'PATCH', body, {
+      idempotent: true,
+      secrets: body.data.map((i) => i.value),
+    });
     return parseOrContractError(BulkResponseSchema, res.body, 'upsertEnvs');
   }
 
-  /** Delete one env row by its uuid (from `listEnvs()`). Applications, services and databases. */
+  /**
+   * Delete one env row by its uuid (from `listEnvs()`). Applications, services and databases.
+   * Needs the `delete` token ability from Coolify 4.7 (`write` before).
+   */
   async deleteEnv(envUuid: string): Promise<MessageAck> {
     const res = await this.api.request(`${this.base()}/envs/${encodeURIComponent(envUuid)}`, 'DELETE');
     return parseOrContractError(MessageAckSchema, res.body, 'deleteEnv');
@@ -170,7 +190,11 @@ export class CoolifyClient {
    */
   async updateServiceCompose(composeRaw: string): Promise<ServiceUpdateResponse> {
     this.requireKind('service', 'updateServiceCompose');
-    const res = await this.api.request(this.base(), 'PATCH', { docker_compose_raw: toBase64(composeRaw) });
+    // Replacing the document with the same document is idempotent; never echo it in an error.
+    const res = await this.api.request(this.base(), 'PATCH', { docker_compose_raw: toBase64(composeRaw) }, {
+      idempotent: true,
+      secrets: [composeRaw, toBase64(composeRaw)],
+    });
     return parseOrContractError(ServiceUpdateResponseSchema, res.body, 'updateServiceCompose');
   }
 
@@ -238,19 +262,20 @@ export class CoolifyClient {
   }
 
   /**
-   * Convenience: return the most recent deployment for this target (client-side sort).
-   * Sort key: updated_at desc, then created_at desc, then deployment_uuid desc.
+   * Convenience: the most recent deployment of this target — the first row of Coolify's
+   * newest-first list (one request, one row). Its `logs` are present when the token has
+   * read:sensitive. `take` widens the window; the newest by created_at (then updated_at) wins.
    */
-  async getLatestDeployment(): Promise<Deployment | undefined> {
-    const list = await this.listDeployments({ take: DEFAULT_LATEST_TAKE });
-    if (list.length === 0) return undefined;
+  async getLatestDeployment(opts: { take?: number } = {}): Promise<Deployment | undefined> {
+    const list = await this.listDeployments({ take: opts.take ?? DEFAULT_LATEST_TAKE });
+    if (list.length <= 1) return list[0];
     const sorted = [...list].sort((a, b) => {
-      const au = a.updated_at || a.created_at || '';
-      const bu = b.updated_at || b.created_at || '';
-      if (au !== bu) return bu.localeCompare(au);
-      const ac = a.created_at || '';
-      const bc = b.created_at || '';
+      const ac = a.created_at || a.updated_at || '';
+      const bc = b.created_at || b.updated_at || '';
       if (ac !== bc) return bc.localeCompare(ac);
+      const au = a.updated_at || '';
+      const bu = b.updated_at || '';
+      if (au !== bu) return bu.localeCompare(au);
       return (b.deployment_uuid || '').localeCompare(a.deployment_uuid || '');
     });
     return sorted[0];

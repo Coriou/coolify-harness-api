@@ -16,6 +16,7 @@ import {
   ServerResourceSchema,
   ServerSchema,
   ServiceSchema,
+  parseInput,
   parseOrContractError,
   type Application,
   type BackupConfig,
@@ -40,7 +41,7 @@ const seg = (uuid: string): string => encodeURIComponent(uuid);
  * Instance-scoped Coolify client: everything that is not tied to one configured target —
  * version/health, servers + proxy, standalone databases, and deployments by uuid.
  *
- * Not exposed by the Coolify API (as of 4.5.0) and therefore NOT here: upgrading Coolify itself,
+ * Not exposed by the Coolify API (checked on 4.5.0 and 4.7.5) and therefore NOT here: upgrading Coolify itself,
  * checking/installing server OS package updates, and rebooting a server. Those exist only as
  * dashboard (Livewire) actions; see README "What the Coolify API does not expose".
  */
@@ -61,7 +62,7 @@ export class CoolifyInstanceClient {
 
   // ── instance ─────────────────────────────────────────────────────────────
 
-  /** Coolify version string, e.g. `4.5.0` (`GET /version`, scope `read`; served as text). */
+  /** Coolify version string, e.g. `4.7.5` (`GET /version`, scope `read`; served as text). */
   async getVersion(): Promise<string> {
     return asText((await this.api.request('/version', 'GET')).body);
   }
@@ -139,7 +140,7 @@ export class CoolifyInstanceClient {
 
   /** Redirect / exact-labels / cert-resolver / proxy_type settings. Not the image — see saveServerProxyConfiguration. */
   async updateServerProxy(serverUuid: string, patch: ServerProxyUpdate): Promise<ServerProxy> {
-    const body = ServerProxyUpdateSchema.parse(patch);
+    const body = parseInput(ServerProxyUpdateSchema, patch, 'proxy update');
     const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy`, 'PATCH', body);
     return parseOrContractError(ServerProxySchema, res.body, 'updateServerProxy');
   }
@@ -153,7 +154,7 @@ export class CoolifyInstanceClient {
   async saveServerProxyConfiguration(serverUuid: string, composeYaml: string): Promise<ServerProxy> {
     const res = await this.api.request(`/servers/${seg(serverUuid)}/proxy/configuration`, 'PUT', {
       configuration: toBase64(composeYaml),
-    });
+    }, { idempotent: true, secrets: [composeYaml, toBase64(composeYaml)] });
     return parseOrContractError(ServerProxySchema, res.body, 'saveServerProxyConfiguration');
   }
 
@@ -182,7 +183,7 @@ export class CoolifyInstanceClient {
    * acknowledgement, so re-read with getDatabase() to confirm.
    */
   async updateDatabase(databaseUuid: string, patch: DatabaseUpdate): Promise<void> {
-    const body = DatabaseUpdateSchema.parse(patch);
+    const body = parseInput(DatabaseUpdateSchema, patch, 'database update');
     await this.api.request(`/databases/${seg(databaseUuid)}`, 'PATCH', body);
   }
 

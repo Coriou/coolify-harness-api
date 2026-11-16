@@ -1,0 +1,10 @@
+[
+  {
+    "ip": "203.0.113.10",
+    "domains": [
+      "app.example.com",
+      "app.example.com",
+      "app.example.com"
+    ]
+  }
+]
