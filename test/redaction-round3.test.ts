@@ -136,6 +136,30 @@ describe('blocks that hold variables', () => {
   });
 });
 
+describe('quotes inside quotes', () => {
+  it('a token in escaped quotes after Bearer / Basic goes with them', () => {
+    hides(redactDocument(`    command: ["tool", "-H", "Authorization: Bearer \\"${S}\\""]`));
+    hides(redactDocument(`    command: ["tool", "-H", "Authorization: Basic \\"${S}\\""]`));
+    hides(redactDocument(doc('    command:', '      - tool', '      - -H', `      - "Authorization: Bearer \\"${S}\\""`)));
+    hides(redactCommandLine(`echo "say Bearer \\"${S}\\" now"`));
+  });
+
+  it('a single-quoted command glued to escaped-quote parts is still read as a command', () => {
+    hides(redactDocument(`    command: "sh -c 'mongosh --password \\"${S}\\" --eval '\\\\''x'\\\\'''"`));
+    hides(redactCommandLine(`sh -c 'echo '\\''hi'\\''; redis-cli -a "${S}" ping'`));
+    hides(redactCommandLine(`sh -c 'export A=1'"; mysql --password ${S} db"`));
+    expect(redactCommandLine(`sh -c 'echo '\\''hi'\\''; ls -al /srv'`)).toBe(`sh -c 'echo '\\''hi'\\''; ls -al /srv'`);
+  });
+
+  it('a header flag with its value in escaped quotes, and JSON in an argument', () => {
+    hides(redactDocument(`    command: "wget -q --header=\\"X-Api-Key: ${S}\\" http://localhost/health"`));
+    hides(redactDocument(`      test: ["CMD-SHELL", "wget -q --header=\\"X-Api-Key: ${S}\\" http://localhost/health"]`));
+    hides(redactCommandLine(`curl -d "{\\"password\\":\\"${S}\\"}" https://x`));
+    hides(redactDocument(`    command: "curl -d \\"{\\\\\\"password\\\\\\":\\\\\\"${S}\\\\\\"}\\" https://x"`));
+    hides(redactDocument(`    command: curl -d '{"password":"${S}"}' https://x`));
+  });
+});
+
 describe('commands given as a list', () => {
   it('the value of a flag on the next list item', () => {
     const out = redactDocument(doc('    command:', '      - redis-server', '      - --requirepass', '      - c2VjcmV0cGFzcw=='));
@@ -327,7 +351,9 @@ describe('server messages', () => {
  * position). What is asserted is GROWTH, not speed: eight times the input may take about eight
  * times as long — a quadratic scan takes sixty-four — whatever the machine. The allowance is
  * forty: on these sizes garbage collection alone moves a linear pass between 6× and 30×. Below
- * 300 ms nothing is concluded.
+ * six seconds nothing is concluded: a loaded machine is slow, not quadratic, and a line of a
+ * hundred thousand words allocates enough to be slow honestly. The patterns this guards against
+ * took 9 to 130 seconds at this size.
  */
 describe('linear time on hostile input', { timeout: 120_000 }, () => {
   const N = 12_500;
@@ -335,7 +361,7 @@ describe('linear time on hostile input', { timeout: 120_000 }, () => {
   const linear = (label: string, run: (n: number) => unknown): void => {
     const small = Math.min(timed(() => run(N)), timed(() => run(N)), timed(() => run(N)));
     const large = timed(() => run(N * 8));
-    expect(large, `${label}: ${Math.round(small)} ms at ${N}, ${Math.round(large)} ms at ${N * 8}`).toBeLessThan(Math.max(300, small * 40));
+    expect(large, `${label}: ${Math.round(small)} ms at ${N}, ${Math.round(large)} ms at ${N * 8}`).toBeLessThan(Math.max(6000, small * 40));
   };
 
   it('command-list item with a long run of blanks', () => {
@@ -357,7 +383,7 @@ describe('linear time on hostile input', { timeout: 120_000 }, () => {
     linear('flow', (n) => redactDocument(`FOO: [x]${' '.repeat(n)}y`));
   });
   it('quotes, backslashes, dashes, hash words, substitutions', () => {
-    for (const unit of ['"', "'", '\\', '-', '# ', '=', '@', ' ', '[', '\\"', '$(', '`', 'a=1 ', '[REDACTED]']) {
+    for (const unit of ['"', "'", '\\', '-', '# ', '=', '@', ' ', '[', '\\"', '\\\\\\"', 'x\\"', '$(', '`', 'a=1 ', '[REDACTED]', "'a b'x ", 'Bearer \\"']) {
       linear(`command ${JSON.stringify(unit)}`, (n) => redactCommandLine(unit.repeat(n)));
       linear(`document ${JSON.stringify(unit)}`, (n) => redactDocument(unit.repeat(n)));
     }

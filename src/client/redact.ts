@@ -52,12 +52,16 @@ const BORING_RE = /^(true|false|yes|no|on|off|null|~|\d{1,6})$/i;
 const URL_QUERY_SECRET_RE = /([?&;][^=&\s'"#;]{0,40}(?:pass|pwd|token|secret|key|sig|credential)[^=&\s'"#;]{0,40}=)([^&\s'"#;]+)/gi;
 /** `<password>…</password>` (XML configuration embedded in a document or a command). */
 const XML_SECRET_RE = /<([A-Za-z][A-Za-z0-9_.:-]{0,60})>([^<\s][^<]{0,2000})<\//g;
-/** `Bearer xyz` anywhere. A Coolify token contains `|`, so: any non-space run. */
-const BEARER_RE = /\b(bearer)([ \t]+)([^\s'"]{8,})/gi;
+/**
+ * `Bearer xyz` anywhere. A Coolify token contains `|`, so: any non-space run — including one
+ * wrapped in escaped quotes (`Bearer \"xyz\"` inside a JSON or YAML string), which must go with
+ * it: cutting at the backslash left the token standing behind a broken quote.
+ */
+const BEARER_RE = /\b(bearer)([ \t]+)((?:\\.|[^\s'"\\]){8,})/gi;
 /** `Basic dXNlcjpwYXNz…` in running text: the word is ordinary, so only before a long base64-like run. */
 const BASIC_RE = /\b(basic)([ \t]+)([A-Za-z0-9+/=_-]{16,})(?![A-Za-z0-9+/=_-])/gi;
 /** `Authorization: Basic xyz` / `Authorization: token xyz` (only after the header name: both are plain words too). */
-const AUTH_HEADER_RE = /(authorization["']?[ \t]*[:=][ \t]*["']?)(basic|token|bearer)([ \t]+)([^\s'"]+)/gi;
+const AUTH_HEADER_RE = /(authorization["']?[ \t]*[:=][ \t]*(?:\\?["'])?)(basic|token|bearer)([ \t]+)((?:\\.|[^\s'"\\])+)/gi;
 /** YAML block scalar header: `|`, `>`, with chomping / indentation indicators and an optional comment. */
 const BLOCK_SCALAR_RE = /^[|>][+-]?\d*[+-]?\s*(#.*)?$/;
 const PEM_BEGIN_RE = /-----BEGIN [A-Z0-9 ]+-----/;
@@ -298,6 +302,27 @@ function endOfQuote(text: string, i: number, escapes = false): { end: number; cl
 }
 
 /**
+ * Index of the `\"` that closes a string opened by `\"` (a string nested in a double-quoted one),
+ * searching from `from`; -1 when there is none. One level deeper, quotes are written `\\\"`: a
+ * run of three or more backslashes before a quote belongs to the content, not to the delimiter.
+ */
+function closingEscapedQuote(text: string, from: number): number {
+  let j = from;
+  while (j < text.length) {
+    if (text.charAt(j) !== '\\') { j += 1; continue; }
+    let run = 1;
+    while (text.charAt(j + run) === '\\') run += 1;
+    if (text.charAt(j + run) === '"') {
+      if (run === 1) return j;
+      j += run + 1;
+    } else {
+      j += run;
+    }
+  }
+  return -1;
+}
+
+/**
  * Split a command line into words and separators, in one pass. A word is what a shell would call
  * one: a quoted string, a bare run, or both glued together (`--flag="a b"`, `'it'\''s'`, `a\ b`,
  * `$'x'`) up to the next unquoted whitespace. A quoted string that stands alone keeps its quotes
@@ -308,6 +333,15 @@ function tokenize(text: string): Token[] {
   const out: Token[] = [];
   const n = text.length;
   let i = 0;
+  // Once a search for a closing `\"` has run to the end without finding one, no later search
+  // will: searching again from every `\"` would re-read the rest of the line each time.
+  let noClosingEscapedQuote = false;
+  const closeOf = (from: number): number => {
+    if (noClosingEscapedQuote) return -1;
+    const at = closingEscapedQuote(text, from);
+    if (at < 0) noClosingEscapedQuote = true;
+    return at;
+  };
   while (i < n) {
     const c = text.charAt(i);
     // What an earlier pass already hid is one harmless word, not array punctuation around a word.
@@ -324,12 +358,9 @@ function tokenize(text: string): Token[] {
       continue;
     }
     if (c === '\\' && text.charAt(i + 1) === '"') {
-      let j = i + 2;
-      let closed = false;
-      while (j < n) {
-        if (text.charAt(j) === '\\' && text.charAt(j + 1) === '"') { closed = true; break; }
-        j += 1;
-      }
+      const at = closeOf(i + 2);
+      const closed = at >= 0;
+      const j = closed ? at : n;
       const end = closed ? j + 2 : n;
       out.push({ text: text.slice(i, end), kind: 'word', value: text.slice(i + 2, closed ? j : n), open: '\\"', close: closed ? '\\"' : '' });
       i = end;
@@ -348,7 +379,12 @@ function tokenize(text: string): Token[] {
     }
     while (j < n) {
       const d = text.charAt(j);
-      if (d === '\\') { j += 2; continue; }
+      if (d === '\\') {
+        // `--header=\"X-Api-Key: value\"` (a command inside a string): up to the closing `\"`.
+        const close = text.charAt(j + 1) === '"' ? closeOf(j + 2) : -1;
+        j = close >= 0 ? close + 2 : j + 2;
+        continue;
+      }
       if (d === '"' || d === "'") { j = endOfQuote(text, j, d === "'" && text.charAt(j - 1) === '$').end; continue; }
       // `$(…)` and backticks hold a command with its own blanks: one word (`X=$(cat f)`).
       if (d === '$' && text.charAt(j + 1) === '(') {
@@ -375,7 +411,33 @@ function tokenize(text: string): Token[] {
 }
 
 const hidden = (t: Token): string => `${t.open}${REDACTED}${t.close}`;
-const stripQuotes = (v: string): string => v.replace(/^(['"])([\s\S]*)\1$/, '$2');
+/** Without its surrounding quotes: `'…'`, `"…"`, or the `\"…\"` of a string nested in a string. */
+const stripQuotes = (v: string): string =>
+  (v.length >= 4 && v.startsWith('\\"') && v.endsWith('\\"') ? v.slice(2, -2) : v.replace(/^(['"])([\s\S]*)\1$/, '$2'));
+
+/**
+ * A word glued from quoted and bare parts (`'echo hi'\''; redis-cli -a "x"'`, `sh -c 'a'"b c"`):
+ * each quoted part that holds blanks is a command of its own, judged by its content.
+ */
+function redactComposite(v: string, depth: number): string {
+  let out = '';
+  let bare = 0;
+  let i = 0;
+  while (i < v.length) {
+    const c = v.charAt(i);
+    if (c === '\\') { i += 2; continue; }
+    if (c !== '"' && c !== "'") { i += 1; continue; }
+    const q = endOfQuote(v, i, c === "'" && v.charAt(i - 1) === '$');
+    const inner = v.slice(i + 1, q.closed ? q.end - 1 : q.end);
+    const close = q.closed ? c : '';
+    out += scrubWord(v.slice(bare, i));
+    if (/\s/.test(inner)) out += depth < 3 ? `${c}${redactCommand(inner, depth + 1)}${close}` : `${c}${REDACTED}${close}`;
+    else out += `${c}${scrubWord(inner)}${close}`;
+    i = q.end;
+    bare = i;
+  }
+  return out + scrubWord(v.slice(bare));
+}
 
 /** `Name: value` of a header whose name is sensitive, with the value hidden; else undefined. */
 function hiddenHeader(line: string): string | undefined {
@@ -442,6 +504,8 @@ function redactWord(t: Token, depth: number): string {
   if (colon > 1 && v.startsWith('-') && isSecretFlag(v.slice(0, colon)) && !isHarmless(v.slice(colon + 1), true)) {
     return `${t.open}${v.slice(0, colon)}:${REDACTED}${t.close}`;
   }
+  // Blanks in a bare word mean quoted parts glued together: each is judged by its content.
+  if (t.open === '' && /\s/.test(v)) return redactComposite(v, depth);
   const cleaned = scrubWord(v);
   return cleaned === v ? t.text : `${t.open}${cleaned}${t.close}`;
 }
