@@ -66,9 +66,10 @@ async function queuedState(client: Pick<CoolifyClient, 'getDeployment'>, uuid: s
  * commit" (it does not say which). It skipped because a deployment of the commit a plain deploy
  * asks for — the application's pinned sha, else `HEAD` — was queued or building at that moment:
  * - one of that commit is still running → that one;
- * - none is, but one of that commit ended moments ago → that one, with `running: false`;
- * - no row carries that commit (the deployment job replaces `HEAD` by the sha it resolved) →
- *   the newest production deployment still running.
+ * - none is, but one of that commit FINISHED moments ago → that one, with `running: false`;
+ * - else the newest production deployment still running (the deployment job replaces `HEAD` by
+ *   the sha it resolved, so the row may no longer carry the ref);
+ * - else one of that commit that ended badly moments ago → that one, with `running: false`.
  * Otherwise undefined: an older deployment is never passed off as this one. Preview (pull
  * request) deployments share the list and are never it.
  */
@@ -92,9 +93,13 @@ async function findExistingDeployment(client: Pick<CoolifyClient, 'listDeploymen
   if (running) return { deployment: running, running: true };
   const endedAt = (d: Deployment): number => Date.parse(d.finished_at ?? d.updated_at ?? '');
   const last = [...sameCommit].sort((x, y) => (y.updated_at ?? '').localeCompare(x.updated_at ?? ''))[0];
-  if (last && Math.abs(nowMs - endedAt(last)) <= JUST_ENDED_MS) return { deployment: last, running: false };
+  const justEnded = last !== undefined && Math.abs(nowMs - endedAt(last)) <= JUST_ENDED_MS ? last : undefined;
+  if (justEnded?.status === 'finished') return { deployment: justEnded, running: false };
+  // Something is still running: that is what Coolify was busy with (its row no longer carries
+  // the ref it was queued with) — an earlier failure of the same ref is not this request's answer.
   const anyRunning = production.find(isRunning);
-  return anyRunning ? { deployment: anyRunning, running: true } : undefined;
+  if (anyRunning) return { deployment: anyRunning, running: true };
+  return justEnded ? { deployment: justEnded, running: false } : undefined;
 }
 
 /**

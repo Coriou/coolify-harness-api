@@ -204,11 +204,13 @@ describe('env commands', () => {
     expect(oneJson()).toMatchObject({ dryRun: true, delete: [{ key: 'MY-LEGACY-KEY' }], notFound: [] });
   });
 
-  it('a key that is not found is echoed only when it reads like a name', async () => {
+  it('a key that is not found is echoed only when it reads like a name (a pasted token does not)', async () => {
     const client = { listEnvs: vi.fn(async () => [row('A', '1')]), get: vi.fn(async () => ({ uuid: 'app-1', build_pack: 'nixpacks' })) };
-    expect(await envDelete(parseArgs(['env', 'delete', '--app', 'web', '--key', 'A', '--key', 'MISSING_ONE', '--key', 'p@ss/w0rd!', '--json']), cmdDeps(client).deps)).toBe(0);
-    expect(oneJson()['notFound']).toEqual(['MISSING_ONE', '<10-character key>']);
+    const keys = ['A', 'MISSING_ONE', 'p@ss/w0rd!', 'glpat-s3cr3tAAAA1111bbbb', 'OLD-LEGACY-KEY'];
+    expect(await envDelete(parseArgs(['env', 'delete', '--app', 'web', ...keys.flatMap((k) => ['--key', k]), '--json']), cmdDeps(client).deps)).toBe(0);
+    expect(oneJson()['notFound']).toEqual(['MISSING_ONE', '<10-character key>', '<24-character key>', 'OLD-LEGACY-KEY']);
     expect(stdout()).not.toContain('p@ss');
+    expect(stdout()).not.toContain('s3cr3t');
   });
 
   it('env apply --apply with nothing to write says so', async () => {

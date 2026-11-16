@@ -81,10 +81,21 @@ export function sanitizeServerMessage(message: string, secrets: readonly string[
   const known = [...secrets].filter((s) => s.length >= 4).sort((a, b) => b.length - a.length);
   let out = message;
   // Bounded before it is scanned: the answer is the server's, and may be megabytes of anything.
-  // A cut can go through a secret, whose first part would then match nothing: what could be the
-  // beginning of one is dropped with the tail (a 9 kB compose echoed whole is itself "a secret").
+  // The cut must not go through a secret (its first part would match nothing and be printed):
+  // it moves back to the start of any secret it would split. Only a window around the cut is
+  // searched for each secret, so this costs the total length of the secrets, not of the message.
   if (out.length > MAX_SCANNED_MESSAGE) {
-    out = out.slice(0, Math.max(0, MAX_SCANNED_MESSAGE - Math.max(0, (known[0]?.length ?? 0) - 1)));
+    let cut = MAX_SCANNED_MESSAGE;
+    for (let pass = 0; pass < 3; pass += 1) {
+      let moved = false;
+      for (const secret of known) {
+        const from = Math.max(0, cut - secret.length + 1);
+        const at = out.slice(from, cut + secret.length - 1).indexOf(secret);
+        if (at >= 0 && from + at < cut) { cut = from + at; moved = true; }
+      }
+      if (!moved) break;
+    }
+    out = out.slice(0, cut);
   }
   for (const secret of known) out = out.split(secret).join(REDACTED);
   out = redactUrlCredentials(out).replace(/\s+/g, ' ').trim();

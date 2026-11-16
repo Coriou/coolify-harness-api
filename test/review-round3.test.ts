@@ -195,14 +195,27 @@ describe('deploy --wait after a skipped request: which deployment is "the one al
     expect(client.listDeployments).toHaveBeenCalledTimes(1);
   });
 
-  it('the HEAD deployment has just failed while a webhook build of another commit runs: the failure is the outcome', async () => {
+  it('one of that ref has just FAILED while another production deployment runs: the running one is followed', async () => {
+    // Which one Coolify meant cannot be told apart (the job rewrites `HEAD` to the sha it
+    // resolved). What is still running decides what the application ends up as.
     const client = {
       deploy: vi.fn(async () => skipped),
       listDeployments: vi.fn(async () => [
-        dep('in_progress', 'dep-webhook', { commit: 'abc123' }),
+        dep('in_progress', 'dep-running', { commit: 'abc123' }),
         dep('failed', 'dep-head', { commit: 'HEAD', updated_at: '2026-11-15T23:59:59.000000Z' }),
       ]),
       get: vi.fn(async () => ({ uuid: 'app-1', git_commit_sha: null })),
+      waitForDeployment: vi.fn(async (uuid: string) => dep('finished', uuid)),
+    };
+    expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).toBe(0);
+    expect(client.waitForDeployment).toHaveBeenCalledWith('dep-running', expect.anything());
+    expect(oneJson()).toMatchObject({ deploymentUuid: 'dep-running', followedExisting: true, finalStatus: 'finished' });
+  });
+
+  it('one of that ref has just failed and nothing else runs: the failure is the outcome', async () => {
+    const client = {
+      deploy: vi.fn(async () => skipped),
+      listDeployments: vi.fn(async () => [dep('failed', 'dep-head', { commit: 'HEAD', updated_at: '2026-11-15T23:59:59.000000Z' }), dep('finished', 'dep-older', { commit: 'abc123' })]),
       waitForDeployment: vi.fn(),
     };
     expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).toBe(7);

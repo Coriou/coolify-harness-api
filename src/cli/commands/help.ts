@@ -73,7 +73,8 @@ Timeouts: a request gets 30 s; a read that times out is tried once more (about a
 Exit codes: 0 ok · 1 Coolify/network/internal error · 2 usage, config or unsupported · 3 catalog stale
             4 drift (--fail-on-drift / --fail-on-changes) · 5 auth/scope · 6 locked env var
             7 deploy failed/cancelled (--wait) · 8 wait timeout
-            130 --wait interrupted (Ctrl-C or SIGTERM; the deployment keeps running)
+            130 deploy interrupted while checking or waiting (Ctrl-C or SIGTERM; the deployment
+                keeps running)
 Docs: https://github.com/Coriou/coolify-harness-api#readme
 `;
 
@@ -88,7 +89,7 @@ export const EXIT_CODES: Record<string, string> = {
   6: 'refused to delete an env var Coolify would re-create',
   7: 'deploy --wait: the deployment failed or was cancelled',
   8: 'deploy --wait: timed out',
-  130: 'deploy --wait: interrupted by SIGINT or SIGTERM (the deployment keeps running)',
+  130: 'deploy: interrupted by SIGINT or SIGTERM while checking or waiting (the deployment keeps running)',
 };
 
 /** `help` / `--help` / `--version`: local, instant, never touches the config or the network. */
