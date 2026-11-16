@@ -4,23 +4,46 @@ import { CoolifyInstanceClient } from '../client/instance.js';
 import { createLogger } from '../logging/index.js';
 import { loadConfigModule, resolveInstance, resolveTarget, type ConfigModule } from '../config/load.js';
 import { configPathFor } from './config-path.js';
-import { ConfigError, UsageError } from '../errors/index.js';
-import { readEnvFiles } from './dotenv.js';
+import { ConfigError, MissingTokenError, UsageError } from '../errors/index.js';
+import { readTokenFiles } from './dotenv.js';
 import { makeAuditSink } from './audit-sink.js';
 import { printJson, type CmdDeps } from './deps.js';
 import { EXIT } from './exit.js';
 
 
-/**
- * Where API tokens are looked up: the real environment, then the `--env-file` files. A file never
- * overrides the environment and is never copied into `process.env`.
- */
-export async function tokenEnv(args: Pick<ParsedArgs, 'envFiles'>): Promise<Record<string, string | undefined>> {
-  if (!args.envFiles || args.envFiles.length === 0) return process.env;
-  return { ...(await readEnvFiles(args.envFiles)), ...process.env };
+export interface TokenEnv {
+  env: Record<string, string | undefined>;
+  /** `--token-file` files that do not exist, to mention when a token turns out to be missing. */
+  missingFiles: string[];
 }
 
-export function buildDepsFrom(mod: ConfigModule, env: Record<string, string | undefined> = process.env): CmdDeps {
+/**
+ * Where API tokens are looked up: the real environment, then the `--token-file` files. A variable
+ * that is set (and not blank) in the environment wins; the files are never copied into
+ * `process.env`.
+ */
+export async function tokenEnv(args: Pick<ParsedArgs, 'tokenFiles'>): Promise<TokenEnv> {
+  if (!args.tokenFiles || args.tokenFiles.length === 0) return { env: process.env, missingFiles: [] };
+  const { vars, missing } = await readTokenFiles(args.tokenFiles);
+  const env: Record<string, string | undefined> = { ...vars };
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && v !== '') env[k] = v;
+  return { env, missingFiles: missing };
+}
+
+/** A missing token is easier to fix when the error says the token file was not there. */
+function withTokenFileHint<T>(missingFiles: readonly string[], fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof MissingTokenError && missingFiles.length > 0) {
+      throw new MissingTokenError(`${err.message} (and --token-file ${missingFiles.join(', ')} does not exist)`, { tokenEnv: err.tokenEnv });
+    }
+    throw err;
+  }
+}
+
+export function buildDepsFrom(mod: ConfigModule, tokens: TokenEnv = { env: process.env, missingFiles: [] }): CmdDeps {
+  const { env, missingFiles } = tokens;
   const logger = createLogger({ sink: () => {} });
   const clientDeps = { fetchImpl: (url: string, init: RequestInit) => globalThis.fetch(url, init), logger };
   return {
@@ -28,7 +51,8 @@ export function buildDepsFrom(mod: ConfigModule, env: Record<string, string | un
       if (!a.app) {
         throw new UsageError(`--app <target> is required for this command (known targets: ${Object.keys(mod.registry.targets).join(', ') || 'none'})`);
       }
-      return resolveTarget(mod.registry, a.app, env);
+      const app = a.app;
+      return withTokenFileHint(missingFiles, () => resolveTarget(mod.registry, app, env));
     },
     clientFactory: (target) => new CoolifyClient(target, clientDeps),
     instanceFor: (a) => {
@@ -39,7 +63,7 @@ export function buildDepsFrom(mod: ConfigModule, env: Record<string, string | un
       if (!name) {
         throw new UsageError(`--instance <name> is required (known instances: ${Object.keys(mod.registry.instances).join(', ')})`);
       }
-      return { name, client: new CoolifyInstanceClient(resolveInstance(mod.registry, name, env), clientDeps) };
+      return { name, client: new CoolifyInstanceClient(withTokenFileHint(missingFiles, () => resolveInstance(mod.registry, name, env)), clientDeps) };
     },
     actor: process.env['USER'] ?? process.env['GITHUB_ACTOR'] ?? 'unknown',
     auditSink: makeAuditSink('.coolify-harness/audit.jsonl'),
@@ -55,7 +79,10 @@ export async function dispatch(args: ParsedArgs): Promise<number> {
     case 'help': return (await import('./commands/help.js')).helpCmd(args);
     case 'catalog-gen': return (await import('./commands/catalog.js')).catalogGen(args);
     case 'catalog-check': return (await import('./commands/catalog.js')).catalogCheck(args);
-    case 'config-doctor': return (await import('./commands/config-doctor.js')).configDoctor(args, { env: await tokenEnv(args) });
+    case 'config-doctor': {
+      const tokens = await tokenEnv(args);
+      return (await import('./commands/config-doctor.js')).configDoctor(args, { env: tokens.env, missingTokenFiles: tokens.missingFiles });
+    }
     case 'server-patch':
     case 'server-reboot':
     case 'instance-upgrade':

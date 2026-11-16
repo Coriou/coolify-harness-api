@@ -65,16 +65,28 @@ export async function runDeploy(args: ParsedArgs, deps: CmdDeps): Promise<Deploy
   // would say "deployed" while the build is still running.
   let waitUuid = ack.deploymentUuid;
   let followed = false;
+  let skipped = false;
   if (args.wait && !waitUuid && target.kind === 'application') {
-    const latest = await withScope('read', () => client.getLatestDeployment()).catch(() => undefined);
-    if (latest && !isTerminalDeploymentStatus(latest.status)) {
-      waitUuid = latest.deployment_uuid;
-      followed = true;
-      warn(`--wait: Coolify queued nothing new (${ack.message}); following the deployment already in progress: ${waitUuid}`);
-    } else {
-      warn('--wait: Coolify returned no deployment uuid and nothing is queued or building; nothing to wait for.');
+    let recent;
+    try {
+      recent = await withScope('read', () => client.listDeployments({ take: 10 }));
+    } catch (err) {
+      // Not knowing is not "nothing to wait for": say what was acknowledged, then fail.
+      if (err && typeof err === 'object') Object.assign(err, { partialDoc: { ...ackInfo, finalStatus: null, waitFailed: true } });
+      throw err;
     }
-  } else if (args.wait && !waitUuid) {
+    // The list is newest first and holds preview (pull request) deployments too: follow the
+    // newest PRODUCTION deployment that is still running.
+    const running = recent.find((d) => !isTerminalDeploymentStatus(d.status) && (d.pull_request_id ?? 0) === 0);
+    if (running) {
+      waitUuid = running.deployment_uuid;
+      followed = true;
+      if (!args.json) warn(`--wait: Coolify queued nothing new (${ack.message}); following the deployment already in progress: ${waitUuid}`);
+    } else {
+      skipped = true;
+      if (!args.json) warn('--wait: Coolify returned no deployment uuid and nothing is queued or building; nothing to wait for.');
+    }
+  } else if (args.wait && !waitUuid && !args.json) {
     warn(`--wait: a ${target.kind} ${action} creates no deployment record; check \`status\` instead.`);
   }
 
@@ -123,7 +135,7 @@ export async function runDeploy(args: ParsedArgs, deps: CmdDeps): Promise<Deploy
     return { code: EXIT.deployFailed, doc };
   }
 
-  if (args.wait && target.kind === 'application') return { code: EXIT.ok, doc: { ...ackInfo, skipped: true } };
+  if (skipped) return { code: EXIT.ok, doc: { ...ackInfo, skipped: true } };
   return { code: EXIT.ok, doc: ackInfo };
 }
 

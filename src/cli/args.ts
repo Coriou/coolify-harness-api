@@ -89,15 +89,19 @@ export interface ParsedArgs {
   noLogs?: boolean;
   /** `--offline`: `config doctor` checks the config and tokens only, without calling Coolify. */
   offline?: boolean;
-  /** `--env-file FILE` (repeatable): dotenv files to read API tokens from; the real environment wins. */
-  envFiles?: string[];
+  /**
+   * `--token-file FILE` (repeatable): dotenv files to read API tokens from; a variable set in the
+   * real environment wins. (Not `--env-file`: Node claims that flag for itself, wherever it sits
+   * on the command line.)
+   */
+  tokenFiles?: string[];
 }
 
 /** Flags that consume the next token as their value (everything else is a boolean switch). */
 const VALUE_FLAGS = new Set([
   '--config', '--app', '--from-file', '--set', '--lines', '--deployment', '--take', '--skip',
   '--instance', '--server', '--database', '--backup', '--timeout', '--key', '--out', '--image',
-  '--service', '--public', '--public-port', '--env-file',
+  '--service', '--public', '--public-port', '--token-file', '--env-file',
 ]);
 
 const usage = (message: string): UsageError => new UsageError(message);
@@ -107,9 +111,9 @@ const usage = (message: string): UsageError => new UsageError(message);
  * else may be a secret that slipped out of its flag (`--set KEY= value`): error text ends up in
  * logs and transcripts, so it is described, never quoted.
  */
-const VOCABULARY = new Set(Object.keys(COMMANDS).flatMap((c) => c.split(' ')));
+const VOCABULARY = new Set(Object.keys(COMMANDS).flatMap((c) => [c, c.replace(' ', '-'), c.replace(' ', ':'), ...c.split(' ')]));
 const show = (words: string[]): string =>
-  words.map((w) => (VOCABULARY.has(w.toLowerCase().replace(/[-:].*$/, '')) || VOCABULARY.has(w.toLowerCase()) ? w : `<${w.length}-character word>`)).join(' ');
+  words.map((w) => (VOCABULARY.has(w.toLowerCase()) ? w : `<${w.length}-character word>`)).join(' ');
 
 /** Marks a value that came from `--flag=value`, so `--set K=--x` is not mistaken for a missing value. */
 const EQ = '\u0000=';
@@ -285,7 +289,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case '--fail-on-changes': out.failOnChanges = true; break;
       case '--no-logs': out.noLogs = true; break;
       case '--offline': out.offline = true; break;
-      case '--env-file': (out.envFiles ??= []).push(next()); break;
+      case '--token-file': (out.tokenFiles ??= []).push(next()); break;
+      // Node claims `--env-file` for itself wherever it appears (it even exits 9 when the file is
+      // missing, before this program starts), so the harness cannot offer a flag of that name.
+      case '--env-file': throw usage('Unknown flag: --env-file (Node reserves that name). Use --token-file <file>.');
       default:
         throw usage(`Unknown flag: ${tok}`);
     }

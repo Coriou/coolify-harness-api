@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { z as z3 } from 'zod/v3';
 import { parseArgs } from '../src/cli/args.js';
 import { main, errorToExitCode } from '../src/cli/main.js';
-import { flagSet, tokenEnv } from '../src/cli/dispatch.js';
+import { buildDepsFrom, flagSet, tokenEnv } from '../src/cli/dispatch.js';
 import { envApply, envDelete, envDiff, parseDotenv } from '../src/cli/commands/env.js';
 import { deployCmd } from '../src/cli/commands/deploy.js';
 import { composeGet, composeSet } from '../src/cli/commands/compose.js';
@@ -106,8 +106,8 @@ describe('a mutation Coolify accepted is never reported as failed', () => {
   it('deploy: a 200 acknowledgement in an unknown shape is still an accepted deploy, and keeps the uuid if there is one', async () => {
     const odd = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => json(200, { status: 'ok', deployment_uuid: 'dep-odd' }))));
     await expect(odd.deploy()).resolves.toEqual({ message: 'accepted', deploymentUuid: 'dep-odd' });
-    const text = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => new Response('queued', { status: 200 }))));
-    await expect(text.restart()).resolves.toEqual({ message: 'accepted' });
+    const bare = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => json(200, ['queued']))));
+    await expect(bare.restart()).resolves.toEqual({ message: 'accepted' });
     const del = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => new Response('', { status: 200 }))));
     await expect(del.deleteEnv('e1')).resolves.toEqual({ message: '' });
     const inst = new CoolifyInstanceClient({ instanceUrl: 'https://c.example', token: 't' }, clientDeps(vi.fn(async () => json(200, ['unexpected']))));
@@ -257,17 +257,36 @@ describe('arguments and files are described, never quoted', () => {
   });
 });
 
-describe('--env-file', () => {
-  it('reads tokens from a dotenv file; the real environment wins; process.env is not touched', async () => {
+describe('--token-file', () => {
+  it('reads tokens from a dotenv file; a set environment variable wins; process.env is not touched', async () => {
     const file = join(dir, 'tokens.env');
-    writeFileSync(file, 'FROM_FILE_ONLY="12|file-token"\nPATH=/nope\n');
-    const env = await tokenEnv({ envFiles: [file] });
-    expect(env['FROM_FILE_ONLY']).toBe('12|file-token');
-    expect(env['PATH']).toBe(process.env['PATH']);
-    expect(process.env['FROM_FILE_ONLY']).toBeUndefined();
-    expect(await tokenEnv({})).toBe(process.env);
-    await expect(tokenEnv({ envFiles: [join(dir, 'missing.env')] })).rejects.toThrow(/Cannot read --env-file .*missing\.env \(ENOENT\)/);
-    expect(parseArgs(['status', '--app', 'a', '--env-file', '.env', '--env-file=.env.local']).envFiles).toEqual(['.env', '.env.local']);
+    // The project's whole .env: lines that are not KEY=VALUE, padding and comments must not matter.
+    writeFileSync(file, 'FROM_FILE_ONLY="12|file-token"\nPATH=/nope\nthis line is not an assignment\nPADDED = 12|padded-token   # rotated in May\nexport EXPORTED=\'12|exported\'\nBLANK_IN_ENV=12|from-file\n');
+    process.env['BLANK_IN_ENV'] = '';
+    try {
+      const { env, missingFiles } = await tokenEnv({ tokenFiles: [file] });
+      expect(env['FROM_FILE_ONLY']).toBe('12|file-token');
+      expect(env['PADDED']).toBe('12|padded-token');
+      expect(env['EXPORTED']).toBe('12|exported');
+      expect(env['PATH']).toBe(process.env['PATH']); // the real environment wins…
+      expect(env['BLANK_IN_ENV']).toBe('12|from-file'); // …unless it is blank
+      expect(missingFiles).toEqual([]);
+      expect(process.env['FROM_FILE_ONLY']).toBeUndefined();
+    } finally {
+      delete process.env['BLANK_IN_ENV'];
+    }
+    expect((await tokenEnv({})).env).toBe(process.env);
+    expect(parseArgs(['status', '--app', 'a', '--token-file', '.env', '--token-file=.env.local']).tokenFiles).toEqual(['.env', '.env.local']);
+    // Node itself claims `--env-file`, wherever it sits on the command line: the harness must not use that name.
+    expect(() => parseArgs(['status', '--app', 'a', '--env-file', '.env'])).toThrow(/Unknown flag: --env-file/);
+  });
+
+  it('a missing token file is not an error by itself, but a missing token says the file was not there', async () => {
+    const tokens = await tokenEnv({ tokenFiles: [join(dir, 'missing.env')] });
+    expect(tokens.missingFiles).toEqual([join(dir, 'missing.env')]);
+    const registry = { instances: { prod: { url: 'https://c.example', tokenEnv: 'NOT_SET_ANYWHERE_X' } }, targets: { web: { instance: 'prod', kind: 'application' as const, uuid: 'a' } } };
+    const deps = buildDepsFrom({ registry }, tokens);
+    expect(() => deps.resolveTargetFor(parseArgs(['status', '--app', 'web']))).toThrow(/Env var 'NOT_SET_ANYWHERE_X' .* is not set \(and --token-file .*missing\.env does not exist\)/);
   });
 });
 
@@ -302,15 +321,20 @@ describe('files that hold secrets', () => {
 
 describe('env values are compared the way Coolify stores them', () => {
   it('edge whitespace does not make a key an eternal update, and confirms', async () => {
-    const current = [row('A', 'spaced'), row('PEM', '-----BEGIN-----\nabc\n-----END-----')];
-    const plan = planEnvWrite(current, { values: { A: ' spaced ', PEM: '-----BEGIN-----\nabc\n-----END-----\n', NEW: ' v ' } });
-    expect(plan.unchanged).toEqual(['A', 'PEM']);
+    const current = [row('A', 'spaced'), row('TAB', 'x'), row('PEM', '-----BEGIN-----\nabc\n-----END-----')];
+    const plan = planEnvWrite(current, { values: { A: ' spaced ', TAB: '\tx\n', PEM: '-----BEGIN-----\nabc\n-----END-----', NEW: ' v ' } });
+    expect(plan.unchanged).toEqual(['A', 'TAB', 'PEM']);
     expect(plan.creates).toEqual([{ key: 'NEW', value: ' v ' }]);
-    expect(plan.warnings.map((w) => w.kind)).toEqual(['trimmed-value', 'trimmed-value']);
+    expect(plan.warnings.map((w) => w.kind)).toEqual(['trimmed-value', 'trimmed-value', 'trimmed-value']);
     const client = {
       upsertEnvs: vi.fn(async (_items: EnvWriteItem[]) => []),
       listEnvs: vi.fn(async () => [...current, row('NEW', 'v')]), // Coolify trimmed it
     };
+    // A multi-line value keeps its edge whitespace on Coolify 4.7: a final newline is a real change.
+    const pem = planEnvWrite(current, { values: { PEM: '-----BEGIN-----\nabc\n-----END-----\n' } });
+    expect(pem.updates.map((u) => u.key)).toEqual(['PEM']);
+    // PHP's trim() does not remove a no-break space: Coolify would store it, so it is a change.
+    expect(planEnvWrite([row('N', 'x')], { values: { N: 'x\u00a0' } }).updates.map((u) => u.key)).toEqual(['N']);
     const result = await applyEnvWrite(plan, { client, logger: noopLogger(), target: { instanceUrl: 'u', kind: 'application', uuid: 'a' }, actor: 't', writeAudit: async () => {} });
     expect(result.confirmed).toBe(true);
   });
@@ -400,20 +424,51 @@ describe('deploy --wait', () => {
   it('follows the deployment already in progress when Coolify skipped the request (it used to exit 0 at once)', async () => {
     const client = {
       deploy: vi.fn(async () => ({ message: 'Deployment already queued for this commit.' })),
-      getLatestDeployment: vi.fn(async () => dep('in_progress')),
+      // newest first: a preview (pull request) deployment, then the production one that is building
+      listDeployments: vi.fn(async () => [{ ...dep('in_progress', 'dep-pr-42'), pull_request_id: 42 }, { ...dep('in_progress'), pull_request_id: 0 }, dep('finished', 'dep-old')]),
       waitForDeployment: vi.fn(async () => dep('finished')),
     };
     expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).toBe(0);
     expect(client.waitForDeployment).toHaveBeenCalledWith('dep-running', expect.anything());
     expect(oneJson()).toMatchObject({ deploymentUuid: 'dep-running', followedExisting: true, finalStatus: 'finished' });
+    expect(stderr()).toBe(''); // with --json the document says it (followedExisting)
+    out = [];
+    await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait']), cmdDeps(client).deps);
     expect(stderr()).toContain('following the deployment already in progress: dep-running');
   });
 
-  it('says "skipped" when nothing is queued either', async () => {
-    const client = { deploy: vi.fn(async () => ({ message: 'Deployment skipped.' })), getLatestDeployment: vi.fn(async () => dep('finished')), waitForDeployment: vi.fn() };
+  it('says "skipped" when no production deployment is queued or building', async () => {
+    const client = {
+      deploy: vi.fn(async () => ({ message: 'Deployment skipped.' })),
+      listDeployments: vi.fn(async () => [{ ...dep('in_progress', 'dep-pr-42'), pull_request_id: 42 }, dep('finished')]),
+      waitForDeployment: vi.fn(),
+    };
     expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).toBe(0);
     expect(oneJson()).toMatchObject({ deploymentUuid: null, skipped: true });
     expect(client.waitForDeployment).not.toHaveBeenCalled();
+  });
+
+  it('does not say "nothing to wait for" when it could not look: the read error fails the command', async () => {
+    const client = {
+      deploy: vi.fn(async () => ({ message: 'Deployment already queued for this commit.' })),
+      listDeployments: vi.fn(async () => { throw new CoolifyRequestError('GET failed with status 503', { status: 503 }); }),
+      waitForDeployment: vi.fn(),
+    };
+    await expect(deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).rejects.toBeInstanceOf(CoolifyRequestError);
+    expect(oneJson()).toMatchObject({ deploymentUuid: null, waitFailed: true });
+  });
+
+  it('Ctrl-C during the wait exits 130 and says the deployment keeps running', async () => {
+    const client = {
+      deploy: vi.fn(async () => ({ message: 'queued', deploymentUuid: 'dep-9' })),
+      waitForDeployment: vi.fn((_uuid: string, opts: { signal: AbortSignal }) => new Promise<Deployment>((_resolve, reject) => {
+        opts.signal.addEventListener('abort', () => { reject(new Error('interrupted')); });
+        process.emit('SIGINT');
+      })),
+    };
+    expect(await deployCmd(parseArgs(['deploy', '--app', 'web', '--wait', '--json']), cmdDeps(client).deps)).toBe(130);
+    expect(oneJson()).toMatchObject({ deploymentUuid: 'dep-9', interrupted: true });
+    expect((JSON.parse(stderr()) as { error: Record<string, unknown> }).error).toMatchObject({ code: 'INTERRUPTED', exitCode: 130, deploymentUuid: 'dep-9' });
   });
 
   it('a failed deployment prints its document on stdout AND an error document on stderr (exit 7)', async () => {
@@ -520,5 +575,153 @@ describe('zod 3 catalogs stay byte-identical to 0.4', () => {
     expect(nested!.default).toBe('inner');
     const [middle] = walkEnvSchema(z3.object({ B: z3.preprocess((v) => v, z3.string().optional().describe('only in the middle')) }), { service: 's' });
     expect(middle!.description).toBeUndefined();
+  });
+});
+
+describe('second review round', () => {
+  it('a 2xx that is not JSON is NOT an acknowledgement: an HTML page must not read as "deployed"', async () => {
+    const html = (): Response => new Response('<!doctype html><title>Sign in</title>', { status: 200, headers: { 'content-type': 'text/html' } });
+    const client = new CoolifyClient(appTarget, clientDeps(vi.fn(async () => html())));
+    const d = cmdDeps(client as never);
+    const e = await deployCmd(parseArgs(['deploy', '--app', 'web', '--json']), d.deps).catch((x: unknown) => x);
+    expect((e as Error).message).toContain('a 2xx that is not JSON');
+    expect(errorToExitCode(e)).toBe(1);
+    expect(d.audits[0]).toMatchObject({ action: 'deploy', outcome: 'failure' });
+    await expect(new CoolifyClient(svcTarget, clientDeps(vi.fn(async () => html()))).updateServiceCompose('services: {}')).rejects.toThrow(/not JSON/);
+    await expect(new CoolifyInstanceClient({ instanceUrl: 'https://c.example', token: 't' }, clientDeps(vi.fn(async () => html()))).getVersion()).rejects.toThrow(/did not answer with a Coolify version/);
+  });
+
+  it('a write answered 2xx whose body could not be read was still carried out', async () => {
+    const lost = { status: 200, headers: new Headers(), text: async () => { throw new TypeError('terminated'); } } as unknown as Response;
+    await expect(new CoolifyClient(appTarget, clientDeps(vi.fn(async () => lost))).deploy()).resolves.toEqual({ message: 'accepted' });
+    // …but a READ whose body is lost is a network error (and is retried).
+    await expect(new CoolifyClient(appTarget, clientDeps(vi.fn(async () => lost))).listEnvs()).rejects.toBeInstanceOf(CoolifyNetworkError);
+  });
+
+  it('the "unmarshal" quirk text does not get a non-idempotent request replayed', async () => {
+    const fetchImpl = vi.fn(async () => json(500, { message: 'cannot unmarshal array into Go value' }));
+    const client = new CoolifyClient(appTarget, { fetchImpl: fetchImpl as never, logger: noopLogger(), sleep: async () => {} });
+    await expect(client.deploy()).rejects.toBeInstanceOf(CoolifyRequestError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('a wait with a timeout beyond what a timer can hold (or Infinity) does not expire at once', async () => {
+    for (const timeoutMs of [Infinity, Number.MAX_SAFE_INTEGER, 3e9]) {
+      const get = vi.fn<() => Promise<Deployment>>().mockResolvedValueOnce({ deployment_uuid: 'd', status: 'in_progress' }).mockResolvedValue({ deployment_uuid: 'd', status: 'finished' });
+      await expect(waitForDeployment(get, 'd', { timeoutMs, sleep: async () => {} })).resolves.toMatchObject({ status: 'finished' });
+    }
+  });
+
+  it('the default sleep is cancelled by an abort (the process must not outlive Ctrl-C)', async () => {
+    const abort = new AbortController();
+    const started = Date.now();
+    const p = waitForDeployment(async () => ({ deployment_uuid: 'd', status: 'in_progress' }), 'd', { intervalMs: 60_000, signal: abort.signal });
+    setTimeout(() => { abort.abort(new Error('interrupted')); }, 20);
+    await expect(p).rejects.toThrow('interrupted');
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('dotenv: blanks before a quoted value are not part of it, and only \\n / \\r are expanded', () => {
+    expect(parseDotenv('A = "v"\nB= \'w\'\nC="back\\\\slash \\t tab"\nD="two\\nlines"\n')).toEqual({ A: 'v', B: 'w', C: 'back\\\\slash \\t tab', D: 'two\nlines' });
+  });
+
+  it('variable names: dots are fine, 256 characters are not, a base64 tail is not a name', async () => {
+    const client = { listEnvs: vi.fn(async () => []), upsertEnvs: vi.fn() };
+    const d = cmdDeps(client);
+    expect(await envDiff(parseArgs(['env', 'diff', '--app', 'web', '--set', 'A.B=1', '--set', '_X=2']), d.deps)).toBe(0);
+    await expect(envDiff(parseArgs(['env', 'diff', '--app', 'web', '--set', `${'K'.repeat(256)}=1`]), d.deps)).rejects.toBeInstanceOf(UsageError);
+    const wrapped = cmdDeps(client, appTarget, { readFile: vi.fn(async () => 'PRIVATE_KEY=aGVsbG8gd29ybGQ\nc2VjcmV0S3cr3tValue9xZZ==\n') });
+    const e = await envDiff(parseArgs(['env', 'diff', '--app', 'web', '--from-file', '.env']), wrapped.deps).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(UsageError);
+    expect((e as Error).message).not.toContain('S3cr3tValue9x');
+  });
+
+  it('a word that only starts like a command is not echoed', () => {
+    let message = '';
+    try { parseArgs(['env', 'set-S3cr3tValue9x']); } catch (e) { message = (e as Error).message; }
+    expect(message).toContain('Unknown command: env <17-character word>');
+    expect(message).not.toContain('S3cr3tValue9x');
+    expect(() => parseArgs(['env-diff', 'extra'])).toThrow(/1 unexpected argument/);
+  });
+
+  it('--help wins over every other flag, and --json still picks its format', async () => {
+    expect(parseArgs(['deploy', '--app', 'web', '--force', '--help'])).toMatchObject({ command: 'help', json: false });
+    expect(parseArgs(['--bogus-flag', '-h', '--json'])).toMatchObject({ command: 'help', json: true });
+  });
+
+  it('config doctor --offline keeps the 0.4 local check: no token is not a failure unless a target is named', async () => {
+    const CONFIG = fileURLToPath(new URL('./fixtures/config/basic.config.ts', import.meta.url));
+    const { configDoctor } = await import('../src/cli/commands/config-doctor.js');
+    const getVersion = vi.fn();
+    expect(await configDoctor(parseArgs(['config', 'doctor', '--offline', '--config', CONFIG]), { env: {}, getVersion })).toBe(0);
+    expect(stdout()).toContain('token COOLIFY_PROD_TOKEN: MISSING');
+    expect(await configDoctor(parseArgs(['config', 'doctor', '--offline', '--app', 'my-api', '--config', CONFIG]), { env: {}, getVersion })).toBe(5);
+    expect(getVersion).not.toHaveBeenCalled();
+    await expect(configDoctor(parseArgs(['config', 'doctor', '--app', 'my-api', '--instance', 'other', '--config', CONFIG]), { env: {}, getVersion }))
+      .rejects.toThrow(/--app my-api is on instance 'prod', not 'other'/);
+    out = []; err = [];
+    const notCoolify = vi.fn(async () => { throw new Error('https://c/api/v1/version did not answer with a Coolify version'); });
+    expect(await configDoctor(parseArgs(['config', 'doctor', '--json', '--config', CONFIG]), { env: { COOLIFY_PROD_TOKEN: 'tok' }, getVersion: notCoolify })).toBe(1);
+    expect(oneJson()).toMatchObject({ ok: false });
+  });
+
+  it('database set: a port change on an already-public database comes with a note; --public true without a port is refused in the dry-run too', async () => {
+    const before: Record<string, unknown> = { uuid: 'db-1', name: 'db', is_public: true, public_port: 5433 };
+    const inst = { instanceUrl: 'https://c.example', getDatabase: vi.fn(async () => ({ ...before })), updateDatabase: vi.fn() };
+    const d = cmdDeps({}, appTarget, { instanceFor: () => ({ name: 'prod', client: inst as never }) });
+    expect(await databaseSet(parseArgs(['database', 'set', '--instance', 'prod', '--database', 'db-1', '--public-port', '5544', '--json']), d.deps)).toBe(0);
+    expect((oneJson()['notes'] as string[])[0]).toContain('does not move the port of a database that is already public');
+    expect(inst.updateDatabase).not.toHaveBeenCalled();
+    const noPort = { instanceUrl: 'https://c.example', getDatabase: vi.fn(async () => ({ uuid: 'db-1', name: 'db', is_public: false, public_port: null })), updateDatabase: vi.fn() };
+    const d2 = cmdDeps({}, appTarget, { instanceFor: () => ({ name: 'prod', client: noPort as never }) });
+    expect(await databaseSet(parseArgs(['database', 'set', '--instance', 'prod', '--database', 'db-1', '--public', 'true']), d2.deps)).toBe(2);
+  });
+
+  it('compose get --out --json keeps stderr empty and reports the file in the document', async () => {
+    const client = { getService: vi.fn(async () => fx('service.json')) };
+    const d = cmdDeps(client, svcTarget, { writeFile: vi.fn(async () => {}) });
+    expect(await composeGet(parseArgs(['compose', 'get', '--app', 'svc', '--out', 'svc.yml', '--json']), d.deps)).toBe(0);
+    expect(oneJson()['out']).toMatchObject({ path: 'svc.yml', unredacted: true });
+    expect(stderr()).toBe('');
+  });
+
+  it('logs --build says when Coolify withheld the log instead of printing an empty one', async () => {
+    const { logsCmd } = await import('../src/cli/commands/logs.js');
+    const client = { getLatestDeployment: vi.fn(async () => ({ deployment_uuid: 'd1', status: 'finished', logs: null })), getDeployment: vi.fn(async () => ({ deployment_uuid: 'd1', status: 'finished' })) };
+    expect(await logsCmd(parseArgs(['logs', '--app', 'web', '--build', '--json']), cmdDeps(client).deps)).toBe(0);
+    expect(oneJson()).toMatchObject({ logs: '', logs_available: false });
+    out = [];
+    await logsCmd(parseArgs(['logs', '--app', 'web', '--build']), cmdDeps(client).deps);
+    expect(stderr()).toContain('Coolify returned no build log (the token needs read:sensitive');
+  });
+
+  it('status tolerates a 401 on the deployments read as well', async () => {
+    const { statusCmd } = await import('../src/cli/commands/status.js');
+    const client = { get: vi.fn(async () => fx('application.json')), getLatestDeployment: vi.fn(async () => { throw new CoolifyAuthError('Coolify auth failed (401)', { status: 401 }); }) };
+    expect(await statusCmd(parseArgs(['status', '--app', 'web', '--json']), cmdDeps(client).deps)).toBe(0);
+    expect(oneJson()['latestDeploymentError']).toContain('401');
+  });
+
+  it('a closed pipe silences the stream instead of ending the command; any other stream error still throws', async () => {
+    const { ignoreClosedPipe } = await import('../src/cli/main.js');
+    const { EventEmitter } = await import('node:events');
+    const stream = Object.assign(new EventEmitter(), { write: (() => { throw new Error('should have been replaced'); }) as unknown });
+    ignoreClosedPipe(stream as never);
+    stream.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+    expect((stream.write as () => boolean)()).toBe(true);
+    expect(() => stream.emit('error', Object.assign(new Error('disk'), { code: 'EIO' }))).toThrow('disk');
+  });
+
+  it('the audit log is never written through a symlink', async () => {
+    const victim = join(dir, 'audit-victim.txt');
+    writeFileSync(victim, 'untouched', { mode: 0o644 });
+    const link = join(dir, 'audit-link', 'audit.jsonl');
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(dir, 'audit-link'));
+    symlinkSync(victim, link);
+    const record = { ts: 't', actor: 'a', instanceUrl: 'u', resourceKind: 'application', resourceUuid: 'x', action: 'deploy', planSummary: { creates: 0, updates: 0, unchanged: 0, duplicateKeyDrift: 0 }, keysAffected: [], outcome: 'success' } as AuditRecord;
+    await expect(makeAuditSink(link)(record)).rejects.toThrow();
+    expect(readFileSync(victim, 'utf8')).toBe('untouched');
+    expect(statSync(victim).mode & 0o777).toBe(0o644);
   });
 });

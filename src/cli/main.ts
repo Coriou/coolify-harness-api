@@ -27,7 +27,8 @@ function reportError(err: unknown, json: boolean, prefix = ''): number {
   } else {
     process.stderr.write(`${prefix}${message}\n`);
     if (process.env['COOLIFY_HARNESS_DEBUG'] && err instanceof Error && err.stack) {
-      process.stderr.write(`${err.stack}\n`);
+      // Frames only: the first line of a stack repeats the raw, unsanitised message.
+      process.stderr.write(`${err.stack.split('\n').filter((l) => /^\s+at /.test(l)).join('\n')}\n`);
     }
   }
   return exitCode;
@@ -74,18 +75,29 @@ export function isMainModule(metaUrl: string, argv1: string | undefined): boolea
   }
 }
 
+/**
+ * `coolify-harness … | head`: the reader closed the pipe. That is no reason to crash, and no
+ * reason to STOP either: a mutation in flight must finish, be audited and set its real exit code.
+ * Further output to that stream is simply dropped.
+ */
+export function ignoreClosedPipe(stream: { on(event: 'error', listener: (err: NodeJS.ErrnoException) => void): unknown; write: unknown }): void {
+  stream.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code !== 'EPIPE') throw err;
+    stream.write = (): boolean => true;
+  });
+}
+
 // Bin entrypoint: run main and set the process exit code.
 if (isMainModule(import.meta.url, process.argv[1])) {
-  // `coolify-harness … | head`: the reader closed the pipe. That is no reason to crash, and no
-  // reason to STOP either: a mutation in flight must finish, be audited and set its real exit
-  // code. Further output is simply dropped.
-  for (const stream of [process.stdout, process.stderr]) {
-    stream.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code !== 'EPIPE') throw err;
-      stream.write = (() => true) as typeof stream.write;
-    });
-  }
+  ignoreClosedPipe(process.stdout);
+  ignoreClosedPipe(process.stderr);
+  // Exit as soon as the command is done and its output flushed: a request abandoned at a wait
+  // timeout, or a keep-alive socket, must not keep the process (and the agent) waiting.
+  const finish = (code: number): void => {
+    process.exitCode = code;
+    process.stdout.write('', () => { process.stderr.write('', () => { process.exit(code); }); });
+  };
   main(process.argv.slice(2))
-    .then((code) => { process.exitCode = code; })
-    .catch((err: unknown) => { process.exitCode = reportError(err, process.argv.includes('--json')); });
+    .then(finish)
+    .catch((err: unknown) => { finish(reportError(err, process.argv.includes('--json'))); });
 }

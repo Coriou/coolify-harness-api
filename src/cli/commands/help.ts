@@ -14,7 +14,7 @@ Put values in a file and use --from-file.
 
 Start here
   config doctor   [--app T | --instance I] [--offline]   config, tokens, reachability, version check
-  status          --app T                                state + latest deployment
+  status          --app T [--no-logs]                    state + latest deployment
 
 Env (per target; production rows unless --preview, applications only)
   env list        --app T                         keys, scope, flags, value length (never values)
@@ -24,7 +24,8 @@ Env (per target; production rows unless --preview, applications only)
   flag set *      --app T --set K=V [--redeploy [--wait]]         (env apply; --redeploy deploys, only with --apply)
 
 Deploy / runtime (per target)
-  deploy          --app T [--force] [--wait [--timeout SEC]] [--dry-run]   (application build; force = no cache;
+  deploy          --app T [--force] [--wait [--timeout SEC] [--no-logs]] [--dry-run]
+                                                                 (application build; force = no cache;
                                                                  --timeout applies to --wait, default 600)
   deploy          --app T --restart [--latest]                   (service: --latest pulls images)
   logs            --app T [--lines N] [--service NAME] [--timestamps]
@@ -60,7 +61,8 @@ Local (no token, no network)
   help | --help | --version
 
 Global flags: --config FILE (default: ./coolify-harness.config.{ts,mts,mjs,js}) · --json
-              --env-file FILE   read the API token(s) from a dotenv file (the real environment wins)
+              --token-file FILE  read the API token(s) from a dotenv file (a variable set in the
+                                 environment wins; a missing file is not an error)
 
 Exit codes: 0 ok · 1 Coolify/network/internal error · 2 usage, config or unsupported · 3 catalog stale
             4 drift (--fail-on-drift / --fail-on-changes) · 5 auth/scope · 6 locked env var

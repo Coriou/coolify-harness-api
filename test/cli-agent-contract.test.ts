@@ -260,7 +260,7 @@ describe('argument parsing protects the agent from itself', () => {
     const codes = HELP.slice(HELP.indexOf('Exit codes:'));
     for (const code of [0, 1, 2, 3, 4, 5, 6, 7, 8, 130]) expect(codes, String(code)).toMatch(new RegExp(`(^|[\\s·:])${code} [a-zA-Z-]`));
     expect(Object.keys(EXIT_CODES).map(Number).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 130]);
-    for (const flag of ['--json', '--config', '--env-file', '--apply', '--dry-run', '--no-logs', '--fail-on-changes', '--offline', '--version']) expect(HELP, flag).toContain(flag);
+    for (const flag of ['--json', '--config', '--token-file', '--apply', '--dry-run', '--no-logs', '--fail-on-changes', '--offline', '--version']) expect(HELP, flag).toContain(flag);
     expect(HELP).not.toMatch(/\bnpm\b|\bnpx\b/);
   });
 });

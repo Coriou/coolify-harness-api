@@ -96,10 +96,14 @@ export async function composeGet(args: ParsedArgs, deps: CmdDeps): Promise<numbe
   const images = listServiceImages(compose);
   if (args.out) {
     await (deps.writeFile ?? defaultWriteFile)(args.out, compose);
-    warn(`wrote the UNREDACTED compose (${compose.length} bytes, mode 0600) to ${args.out} — it may contain secrets; do not commit it.`);
+    // With --json the document says so (`out`); stderr stays empty on success.
+    if (!args.json) warn(`wrote the UNREDACTED compose (${compose.length} bytes, mode 0600) to ${args.out} — it may contain secrets; do not commit it.`);
   }
   if (args.json) {
-    printJson({ uuid: target.uuid, kind: target.kind, sha256: sha256(compose), images, compose: redactDocument(compose) });
+    printJson({
+      uuid: target.uuid, kind: target.kind, sha256: sha256(compose), images, compose: redactDocument(compose),
+      ...(args.out ? { out: { path: args.out, bytes: compose.length, unredacted: true } } : {}),
+    });
     return EXIT.ok;
   }
   for (const i of images) print(`# ${i.service}: ${i.image}`);
@@ -159,7 +163,7 @@ export async function composeSet(args: ParsedArgs, deps: CmdDeps): Promise<numbe
   } catch (err) {
     report['confirmed'] = null;
     report['confirmError'] = sanitizeErrorMessage(err);
-    warn(`WARNING: the compose was saved but could not be re-read: ${sanitizeErrorMessage(err)}`);
+    if (!args.json) warn(`WARNING: the compose was saved but could not be re-read: ${sanitizeErrorMessage(err)}`);
   }
   if (!args.json) {
     print(report['confirmed'] === true
