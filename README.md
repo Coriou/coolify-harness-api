@@ -161,9 +161,10 @@ coolify-harness deploy --app my-app --wait --json --no-logs
 coolify-harness logs --app my-app --build              #    on failure: the build log
 ```
 
-`deploy --wait` waits up to **600 s** (`--timeout <seconds>`). Give the shell that runs it a longer
-timeout than that, or pass a shorter `--timeout`: a wait that is killed (SIGTERM) or interrupted
-still prints its document with the `deploymentUuid`, exit 130, and the deployment keeps running.
+`deploy --wait` waits up to **600 s** (`--timeout <seconds>`; a poll in flight at the deadline gets
+up to 10 s more). Give the shell that runs it a longer timeout than that, or pass a shorter
+`--timeout`: a wait that is killed (SIGTERM) or interrupted still prints its document with the
+`deploymentUuid`, exit 130, and the deployment keeps running.
 
 **Safety model**
 
@@ -171,7 +172,8 @@ still prints its document with the `deploymentUuid`, exit 130, and the deploymen
   do (exit 0, unless the request could not be carried out anyway: an unknown key, a locked
   variable, a missing ability). Add `--apply` to do it.
 - `deploy` (and `deploy --restart`) acts immediately; `deploy --dry-run` sends nothing.
-- `--help` and `--version` win wherever they stand on the line: nothing else runs.
+- `--help` wins wherever it stands on the line: nothing else runs. `--version` stands alone;
+  beside a command it is refused (exit 2) and nothing runs.
 - Env changes do nothing until a redeploy. That step is always explicit.
 - `compose get` / `proxy get` print a redacted document. `--out FILE` writes the real one (mode
   0600): keep it out of git and out of your context.
@@ -195,10 +197,12 @@ still prints its document with the `deploymentUuid`, exit 130, and the deploymen
   `deployment` and `deploy --wait`: you get `logs_length` instead, and the application record
   Coolify embeds in every deployment is left out too.
 - A request gets 30 s. A read that fails is retried (once after a timeout: about a minute at
-  worst); a write is **never** sent twice. When a write fails after it may have reached Coolify
-  (a timeout, a dropped connection, a 5xx), the error says so and carries `"outcomeUnknown": true`
-  or the HTTP status: check what happened (`deployments`, `env diff`, `compose get`) before
-  running it again.
+  worst). A deploy, restart, cancel, delete, proxy or database write is **never** sent twice;
+  the env bulk write and the service compose save give the same result when repeated and are
+  retried like reads, and a 429 (rate limited: not processed) is retried for any request. When a
+  write fails after it may have reached Coolify (a timeout, a dropped connection, a 5xx), the
+  error says so and carries `"outcomeUnknown": true` or the HTTP status: check what happened
+  (`deployments`, `env diff`, `compose get`) before running it again.
 
 **Exit codes**
 
@@ -229,8 +233,8 @@ git-ignored `.env`). Run it as `pnpm --silent coolify <command>`; `pnpm --silent
 - Deploy: `pnpm --silent coolify deploy --app <target> --wait` (exit 0 finished, 7 failed, 8 timed out;
   `--force` rebuilds without the Docker cache). It waits up to 600 s: run it with a longer shell
   timeout, or pass `--timeout <seconds>`. On failure: `pnpm --silent coolify logs --app <target> --build`.
-- A failed write (deploy, env apply, compose set) is never retried by the tool. If the error says
-  the request may have reached Coolify, check (`deployments`, `env diff`) before running it again.
+- A failed deploy is never retried by the tool. If an error says the request may have reached
+  Coolify, check (`deployments`, `env diff`) before running it again.
 - Commands that change Coolify are a dry-run without `--apply`. `deploy` is the exception: it acts
   immediately. Ask before deploying to production unless told otherwise.
 - Never print, log or commit a token or an env value. Put secret values in a file and use
@@ -293,10 +297,14 @@ coolify-harness deploy --app my-svc --restart [--latest]
 - A network error or a 5xx on a deploy request is **not** retried: Coolify may have queued it.
   Check `deployments --app my-app` before running it again.
 - Coolify answers "queued" even when its deployment queue is full and nothing was created. The
-  harness checks that the deployment exists (one read) and fails with `DEPLOY_NOT_QUEUED` if not.
+  harness checks that the deployment exists (one read of at most 10 s; with `--wait` the first
+  poll is that check) and fails with `DEPLOY_NOT_QUEUED` if Coolify says it does not.
 - When Coolify skips the request because that commit is already queued or building, `--wait`
   reports on **that** production deployment (`"followedExisting": true`): it follows it, or, if it
-  has just ended, returns its outcome (exit 0 finished, 7 otherwise).
+  ended moments ago, returns its outcome (exit 0 finished, 7 otherwise). If it cannot tell which
+  deployment that is, it fails (exit 1) rather than report an older one.
+- If Coolify accepts the request but its acknowledgement cannot be read (`"unrecognised": true`),
+  `--wait` fails the same way: check `deployments` before deploying again.
 
 ### Status, logs, deployment history (read-only)
 
@@ -313,7 +321,7 @@ coolify-harness deployment cancel UUID (--app my-app | --instance prod) [--apply
 ```
 
 `status` and `logs --build` show the latest **production** deployment: a pull-request preview
-build on top of the list is skipped (and labelled, when previews are all there is).
+build on top of the list is skipped (and labelled, when the newest ten are all previews).
 
 ### Service compose
 
@@ -403,7 +411,7 @@ the CLI through Bun or `tsx`.
 | `env diff`, `logs` (runtime or build) | `read` + `read:sensitive` |
 | `env apply`, `flag set` | `read` + `read:sensitive` + `write` (`flag set --redeploy`: + `deploy`) |
 | `env delete` | `read` + `delete` (Coolify ≥ 4.7; `write` on older versions); `read:sensitive` too on a service or a docker-compose application (the compose is read to check the key is not referenced) |
-| `deploy`, `deploy --restart` | `deploy` (+ `read` for `--wait` and for the check that the deployment was queued; without it the check is skipped) |
+| `deploy`, `deploy --restart` | `deploy` (+ `read` for `--wait` and for the check that the deployment was queued. Without `read` the check is skipped, at the cost of one 403 per deploy, which Coolify 4.7 counts toward its failed-request limit) |
 | `deployment cancel` | `read` + `deploy` |
 | `compose get` | `read` + `read:sensitive` |
 | `compose set` | `read` + `read:sensitive` + `write` (+ `deploy` for `--restart`) |
@@ -429,7 +437,8 @@ limited to some projects cannot use server-level commands (`servers`, `server ge
 | Exit 5, `Env var 'X' … is not set` | The token is not in the environment | `--token-file .env` (see the quick start), or export the variable |
 | `Unknown flag: --env-file`, or `node: .env: not found` (exit 9) | Node reserves `--env-file` for itself, anywhere on the command line, and stops before the tool starts when the file is missing | Use `--token-file` |
 | Exit 1, `DEPLOY_NOT_QUEUED` | Coolify said "queued" but created no deployment: the server's deployment queue is full | Wait for it to drain (`deployments --instance …`), then deploy again |
-| Exit 1, `… may have reached Coolify` / `"outcomeUnknown": true` | A write timed out or lost its connection after it may have been sent | Check its effect first (`deployments`, `env diff`, `compose get`); the tool never re-sends a write |
+| Exit 1, `… may have reached Coolify` / `"outcomeUnknown": true` | A write timed out or lost its connection after it may have been sent | Check its effect first (`deployments`, `env diff`, `compose get`); the tool never re-sends a deploy |
+| Exit 1 after `deploy --wait`: `… could not be identified` or `acknowledgement could not be read` | Coolify queued nothing new, or its answer was unreadable, and no running or just-ended deployment matches | `deployments --app …` shows what is there; deploy again only if nothing is queued |
 | Exit 6 on `env delete` | Coolify manages the key or the compose still references it | Remove the reference (`compose set` or git), or `--force` |
 | Exit 5, `Coolify did not return the docker-compose document` | Coolify hides the compose from a token without `read:sensitive` (or a non-admin user) | Use such a token |
 | `… answered … with a redirect (301)` | The instance `url` in the config is not the final address (http → https, another host) | Put the final URL in the config. Redirects are never followed: the token would travel |
@@ -443,7 +452,7 @@ limited to some projects cannot use server-level commands (`servers`, `server ge
 | `Could not load config …` | The runtime cannot import the config | Node ≥ 24 runs a self-contained `.ts`; otherwise use Bun / `tsx`, or a `.mjs` config |
 | `deploy --wait` says it is "following the deployment already in progress" (`"followedExisting": true`) | Coolify skipped the request: the same commit is already queued or building | Nothing: it reports on that deployment |
 | `deploy --wait` exits 130 after about two minutes | The shell that ran it timed out and sent SIGTERM | Raise the shell timeout above 600 s or pass `--timeout`; the deployment itself kept running |
-| pnpm: `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` installing ≤ 0.4.1 | Old versions had a `prepare` script | Install ≥ 0.5.0 |
+| pnpm: `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` installing ≤ 0.4.1 | Old versions had a `prepare` script | Install ≥ 0.5.0, or the 0.4.1 release tarball |
 
 Set `COOLIFY_HARNESS_DEBUG=1` to print a stack trace with an error (text mode only; `0` and
 `false` mean off).
@@ -474,9 +483,9 @@ Set `COOLIFY_HARNESS_DEBUG=1` to print a stack trace with an error (text mode on
   created when the server's queue is full; the harness checks.
 - **Preview builds in the deployment list.** A pull-request preview is not the state of the
   application: "latest deployment" means the latest production one.
-- **Saved, then failed.** Coolify stores a service compose (and a proxy configuration) before it
-  re-parses it; a 500 from that second step leaves the new document stored. The harness reads it
-  back and says which one is there.
+- **Saved, then failed.** Coolify stores a service compose before it re-parses it, and records a
+  proxy configuration before it writes the file on the server; a 500 from the second step leaves
+  the new document stored. The harness reads it back and says which one is there.
 - **Trimmed values.** Coolify trims a value when it saves it; values are compared the same way.
 - **The public port of a database** only opens when `is_public` and `public_port` arrive in one
   request, and only for a database that was not public: `database set` sends both, and tells you

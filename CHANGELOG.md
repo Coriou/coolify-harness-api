@@ -26,7 +26,11 @@ No command or flag was removed. The config file is unchanged, with one condition
   says so. Put the final URL in the config.
 - **`deploy --wait` can now end with exit 7 or 8 where it ended with 0**: when Coolify skips the
   request because that commit is already queued or building, the wait reports on that deployment
-  instead of returning at once.
+  instead of returning at once (exit 1 when it cannot tell which one, 5 without `read`).
+- **A plain `deploy` of an application makes one more request** (`GET /deployments/{uuid}`, at
+  most 10 s, needs `read`; without it the check is skipped) and exits 1 with `DEPLOY_NOT_QUEUED`
+  when Coolify answered "queued" for a deployment it does not have.
+- `env delete --key` refuses a value holding `=` or a blank (it is not a name).
 - **`flag set --redeploy` without `--apply` no longer deploys**, and `flag set` without `--set` /
   `--from-file` is a usage error (it was a bare deploy with `--redeploy --apply`).
 - `--preview` on a service or a database is exit 2 (it wrote the production row); `--take 0` and
@@ -91,8 +95,6 @@ No command or flag was removed. The config file is unchanged, with one condition
   build `args:` and `x-…environment` blocks, password hashes, webhook URLs, Go DSNs. A PEM marker
   in a label no longer hides the rest of a document from a diff. Every scan is linear in the
   input (several patterns took seconds to minutes on a hostile 100 kB line).
-- `--version` / `-v` next to a command (`deploy --app x --version`) ran the command. `--help` and
-  `--version` now win wherever they stand: nothing else runs.
 - A `--key NAME=value` given to `env delete`, a value after `--token-file`, `--timeout` or
   `--public`, and an unknown flag that does not read like one are no longer echoed.
 - `--out FILE` is written to a new 0600 file that then replaces the target (an existing
@@ -156,7 +158,9 @@ No command or flag was removed. The config file is unchanged, with one condition
 - The `coolify-harness` bin had no shebang: under Bun it was run by the shell.
 - **A full deployment queue was reported as "queued"** (exit 0, audit "success"): Coolify answers
   `POST …/start` and `…/restart` with a deployment uuid it never created. The deployment is now
-  read back once; a 404 is `DEPLOY_NOT_QUEUED` (exit 1), audited as a failure.
+  read back once (with `--wait` the first poll is that read); Coolify's own 404 is
+  `DEPLOY_NOT_QUEUED` (exit 1), and a second audit record says the request was not queued. The
+  bare 404 of a proxy in front of a restarting Coolify is not taken for it.
 - **A failed write read as "nothing happened".** A timeout or a dropped connection on a write
   says the request may have reached Coolify (`outcomeUnknown` in the JSON error), a 5xx says it
   settles nothing, and a `compose set` / `proxy set` that fails that way reads the document back
@@ -168,6 +172,8 @@ No command or flag was removed. The config file is unchanged, with one condition
   the poll issued at the deadline gets to answer (a deployment that finished in the last seconds
   was reported as timed out).
 - Under Bun, piped output above 64 kB was cut short (a forced exit before the flush).
+- A request that is given up on (a wait that ended, Ctrl-C) is aborted instead of left running:
+  under Bun it kept the process alive for up to a minute after the output.
 - `flag set --apply --redeploy` with a deploy switch that does not fit the target wrote the
   variable and then failed as a usage error; the switches are checked first.
 - With `--json`, an audit record that could not be written put prose on stderr at exit 0; it is
@@ -210,7 +216,10 @@ No command or flag was removed. The config file is unchanged, with one condition
 - Library: `CoolifyNetworkError`, `CoolifyDeployNotQueuedError`, `UsageError`,
   `InvalidInputError`, `EnvChangesPendingError`, `isLockedRow`, `findConfigFile`,
   `redactCommandLine`, `redactUrlCredentials`, the `EnvVar` / `EnvWriteItem` / `EnvWriteResult`
-  types, `CoolifyClientDeps.timeoutMs` / `maxRetryDelayMs`, `WaitOptions.pollGraceMs`.
+  types, `CoolifyClientDeps.timeoutMs` / `maxRetryDelayMs`, `WaitOptions.pollGraceMs`,
+  `getDeployment(uuid, { signal })`, `DeployAck.unrecognised`, `CoolifyNotFoundError.serverMessage`,
+  `CoolifyNetworkError.outcomeUnknown`.
+- `coolify-harness --version` / `-v` (alone on the line).
 - Onboarding: README rewritten (install from GitHub with pnpm or Bun, 5-minute quick start, "For
   AI agents", troubleshooting, compatibility table), `CONTRIBUTING.md`, `SECURITY.md`, issue
   template, GitHub releases.
