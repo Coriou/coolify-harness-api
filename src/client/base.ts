@@ -41,6 +41,8 @@ export interface RequestOptions {
   secrets?: readonly string[];
   /** The endpoint answers plain text (`/version`, `/health`): do not read it as JSON. */
   rawText?: boolean;
+  /** Abandon the request when this aborts. */
+  signal?: AbortSignal;
 }
 
 const MAX_SERVER_MESSAGE = 400;
@@ -85,12 +87,14 @@ export function sanitizeServerMessage(message: string, secrets: readonly string[
   return out.length > MAX_SERVER_MESSAGE ? `${out.slice(0, MAX_SERVER_MESSAGE)}…` : out;
 }
 
-function serverMessage(body: unknown, secrets: readonly string[]): { message?: string; fields: string[] } {
+function serverMessage(body: unknown, secrets: readonly string[], token: readonly string[]): { message?: string; fields: string[] } {
   if (!body || typeof body !== 'object') return { fields: [] };
   const b = body as { message?: unknown; errors?: unknown }; // reason: narrowed by the object guard above; fields read defensively
-  // Field NAMES come from the server too: scrubbed like its message, and bounded.
+  // Field NAMES come from the server too: bounded, and scrubbed of the token. Not of the values
+  // sent: a value such as `data` would blank the path that says which item was refused
+  // (`data.0.value`), and a name is not where a value comes back.
   const fields = b.errors && typeof b.errors === 'object'
-    ? Object.keys(b.errors).slice(0, 20).map((f) => sanitizeServerMessage(f.slice(0, 120), secrets))
+    ? Object.keys(b.errors).slice(0, 20).map((f) => sanitizeServerMessage(f.slice(0, 120), token))
     : [];
   return typeof b.message === 'string' ? { message: sanitizeServerMessage(b.message, secrets), fields } : { fields };
 }
@@ -129,6 +133,7 @@ export class CoolifyApi {
         ...(jsonBody !== undefined ? { jsonBody } : {}),
         ...(opts.idempotent !== undefined ? { idempotent: opts.idempotent } : {}),
         ...(opts.rawText ? { rawText: true } : {}),
+        ...(opts.signal ? { signal: opts.signal } : {}),
       },
       {
         fetchImpl: d.fetchImpl,
@@ -142,12 +147,12 @@ export class CoolifyApi {
       },
     );
     // The token itself must never come back in an error message (an echoing proxy, a debug page).
-    const secrets = [...(opts.secrets ?? []), this.token, this.token.slice(this.token.indexOf('|') + 1)];
-    this.assertOk(res, `${method} ${fullUrl}`, secrets, !/^(GET|HEAD)$/i.test(method));
+    const token = [this.token, this.token.slice(this.token.indexOf('|') + 1)];
+    this.assertOk(res, `${method} ${fullUrl}`, [...(opts.secrets ?? []), ...token], token, !/^(GET|HEAD)$/i.test(method));
     return res;
   }
 
-  private assertOk(res: HttpResult, ctx: string, secrets: readonly string[], isWrite: boolean): void {
+  private assertOk(res: HttpResult, ctx: string, secrets: readonly string[], token: readonly string[], isWrite: boolean): void {
     if (res.status >= 200 && res.status < 300) return;
     if (res.status < 200) {
       // 1xx, or the status 0 of an opaque answer from an injected fetch: not an answer to rely on.
@@ -161,7 +166,7 @@ export class CoolifyApi {
         { status: res.status },
       );
     }
-    const { message, fields } = serverMessage(res.body, secrets);
+    const { message, fields } = serverMessage(res.body, secrets, token);
     if (res.status === 401 || res.status === 403) {
       // Coolify says WHY: `Unauthenticated.`, `Missing required permissions: delete`, or that the
       // token is limited to some projects. That sentence is the actionable part.
@@ -171,7 +176,10 @@ export class CoolifyApi {
       );
     }
     if (res.status === 404) {
-      throw new CoolifyNotFoundError(`Coolify resource not found (404) on ${ctx}${message ? ` — ${message}` : ''}`);
+      throw new CoolifyNotFoundError(
+        `Coolify resource not found (404) on ${ctx}${message ? ` — ${message}` : ''}`,
+        message !== undefined ? { serverMessage: message } : {},
+      );
     }
     const detail = [message, fields.length ? `fields: ${fields.join(', ')}` : ''].filter(Boolean).join('; ');
     // A 5xx to a write settles nothing: Coolify may have done part or all of it before failing.
